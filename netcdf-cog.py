@@ -130,9 +130,9 @@ def _write_cogtiff(fname, out_f_name, outdir):
             run_command(cogtif, outdir)
 
 
-@click.command(help="\b Convert Geotiff to Cloud Optimized Geotiff using gdal."
+@click.command(help="\b Convert netcdf to Geotiff and then to Cloud Optimized Geotiff using gdal."
 " Mandatory Requirement: GDAL version should be <=2.2")
-@click.option('--path', '-p', required=True, help="Read the Geotiffs from this folder", type=click.Path(exists=True, readable=True))
+@click.option('--path', '-p', required=True, help="Read the netcdfs from this folder", type=click.Path(exists=True, readable=True))
 @click.option('--output', '-o', required=True, help="Write COG's into this folder",
               type=click.Path(exists=True, writable=True))
 def main(path, output):
