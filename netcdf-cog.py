@@ -55,7 +55,7 @@ def get_s3_url(fname, band_name):
 def add_image_path(bands, fname):
     for key, value in bands.items():
         value['layer'] = '1'
-        value['path'] = get_s3_url(fname, key)
+        value['path'] = basename(fname) + '_' +  key + '.tif'
     return bands
 
 
@@ -65,7 +65,7 @@ def _write_dataset(fname, yaml_fname, rel_path):
     dataset = yaml.load(dataset_object, Loader=Loader)
     bands = dataset['image']['bands']
     dataset['image']['bands'] = add_image_path(bands, rel_path)
-    dataset['format'] = {'name': 'GeoTiff'}
+    dataset['format'] = {'name': 'GeoTIFF'}
     dataset['lineage'] = {'source_datasets': {}}
     with open(yaml_fname, 'w') as fp:
         yaml.dump(dataset, fp, default_flow_style=False, Dumper=Dumper)
@@ -73,7 +73,7 @@ def _write_dataset(fname, yaml_fname, rel_path):
 
 def _write_cogtiff(fname, out_f_name, outdir):
     """ Convert the Geotiff to COG using gdal commands
-        Blocksize is retained to 1024
+        Blocksize is 512
     """
     with tempfile.TemporaryDirectory() as tmpdir:
         dataset = gdal.Open(fname, gdal.GA_ReadOnly)
@@ -101,7 +101,7 @@ def _write_cogtiff(fname, out_f_name, outdir):
                        'average',
                        '--config',
                        'GDAL_TIFF_OVR_BLOCKSIZE',
-                       '1024',
+                       '512',
                        temp_fname,
                        '2',
                        '4',
