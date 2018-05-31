@@ -9,7 +9,7 @@ from osgeo import gdal
 import xarray
 import yaml
 from yaml import CLoader as Loader, CDumper as Dumper
-
+remove = ['rm', '*.aux.xml']
 
 def run_command(command, work_dir): 
     """ 
@@ -78,6 +78,7 @@ def _write_cogtiff(fname, out_f_name, outdir):
     with tempfile.TemporaryDirectory() as tmpdir:
         dataset = gdal.Open(fname, gdal.GA_ReadOnly)
         subdatasets = dataset.GetSubDatasets()
+        dataset = None
         for netcdf in subdatasets[:-1]:
             band_name = get_bandname(netcdf[0])
             out_fname = out_f_name + '_' + band_name + '.tif'
@@ -118,13 +119,19 @@ def _write_cogtiff(fname, out_f_name, outdir):
                       'COPY_SRC_OVERVIEWS=YES',
                       '-co',
                       'COMPRESS=DEFLATE',
+                      '-co',
+		      'ZLEVEL=9',
                       '--config',
                       'GDAL_TIFF_OVR_BLOCKSIZE',
-                      '1024',
+                      '512',
                       '-co',
-                      'BLOCKXSIZE=1024',
+                      'BLOCKXSIZE=512',
                       '-co',
-                      'BLOCKYSIZE=1024',
+                      'BLOCKYSIZE=512',
+                      '-co',
+                      'PREDICTOR=1',
+                      '-co',
+                      'PROFILE=GeoTIFF',
                       temp_fname,
                       out_fname]
             run_command(cogtif, outdir)
@@ -149,8 +156,7 @@ def main(path, output):
             logging.info("Writing dataset Yaml to %s", basename(yaml_fname))
             _write_cogtiff(f_name, gtiff_fname, output_dir)
             count = count+1
-            logging.info("Writing COG to %s, %i", basename(gtiff_fname), count)
-
+            logging.info("Writing COG to %s, %i", basename(gtiff_fname), count)    
                
 if __name__ == "__main__":
     main()
