@@ -1,15 +1,13 @@
 # Cloud Optimized GeoTIFF Summary
 
-## Cloud Optimized GeoTIFF rely on two complementary pieces of technology.
+#### Cloud Optimized GeoTIFF rely on two complementary pieces of technology.
 
-### The first is the ability of GeoTIFF's to store not just the raw pixels of the image, but to organize those pixels in
-     particular ways. The second is HTTP GET range requests, that let clients ask for just the portions of a file that
-     they need. Using the first organizes the GeoTIFF so the latter's requests can easily select the parts of the file
-     that are useful for processing.
+    The first is the ability of GeoTIFF's to store not just the raw pixels of the image, but to organize those pixels in particular         ways. 
+    The second is HTTP GET range requests, that let clients ask for just the portions of a file that they need. Using the first organizes the GeoTIFF so the latter's requests can easily select the parts of the file that are useful for processing.
 
 ## GeoTIFF Organization
 
-     The two main organization techniques that Cloud Optimized GeoTIFFs use are Tiling and Overviews.
+     The two main organization techniques that Cloud Optimized GeoTIFF's use are Tiling and Overviews.
      And the data is also compressed for more efficient passage online.
 
      Tiling creates a number of internal `tiles` inside the actual image, instead of using simple `stripes` of data.
@@ -28,18 +26,18 @@
 
 ## HTTP Get Range requests
 
-   HTTP Version 1.1 introduced a very cool feature called Range requests. It comes into play in GET requests,
-   when a client is asking a server for data. If the server advertises with an Accept-Ranges: bytes header in its
-   response it is telling the client that bytes of data can be requested in parts, in whatever way the client wants.
-   This is often called Byte Serving.
+    HTTP Version 1.1 introduced a very cool feature called Range requests. It comes into play in GET requests,
+    when a client is asking a server for data. If the server advertises with an Accept-Ranges: bytes header in its
+    response it is telling the client that bytes of data can be requested in parts, in whatever way the client wants.
+    This is often called Byte Serving.
     The client can request just the bytes that it needs from the server.
     On the broader web it is very useful for serving things like video, so clients don't have to download
     the entire file to begin playing it.
 
-   The Range requests are an optional field, so web servers are not required to implement it.
-   But most all the object storage options on the cloud (Amazon, Google, Microsoft, OpenStack etc) support the field on
-   data stored on their servers. So most any data that is stored on the cloud is automatically able to serve up parts of
-   itself, as long as clients know what to ask for.
+    The Range requests are an optional field, so web servers are not required to implement it.
+    But most all the object storage options on the cloud (Amazon, Google, Microsoft, OpenStack etc) support the field on
+    data stored on their servers. So most any data that is stored on the cloud is automatically able to serve up parts of
+    itself, as long as clients know what to ask for.
 
 ## Bringing them together
 
