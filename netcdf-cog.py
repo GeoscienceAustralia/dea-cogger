@@ -30,7 +30,7 @@ def check_dir(fname):
 
 def getfilename(fname, outdir):
     """ To create a temporary filename to add overviews and convert to COG
-        and create a file name just as source but with '.TIF' extension
+        and create a file name just as source but without '.TIF' extension
     """
     file_path = check_dir(fname)
     out_fname = pjoin(outdir, file_path)
@@ -54,6 +54,7 @@ def add_image_path(bands, fname, rc, count):
 
 
 def _write_dataset(fname, file_path, outdir, rastercount):
+    """ Write the dataset which is in indexable format to datacube and update the format name too GeoTIFF"""
     dataset_array = xarray.open_dataset(fname)
     for count in range(rastercount):
         if rastercount > 1:
@@ -76,6 +77,16 @@ def _write_dataset(fname, file_path, outdir, rastercount):
 def _write_cogtiff(out_f_name, outdir, subdatasets, rastercount):
     """ Convert the Geotiff to COG using gdal commands
         Blocksize is 512
+        TILED <boolean>: Switch to tiled format
+        COPY_SRC_OVERVIEWS <boolean>: Force copy of overviews of source dataset
+        COMPRESS=[NONE/DEFLATE]: Set the compression to use. DEFLATE is only available if NetCDF has been compiled with
+                  NetCDF-4 support. NC4C format is the default if DEFLATE compression is used.
+        ZLEVEL=[1-9]: Set the level of compression when using DEFLATE compression. A value of 9 is best,
+                      and 1 is least compression. The default is 1, which offers the best time/compression ratio.
+        BLOCKXSIZE <int>: Tile Width
+        BLOCKYSIZE <int>: Tile/Strip Height
+        PREDICTOR <int>: Predictor Type (1=default, 2=horizontal differencing, 3=floating point prediction)
+        PROFILE <string-select>: possible values: GDALGeoTIFF,GeoTIFF,BASELINE,
     """
     with tempfile.TemporaryDirectory() as tmpdir:
         for netcdf in subdatasets[:-1]:
@@ -101,6 +112,8 @@ def _write_cogtiff(out_f_name, outdir, subdatasets, rastercount):
                 run_command(to_cogtif, tmpdir)
 
                 # Add Overviews
+                # gdaladdo - Builds or rebuilds overview images.
+                # 2, 4, 8,16,32 are levels which is a list of integral overview levels to build.
                 add_ovr = [
                     'gdaladdo',
                     '-r',
@@ -144,7 +157,7 @@ def _write_cogtiff(out_f_name, outdir, subdatasets, rastercount):
 
 
 @click.command(help="\b Convert netcdf to Geotiff and then to Cloud Optimized Geotiff using gdal."
-" Mandatory Requirement: GDAL version should be <=2.2")
+                    " Mandatory Requirement: GDAL version should be <=2.2")
 @click.option('--path', '-p', required=True, help="Read the netcdfs from this folder",
               type=click.Path(exists=True, readable=True))
 @click.option('--output', '-o', required=True, help="Write COG's into this folder",
@@ -153,8 +166,7 @@ def main(path, output):
     logging.basicConfig(format='%(asctime)s %(levelname)s %(message)s', level=logging.INFO)
     netcdf_path = os.path.abspath(path)
     output_dir = os.path.abspath(output)
-    count = 0
-    rastercount = 0
+
     for path, subdirs, files in os.walk(netcdf_path):
         for fname in files:
             f_name = pjoin(path, fname)
