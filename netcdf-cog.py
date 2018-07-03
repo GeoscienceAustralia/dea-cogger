@@ -1,24 +1,20 @@
 #!/bin/env python
-# Created by Harshu Rampur on: ??
-# Modified by Arapaut Sivaprasad on 3 July, 2018
-# Added the STAC Json generation feature.
-# ------------------------------------------------------------------------------
-from os.path import join as pjoin, basename, dirname, exists, splitext
-import tempfile
-from subprocess import check_call
-import subprocess
-import click
-import os
+import glob
+import json
 import logging
-from osgeo import gdal
+import os
+import subprocess
+import tempfile
+from os.path import join as pjoin, basename, dirname, exists, splitext
+from subprocess import check_call
+
+import click
 import xarray
 import yaml
+from osgeo import gdal
+from pyproj import Proj, transform
 from yaml import CLoader as Loader, CDumper as Dumper
 
-# For stac_create():
-import json
-import glob, os
-from pyproj import Proj, transform
 
 # ------------------------------------------------------------------------------
 # Code added by Arapaut Sivaprasad
@@ -31,116 +27,131 @@ from pyproj import Proj, transform
 # ------------------------------------------------------------------------------
 # FUNCTIONS
 # ------------------------------------------------------------------------------
-# create_item_dict:
-# Create a dictionary structure of the required values. This will be written out 
-# as the 'output_dir/subset/item/STAC.json'
-# These output files are STAC compliant and must be viewable with any STAC browser.
-# ------------------------------------------------------------------------------
-def create_item_dict(item,ard,geodata,base_url,item_dict):
-    item_dict['id'] = ard['id']
-    item_dict['type'] = 'Feature'
-    
-    item_dict['bbox'] = [ ard['extent']['coord']['ll']['lon'], ard['extent']['coord']['ll']['lat'], 
-    ard['extent']['coord']['ur']['lon'], ard['extent']['coord']['ur']['lat'] ]
+def create_item_dict(item, ard, geodata, base_url):
+    """
+    Create a dictionary structure of the required values.
 
-    item_dict['geometry'] = geodata['geometry']
+    This will be written out as the 'output_dir/subset/item/STAC.json'
 
-    item_dict['properties'] = {}
-    item_dict['properties']['datetime'] = ard['extent']['center_dt'] + '.000Z'
-    item_dict['properties']['provider'] = 'GA'
-    item_dict['properties']['license'] = 'PDDL-1.0'
+    These output files are STAC compliant and must be viewable with any STAC browser.
+    """
+    item_dict = {
+        'id': ard['id'],
+        'type': 'Feature',
+        'bbox': [ard['extent']['coord']['ll']['lon'], ard['extent']['coord']['ll']['lat'],
+                 ard['extent']['coord']['ur']['lon'], ard['extent']['coord']['ur']['lat']],
 
-    item_dict['links'] = [0]
-    item_json_url = base_url + item + "/" + item + ".json"
-    item_dict['links'][0] = {'rel': 'self', 'href': item_json_url}
+        'geometry': geodata['geometry'],
+        'properties': {
+            'datetime': ard['extent']['center_dt'] + '.000Z',
+            'provider': 'GA',
+            'license': 'PDDL-1.0'
+        },
+        'links': [
+            {
+                'rel': 'self',
+                'href': base_url + item + "/" + item + ".json"}
+        ],
+        'assets': {
+            'map': {
+                'href': base_url + item + '/map.html',
+                'required': 'true',
+                'type': 'html'
+            },
+            'metadata': {
+                'href': base_url + item + "/ARD-METADATA.yaml",
+                "required": 'true',
+                "type": "yaml"
+            }
+        }
+    }
 
-    item_json_map_url = base_url + item + '/map.html'
-
-    item_dict['assets'] = {}
-    item_dict['assets']['map'] = {'href': item_json_map_url, "required": 'true', "type": "html"}
-
-    ard_metadata_url = base_url + item + "/ARD-METADATA.yaml"
-    item_dict['assets']['metadata'] = {'href': ard_metadata_url, "required": 'true', "type": "yaml"}
-
-    j = 0
     bands = ard['image']['bands']
-    for key in bands:
-        j += 1
+    for band_num, key in bands:
         path = ard['image']['bands'][key]['path']
-        item_dict['assets'][key] = {'href': path, "required": 'true', "type": "GeoTIFF", "eo:band":[j]}
+        item_dict['assets'][key] = {
+            'href': path,
+            "required": 'true',
+            "type": "GeoTIFF",
+            "eo:band": [band_num]}
 
-# ------------------------------------------------------------------------------
-# create_geodata():
-# The polygon coordinates come in Albers' format, which must be converted to lat/lon
-# as in universal format in EPSG:4326
-# ------------------------------------------------------------------------------
+    return item_dict
+
+
 def create_geodata(valid_coord):
+    """
+    The polygon coordinates come in Albers' format, which must be converted to
+    lat/lon as in universal format in EPSG:4326
+    """
     aa = Proj(init='epsg:3577')
     geo = Proj(init='epsg:4326')
-    for i in range (len(valid_coord[0])):
+    for i in range(len(valid_coord[0])):
         j = transform(aa, geo, valid_coord[0][i][0], valid_coord[0][i][1])
         valid_coord[0][i] = list(j)
-    my_geodata = {}
-    my_geodata['geometry'] = { "type": "Polygon", "coordinates": valid_coord }
-    
-    return my_geodata
 
-# ------------------------------------------------------------------------------
-# create_jsons:
-# Iterate through all tile directories and create a JSON file for each.
-# Will look for a *.yaml file in each dir.
-# The JSON file will be named as 'base_name.json'
-# ------------------------------------------------------------------------------
-def create_jsons(input_dir,base_url,output_dir,subset):
-    geodata = {} # This should get the polygon lat/lon created from [grid_spatial][projection:][valid_data:][coordinates:]
+    return {
+        'geometry': {
+            "type": "Polygon",
+            "coordinates": valid_coord
+        }
+    }
+
+
+def create_jsons(input_dir, base_url, output_dir, subset):
+    """
+    Iterate through all tile directories and create a JSON file for each.
+
+    Will look for a *.yaml file in each dir.
+    The JSON file will be named as 'base_name.json'
+    """
     tiles_list = os.listdir(input_dir)
-    i = len(tiles_list)
-    for item in tiles_list:
-        item_dict = {} # Blank out the array for each item. Not really necessary!
-        tile_dir = pjoin(output_dir,item)
-        if (os.path.exists(tile_dir)): 
+    for tile_n, item in enumerate(tiles_list):
+        tile_dir = pjoin(output_dir, item)
+        if os.path.exists(tile_dir):
             os.chdir(tile_dir)
-            j = 0
-            for ard_metadata_file in glob.glob("*.yaml"):
-                j += 1
-                item_json_file = ard_metadata_file.replace('.yaml', '') + "_STAC.json"
-                
+            for yaml_n, ard_metadata_file in enumerate(glob.glob("*.yaml")):
+                item_json_file = ard_metadata_file.replace('.yaml', "_STAC.json")
                 try:
-                    ard_metadata = yaml.load(open(ard_metadata_file))
+                    with open(ard_metadata_file) as ard_src:
+                        ard_metadata = yaml.safe_load(ard_src)
+
                     geodata = create_geodata(ard_metadata['grid_spatial']['projection']['valid_data']['coordinates'])
-                    create_item_dict(item,ard_metadata,geodata,base_url,item_dict)
-    
+                    item_dict = create_item_dict(item, ard_metadata, geodata, base_url)
+
                     # Write out the JSON files.
-                    with open(item_json_file, 'w') as file:
-                         file.write(json.dumps(item_dict,indent=1)) 
-                         print("Wrote:{}_{}. {}".format(i,j,item_json_file)) 
+                    with open(item_json_file, 'w') as dest:
+                        json.dump(dest, item_dict, indent=1)
+                        print("Wrote: {}_{}. {}".format(tile_n, yaml_n, item_json_file))
                     # Write out only if the file does not exist.
-#                    if (os.path.exists(item_json_file) and os.path.getsize(item_json_file) > 0):
-#                        print("*** File exits. Not overwriting:", item_json_file)
-#                    else:
-#                        with open(item_json_file, 'w') as file:
-#                             file.write(json.dumps(item_dict,indent=1)) 
-#                    break
+                #                    if (os.path.exists(item_json_file) and os.path.getsize(item_json_file) > 0):
+                #                        print("*** File exits. Not overwriting:", item_json_file)
+                #                    else:
+                #                        with open(item_json_file, 'w') as file:
+                #                             file.write(json.dumps(item_dict,indent=1))
+                #                    break
                 except:
                     print("*** Unknown error in loading/writing the data.", ard_metadata_file)
-                    pass
-        i -= 1
 
-def stac_create(input_dir,subset,output_dir):
+
+def stac_create(input_dir, subset, output_dir):
     print("Creating the STAC.json files!")
     base_url = "http://dea-public-data.s3-ap-southeast-2.amazonaws.com/FCP"
+
+    # DRA: I don't understand the intended effect of the following three lines
     base_url = os.path.join(base_url, '')
     output_dir = os.path.join(output_dir, '')
     input_dir = os.path.join(input_dir, '')
-    create_jsons(input_dir,base_url,output_dir,subset)
+    create_jsons(input_dir, base_url, output_dir, subset)
+
+
 # ------------------------------------------------------------------------------
-# Code below is the original and has not been altered in any way from the original, 
+# Code below is the original and has not been altered in any way from the original,
 # but for a line added in 'def main()' to call 'stac_create()'
 # ------------------------------------------------------------------------------
-def run_command(command, work_dir): 
-    """ 
-    A simple utility to execute a subprocess command. 
-    """ 
+def run_command(command, work_dir):
+    """
+    A simple utility to execute a subprocess command.
+    """
     try:
         check_call(command, stderr=subprocess.STDOUT, cwd=work_dir)
     except subprocess.CalledProcessError as e:
@@ -173,7 +184,7 @@ def add_image_path(bands, fname, rc, count):
     for key, value in bands.items():
         value['layer'] = '1'
         if rc > 1:
-            value['path'] = basename(fname) + '_' + str(count+1) + '_' + key + '.tif'
+            value['path'] = basename(fname) + '_' + str(count + 1) + '_' + key + '.tif'
         else:
             value['path'] = basename(fname) + '_' + key + '.tif'
     return bands
@@ -184,7 +195,7 @@ def _write_dataset(fname, file_path, outdir, rastercount):
     dataset_array = xarray.open_dataset(fname)
     for count in range(rastercount):
         if rastercount > 1:
-            y_fname = file_path + '_' + str(count+1) + '.yaml'
+            y_fname = file_path + '_' + str(count + 1) + '.yaml'
             dataset_object = (dataset_array.dataset.item(count)).decode('utf-8')
         else:
             y_fname = file_path + '.yaml'
@@ -283,7 +294,7 @@ def _write_cogtiff(out_f_name, outdir, subdatasets, rastercount):
 
 
 @click.command(help="\b Convert netcdf to Geotiff and then to Cloud Optimized Geotiff using gdal."
-                    " Mandatory Requirement: GDAL version should be <=2.2")
+                    " Mandatory Requirement: GDAL version should be >=2.2")
 @click.option('--path', '-p', required=True, help="Read the netcdfs from this folder",
               type=click.Path(exists=True, readable=True))
 @click.option('--output', '-o', required=True, help="Write COG's into this folder",
@@ -292,7 +303,7 @@ def main(path, output):
     logging.basicConfig(format='%(asctime)s %(levelname)s %(message)s', level=logging.INFO)
     netcdf_path = os.path.abspath(path)
     output_dir = os.path.abspath(output)
-    skip_cog = 1 # Debug by AVS to skip the NetCDF to COG creation step. Change it to 0 OR remove in prod.
+    skip_cog = 1  # Debug by AVS to skip the NetCDF to COG creation step. Change it to 0 OR remove in prod.
     if not skip_cog:
         for path, subdirs, files in os.walk(netcdf_path):
             for fname in files:
@@ -310,7 +321,8 @@ def main(path, output):
                 logging.info("Writing COG to %s", basename(gtiff_fname))
 
     # Code added by Arapaut Sivaprasad
-    stac_create(netcdf_path,'',output_dir)
-               
+    stac_create(netcdf_path, '', output_dir)
+
+
 if __name__ == "__main__":
     main()
