@@ -21,6 +21,19 @@ def run_command(command, work_dir):
         raise RuntimeError("command '{}' return with error (code {}): {}".format(e.cmd, e.returncode, e.output))
 
 
+def Check_file_exists(fname):
+    """Check If All The files Exists
+       Return True If all File exists
+       Else Retuen  False if File does not exists"""
+    list_fnames = ['_swir2.tif', '_swir1.tif', '_red.tif', '_nir.tif', '_green.tif', '_blue.tif', '.yaml']
+    for l_name in list_fnames:
+        if os.path.isfile(fname + l_name):
+            pass
+        else:
+            return False
+    return True
+
+
 def check_dir(fname):
     file_name = fname.split('/')
     rel_path = pjoin(*file_name[-2:])
@@ -105,6 +118,8 @@ def _write_cogtiff(out_f_name, outdir, subdatasets, rastercount):
                 temp_fname = pjoin(tmpdir, basename(out_fname))
                 to_cogtif = [
                     'gdal_translate',
+                    '-of',
+                    'GTIFF',
                     '-b',
                     str(count),
                     netcdf[0],
@@ -148,7 +163,7 @@ def _write_cogtiff(out_f_name, outdir, subdatasets, rastercount):
                     '-co',
                     'BLOCKYSIZE=512',
                     '-co',
-                    'PREDICTOR=1',
+                    'PREDICTOR=2',
                     '-co',
                     'PROFILE=GeoTIFF',
                     temp_fname,
@@ -169,18 +184,22 @@ def main(path, output):
 
     for path, subdirs, files in os.walk(netcdf_path):
         for fname in files:
-            f_name = pjoin(path, fname)
-            logging.info("Reading %s", basename(f_name))
-            gtiff_fname, file_path = getfilename(f_name, output_dir)
-            dataset = gdal.Open(f_name, gdal.GA_ReadOnly)
-            subdatasets = dataset.GetSubDatasets()
-            # ---To Check if NETCDF is stacked or unstacked --
-            sds_open = gdal.Open(subdatasets[0][0])
-            rastercount = sds_open.RasterCount
-            dataset = None
-            _write_dataset(f_name, file_path, output_dir, rastercount)
-            _write_cogtiff(gtiff_fname, output_dir, subdatasets, rastercount)
-            logging.info("Writing COG to %s", basename(gtiff_fname))
+            if fname.endswith('.nc'):
+                f_name = pjoin(path, fname)
+                logging.info("Reading %s", basename(f_name))
+                gtiff_fname, file_path = getfilename(f_name, output_dir)
+                if Check_file_exists(gtiff_fname):
+                    logging.info("Skipping Conversion, %s already exists", basename(gtiff_fname))
+                else:
+                    dataset = gdal.Open(f_name, gdal.GA_ReadOnly)
+                    subdatasets = dataset.GetSubDatasets()
+                    # ---To Check if NETCDF is stacked or unstacked --
+                    sds_open = gdal.Open(subdatasets[0][0])
+                    rastercount = sds_open.RasterCount
+                    dataset = None
+                    _write_dataset(f_name, file_path, output_dir, rastercount)
+                    _write_cogtiff(gtiff_fname, output_dir, subdatasets, rastercount)
+                    logging.info("Writing COG to %s", basename(gtiff_fname))
 
                
 if __name__ == "__main__":
