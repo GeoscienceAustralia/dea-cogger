@@ -1,3 +1,8 @@
+#!/bin/env python
+# Created by Harshu Rampur on: ??
+# Modified by Arapaut Sivaprasad on 3 July, 2018
+# Added the STAC Json generation feature.
+# ------------------------------------------------------------------------------
 from os.path import join as pjoin, basename, dirname, exists, splitext
 import tempfile
 from subprocess import check_call
@@ -10,7 +15,128 @@ import xarray
 import yaml
 from yaml import CLoader as Loader, CDumper as Dumper
 
+# For stac_create():
+import json
+import glob, os
+from pyproj import Proj, transform
 
+# ------------------------------------------------------------------------------
+# Code added by Arapaut Sivaprasad
+# This function takes the *.yaml files created by the NetCDF to COG conversion.
+#	- Get all details required for creating the STAC Json
+# 	- Convert the EPSG:3577 coordinates to lat/lon for EPSG:4326 compliance
+# 	- Create 'STAC.json' in the same directory as the YAML and TIFF files.
+#	- Verify that the newly created STAC.json complies with the latest STAC spec.
+# It can now be uploaded to S3 alongwith the rest.
+# ------------------------------------------------------------------------------
+# FUNCTIONS
+# ------------------------------------------------------------------------------
+# create_item_dict:
+# Create a dictionary structure of the required values. This will be written out 
+# as the 'output_dir/subset/item/STAC.json'
+# These output files are STAC compliant and must be viewable with any STAC browser.
+# ------------------------------------------------------------------------------
+def create_item_dict(item,ard,geodata,base_url,item_dict):
+    item_dict['id'] = ard['id']
+    item_dict['type'] = 'Feature'
+    
+    item_dict['bbox'] = [ ard['extent']['coord']['ll']['lon'], ard['extent']['coord']['ll']['lat'], 
+    ard['extent']['coord']['ur']['lon'], ard['extent']['coord']['ur']['lat'] ]
+
+    item_dict['geometry'] = geodata['geometry']
+
+    item_dict['properties'] = {}
+    item_dict['properties']['datetime'] = ard['extent']['center_dt'] + '.000Z'
+    item_dict['properties']['provider'] = 'GA'
+    item_dict['properties']['license'] = 'PDDL-1.0'
+
+    item_dict['links'] = [0]
+    item_json_url = base_url + item + "/" + item + ".json"
+    item_dict['links'][0] = {'rel': 'self', 'href': item_json_url}
+
+    item_json_map_url = base_url + item + '/map.html'
+
+    item_dict['assets'] = {}
+    item_dict['assets']['map'] = {'href': item_json_map_url, "required": 'true', "type": "html"}
+
+    ard_metadata_url = base_url + item + "/ARD-METADATA.yaml"
+    item_dict['assets']['metadata'] = {'href': ard_metadata_url, "required": 'true', "type": "yaml"}
+
+    j = 0
+    bands = ard['image']['bands']
+    for key in bands:
+        j += 1
+        path = ard['image']['bands'][key]['path']
+        item_dict['assets'][key] = {'href': path, "required": 'true', "type": "GeoTIFF", "eo:band":[j]}
+
+# ------------------------------------------------------------------------------
+# create_geodata():
+# The polygon coordinates come in Albers' format, which must be converted to lat/lon
+# as in universal format in EPSG:4326
+# ------------------------------------------------------------------------------
+def create_geodata(valid_coord):
+    aa = Proj(init='epsg:3577')
+    geo = Proj(init='epsg:4326')
+    for i in range (len(valid_coord[0])):
+        j = transform(aa, geo, valid_coord[0][i][0], valid_coord[0][i][1])
+        valid_coord[0][i] = list(j)
+    my_geodata = {}
+    my_geodata['geometry'] = { "type": "Polygon", "coordinates": valid_coord }
+    
+    return my_geodata
+
+# ------------------------------------------------------------------------------
+# create_jsons:
+# Iterate through all tile directories and create a JSON file for each.
+# Will look for a *.yaml file in each dir.
+# The JSON file will be named as 'base_name.json'
+# ------------------------------------------------------------------------------
+def create_jsons(input_dir,base_url,output_dir,subset):
+    geodata = {} # This should get the polygon lat/lon created from [grid_spatial][projection:][valid_data:][coordinates:]
+    tiles_list = os.listdir(input_dir)
+    i = len(tiles_list)
+    for item in tiles_list:
+        item_dict = {} # Blank out the array for each item. Not really necessary!
+        tile_dir = pjoin(output_dir,item)
+        if (os.path.exists(tile_dir)): 
+            os.chdir(tile_dir)
+            j = 0
+            for ard_metadata_file in glob.glob("*.yaml"):
+                j += 1
+                item_json_file = ard_metadata_file.replace('.yaml', '') + "_STAC.json"
+                
+                try:
+                    ard_metadata = yaml.load(open(ard_metadata_file))
+                    geodata = create_geodata(ard_metadata['grid_spatial']['projection']['valid_data']['coordinates'])
+                    create_item_dict(item,ard_metadata,geodata,base_url,item_dict)
+    
+                    # Write out the JSON files.
+                    with open(item_json_file, 'w') as file:
+                         file.write(json.dumps(item_dict,indent=1)) 
+                         print("Wrote:{}_{}. {}".format(i,j,item_json_file)) 
+                    # Write out only if the file does not exist.
+#                    if (os.path.exists(item_json_file) and os.path.getsize(item_json_file) > 0):
+#                        print("*** File exits. Not overwriting:", item_json_file)
+#                    else:
+#                        with open(item_json_file, 'w') as file:
+#                             file.write(json.dumps(item_dict,indent=1)) 
+#                    break
+                except:
+                    print("*** Unknown error in loading/writing the data.", ard_metadata_file)
+                    pass
+        i -= 1
+
+def stac_create(input_dir,subset,output_dir):
+    print("Creating the STAC.json files!")
+    base_url = "http://dea-public-data.s3-ap-southeast-2.amazonaws.com/FCP"
+    base_url = os.path.join(base_url, '')
+    output_dir = os.path.join(output_dir, '')
+    input_dir = os.path.join(input_dir, '')
+    create_jsons(input_dir,base_url,output_dir,subset)
+# ------------------------------------------------------------------------------
+# Code below is the original and has not been altered in any way from the original, 
+# but for a line added in 'def main()' to call 'stac_create()'
+# ------------------------------------------------------------------------------
 def run_command(command, work_dir): 
     """ 
     A simple utility to execute a subprocess command. 
@@ -166,22 +292,25 @@ def main(path, output):
     logging.basicConfig(format='%(asctime)s %(levelname)s %(message)s', level=logging.INFO)
     netcdf_path = os.path.abspath(path)
     output_dir = os.path.abspath(output)
+    skip_cog = 1 # Debug by AVS to skip the NetCDF to COG creation step. Change it to 0 OR remove in prod.
+    if not skip_cog:
+        for path, subdirs, files in os.walk(netcdf_path):
+            for fname in files:
+                f_name = pjoin(path, fname)
+                logging.info("Reading %s", basename(f_name))
+                gtiff_fname, file_path = getfilename(f_name, output_dir)
+                dataset = gdal.Open(f_name, gdal.GA_ReadOnly)
+                subdatasets = dataset.GetSubDatasets()
+                # ---To Check if NETCDF is stacked or unstacked --
+                sds_open = gdal.Open(subdatasets[0][0])
+                rastercount = sds_open.RasterCount
+                dataset = None
+                _write_dataset(f_name, file_path, output_dir, rastercount)
+                _write_cogtiff(gtiff_fname, output_dir, subdatasets, rastercount)
+                logging.info("Writing COG to %s", basename(gtiff_fname))
 
-    for path, subdirs, files in os.walk(netcdf_path):
-        for fname in files:
-            f_name = pjoin(path, fname)
-            logging.info("Reading %s", basename(f_name))
-            gtiff_fname, file_path = getfilename(f_name, output_dir)
-            dataset = gdal.Open(f_name, gdal.GA_ReadOnly)
-            subdatasets = dataset.GetSubDatasets()
-            # ---To Check if NETCDF is stacked or unstacked --
-            sds_open = gdal.Open(subdatasets[0][0])
-            rastercount = sds_open.RasterCount
-            dataset = None
-            _write_dataset(f_name, file_path, output_dir, rastercount)
-            _write_cogtiff(gtiff_fname, output_dir, subdatasets, rastercount)
-            logging.info("Writing COG to %s", basename(gtiff_fname))
-
+    # Code added by Arapaut Sivaprasad
+    stac_create(netcdf_path,'',output_dir)
                
 if __name__ == "__main__":
     main()
