@@ -24,8 +24,8 @@ def run_command(command, work_dir):
 def Check_file_exists(fname):
     """Check If All The files Exists
        Return True If all File exists
-       Else Retuen  False if File does not exists"""
-    list_fnames = ['_swir2.tif', '_swir1.tif', '_red.tif', '_nir.tif', '_green.tif', '_blue.tif', '.yaml']
+       Else Return  False if File does not exists"""
+    list_fnames = ['_water.tif', '.yaml']
     for l_name in list_fnames:
         if os.path.isfile(fname + l_name):
             pass
@@ -87,7 +87,7 @@ def _write_dataset(fname, file_path, outdir, rastercount):
             logging.info("Writing dataset Yaml to %s", basename(yaml_fname))
 
 
-def _write_cogtiff(out_f_name, outdir, subdatasets, rastercount):
+def _write_cogtiff(out_f_name, outdir, subdatasets, rastercount, tmp_root):
     """ Convert the Geotiff to COG using gdal commands
         Blocksize is 512
         TILED <boolean>: Switch to tiled format
@@ -101,7 +101,7 @@ def _write_cogtiff(out_f_name, outdir, subdatasets, rastercount):
         PREDICTOR <int>: Predictor Type (1=default, 2=horizontal differencing, 3=floating point prediction)
         PROFILE <string-select>: possible values: GDALGeoTIFF,GeoTIFF,BASELINE,
     """
-    with tempfile.TemporaryDirectory() as tmpdir:
+    with tempfile.TemporaryDirectory(dir=tmp_root) as tmpdir:
         for netcdf in subdatasets[:-1]:
             for count in range(1, rastercount + 1):
                 band_name = get_bandname(netcdf[0])
@@ -177,9 +177,13 @@ def _write_cogtiff(out_f_name, outdir, subdatasets, rastercount):
               type=click.Path(exists=True, readable=True))
 @click.option('--output', '-o', required=True, help="Write COG's into this folder",
               type=click.Path(exists=True, writable=True))
-def main(path, output):
+@click.option('--subfolder', '-s', required=True, help="Subfolder for this task",
+              type=str)
+@click.option('--tmp-root', default=None, help="Subfolder for this task",
+              type=str)
+def main(path, output, subfolder, tmp_root):
     logging.basicConfig(format='%(asctime)s %(levelname)s %(message)s', level=logging.INFO)
-    netcdf_path = os.path.abspath(path)
+    netcdf_path = os.path.abspath(pjoin(path, subfolder))
     output_dir = os.path.abspath(output)
 
     for path, subdirs, files in os.walk(netcdf_path):
@@ -198,7 +202,7 @@ def main(path, output):
                     rastercount = sds_open.RasterCount
                     dataset = None
                     _write_dataset(f_name, file_path, output_dir, rastercount)
-                    _write_cogtiff(gtiff_fname, output_dir, subdatasets, rastercount)
+                    _write_cogtiff(gtiff_fname, output_dir, subdatasets, rastercount, tmp_root)
                     logging.info("Writing COG to %s", basename(gtiff_fname))
 
                
