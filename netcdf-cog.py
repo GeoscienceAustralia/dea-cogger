@@ -9,6 +9,8 @@ from osgeo import gdal
 import xarray
 import yaml
 from yaml import CLoader as Loader, CDumper as Dumper
+import rasterio
+import numpy
 
 
 def run_command(command, work_dir): 
@@ -25,16 +27,37 @@ def Check_file_exists(fname):
     """Check If All The files Exists
        Return True If all File exists
        Else Return  False if File does not exists"""
-    list_fnames = ['_water.tif', '.yaml']
+    list_fnames = ['_swir2.tif', '_swir1.tif', '_nir.tif', '_blue.tif', '_green.tif', '_red.tif']
     for l_name in list_fnames:
         if os.path.isfile(fname + l_name):
-            pass
-        else:
-            return False
+            with rasterio.open(fname + l_name) as dataset:
+                data = dataset.read(1)
+                if numpy.any(data != 0):
+                    pass
+                else:
+                    return False
     return True
 
 
 def check_dir(fname):
+    # Include This
+    y = basename(fname).split(".")
+    x = y[0].split('_')
+    f1 = 'x_' + x[3]
+    outf1 = pjoin(output_dir, f1)
+    f2 = 'y_' + x[4]
+    outf2 = pjoin(outf1, f2)
+    f3 = x[5][:4]
+    outf3 = pjoin(outf2, f3)
+    f4 = x[5][4:6]
+    outf4 = pjoin(outf3, f4)
+    f5 = x[5][6:8]
+    outf5 = pjoin(outf4, f5)
+    createFolder(outf5)
+    copy_from = copy_dir + '/' + y[0] + '*'
+    check_dir_file = outf5 + '/' + y[0]
+    print(check_dir_file)
+    ################
     file_name = fname.split('/')
     rel_path = pjoin(*file_name[-2:])
     file_wo_extension, extension = splitext(rel_path)
@@ -192,6 +215,10 @@ def main(path, output, subfolder, tmp_root):
                 f_name = pjoin(path, fname)
                 logging.info("Reading %s", basename(f_name))
                 gtiff_fname, file_path = getfilename(f_name, output_dir)
+                # this is Imam's fault
+                gtiff_fname = gtiff_fname.lower()
+                file_path = file_path.lower()
+
                 if Check_file_exists(gtiff_fname):
                     logging.info("Skipping Conversion, %s already exists", basename(gtiff_fname))
                 else:
