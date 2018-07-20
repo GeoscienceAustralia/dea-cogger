@@ -9,6 +9,8 @@ from osgeo import gdal
 import xarray
 import yaml
 from yaml import CLoader as Loader, CDumper as Dumper
+import rasterio
+import numpy
 
 
 def run_command(command, work_dir): 
@@ -21,11 +23,14 @@ def run_command(command, work_dir):
         raise RuntimeError("command '{}' return with error (code {}): {}".format(e.cmd, e.returncode, e.output))
 
 
-def Check_file_exists(fname):
+def check_file_exists(fname):
     """Check If All The files Exists
        Return True If all File exists
-       Else Retuen  False if File does not exists"""
-    list_fnames = ['_swir2.tif', '_swir1.tif', '_red.tif', '_nir.tif', '_green.tif', '_blue.tif', '.yaml']
+       Else Return  False if File does not exists
+       and Check if the COG conversion is carried out successfully
+       by using rasterio
+    """
+    list_fnames = [".yaml"]
     for l_name in list_fnames:
         if os.path.isfile(fname + l_name):
             pass
@@ -46,10 +51,10 @@ def getfilename(fname, outdir):
         and create a file name just as source but without '.TIF' extension
     """
     file_path = check_dir(fname)
-    out_fname = pjoin(outdir, file_path)
-    if not exists(dirname(out_fname)):
-        os.makedirs(dirname(out_fname))
-    return out_fname, file_path
+    file_path = pjoin(outdir, file_path)
+    if not exists(dirname(file_path)):
+        os.makedirs(dirname(file_path))
+    return file_path
 
 
 def get_bandname(filename):
@@ -66,7 +71,7 @@ def add_image_path(bands, fname, rc, count):
     return bands
 
 
-def _write_dataset(fname, file_path, outdir, rastercount):
+def _write_dataset(fname, file_path, rastercount):
     """ Write the dataset which is in indexable format to datacube and update the format name too GeoTIFF"""
     dataset_array = xarray.open_dataset(fname)
     for count in range(rastercount):
@@ -76,18 +81,17 @@ def _write_dataset(fname, file_path, outdir, rastercount):
         else:
             y_fname = file_path + '.yaml'
             dataset_object = (dataset_array.dataset.item()).decode('utf-8')
-        yaml_fname = pjoin(outdir, y_fname)
         dataset = yaml.load(dataset_object, Loader=Loader)
         bands = dataset['image']['bands']
         dataset['image']['bands'] = add_image_path(bands, file_path, rastercount, count)
         dataset['format'] = {'name': 'GeoTIFF'}
         dataset['lineage'] = {'source_datasets': {}}
-        with open(yaml_fname, 'w') as fp:
+        with open(y_fname, 'w') as fp:
             yaml.dump(dataset, fp, default_flow_style=False, Dumper=Dumper)
-            logging.info("Writing dataset Yaml to %s", basename(yaml_fname))
+            logging.info("Writing dataset Yaml to %s", basename(y_fname))
 
 
-def _write_cogtiff(out_f_name, outdir, subdatasets, rastercount):
+def _write_cogtiff(out_f_name, subdatasets, rastercount):
     """ Convert the Geotiff to COG using gdal commands
         Blocksize is 512
         TILED <boolean>: Switch to tiled format
@@ -168,18 +172,23 @@ def _write_cogtiff(out_f_name, outdir, subdatasets, rastercount):
                     'PROFILE=GeoTIFF',
                     temp_fname,
                     out_fname]
-                run_command(cogtif, outdir)
+                run_command(cogtif, dirname(out_f_name))
 
 
 @click.command(help="\b Convert netcdf to Geotiff and then to Cloud Optimized Geotiff using gdal."
-                    " Mandatory Requirement: GDAL version should be <=2.2")
+                    " Mandatory Requirement: GDAL version should be >=2.2")
 @click.option('--path', '-p', required=True, help="Read the netcdfs from this folder",
               type=click.Path(exists=True, readable=True))
 @click.option('--output', '-o', required=True, help="Write COG's into this folder",
               type=click.Path(exists=True, writable=True))
-def main(path, output):
+@click.option('--subfolder', '-s', required=False, default=None, help="Subfolder for this task",
+              type=str)
+def main(path, output, subfolder):
     logging.basicConfig(format='%(asctime)s %(levelname)s %(message)s', level=logging.INFO)
-    netcdf_path = os.path.abspath(path)
+    if subfolder is None:
+        netcdf_path = os.path.abspath(path)
+    else:
+        netcdf_path = os.path.abspath(pjoin(path, subfolder))
     output_dir = os.path.abspath(output)
 
     for path, subdirs, files in os.walk(netcdf_path):
@@ -187,8 +196,9 @@ def main(path, output):
             if fname.endswith('.nc'):
                 f_name = pjoin(path, fname)
                 logging.info("Reading %s", basename(f_name))
-                gtiff_fname, file_path = getfilename(f_name, output_dir)
-                if Check_file_exists(gtiff_fname):
+                gtiff_fname = getfilename(f_name, output_dir)
+
+                if check_file_exists(gtiff_fname):
                     logging.info("Skipping Conversion, %s already exists", basename(gtiff_fname))
                 else:
                     dataset = gdal.Open(f_name, gdal.GA_ReadOnly)
@@ -197,8 +207,8 @@ def main(path, output):
                     sds_open = gdal.Open(subdatasets[0][0])
                     rastercount = sds_open.RasterCount
                     dataset = None
-                    _write_dataset(f_name, file_path, output_dir, rastercount)
-                    _write_cogtiff(gtiff_fname, output_dir, subdatasets, rastercount)
+                    _write_cogtiff(gtiff_fname, subdatasets, rastercount)
+                    _write_dataset(f_name, gtiff_fname, rastercount)
                     logging.info("Writing COG to %s", basename(gtiff_fname))
 
                
