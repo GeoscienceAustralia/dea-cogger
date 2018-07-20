@@ -59,6 +59,8 @@ def _write_cogtiff(fname, out_fname, outdir):
         # copy to a tempfolder
         to_cogtif = [
                      'gdal_translate',
+                     '-of',
+                     'GTIFF',
                      fname, 
                      temp_fname]
         run_command(to_cogtif, tmpdir)
@@ -109,7 +111,7 @@ def _write_cogtiff(fname, out_fname, outdir):
 
 
 @click.command(help="\b Convert Geotiff to Cloud Optimized Geotiff using gdal."
-                    " Mandatory Requirement: GDAL version should be <=2.2")
+                    " Mandatory Requirement: GDAL version should be >=2.2")
 @click.option('--path', '-p', required=True, help="Read the Geotiffs from this folder",
               type=click.Path(exists=True, readable=True))
 @click.option('--output', '-o', required=True, help="Write COG's into this folder",
