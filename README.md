@@ -66,15 +66,17 @@
 ```
 > $ python netcdf-cog.py --help
 
-  Usage: netcdf-cog.py [OPTIONS]
+Usage: netcdf-cog.py [OPTIONS]
 
-  Convert netcdf to Geotiff and then to Cloud Optimized Geotiff using gdal.
-  Mandatory Requirement: GDAL version should be <=2.2
+  Convert netcdf to Geotiff and then to Cloud Optimized Geotiff using
+  gdal. Mandatory Requirement: GDAL version should be >=2.2
 
-  Options:
-    -p, --path PATH    Read the NetCDF's from this folder  [required]
-    -o, --output PATH  Write COG's into this folder  [required]
-    --help             Show this message and exit.
+Options:
+  -p, --path PATH       Read the netcdfs from this folder  [required]
+  -o, --output PATH     Write COG's into this folder  [required]
+  -s, --subfolder TEXT  Subfolder for this task
+  --help                Show this message and exit.
+
 ```
 
 # Geotiff- COG conversion
@@ -88,7 +90,7 @@
   Usage: geotiff-cog.py [OPTIONS]
 
   Convert Geotiff to Cloud Optimized Geotiff using gdal. Mandatory
-  Requirement: GDAL version should be <=2.2
+  Requirement: GDAL version should be >=2.2
 
   Options:
     -p, --path PATH    Read the Geotiffs from this folder  [required]
