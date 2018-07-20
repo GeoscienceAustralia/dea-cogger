@@ -8,6 +8,6 @@
 module use /g/data/v10/public/modules/modulefiles/
 module load agdc-py3-prod
 
-aws s3 sync /g/data/u46/users/hr8696/netcdf-wofs-conv/ewater/cambodia_cube/output_2017/ls_level2/ s3://dea-public-data/ewater/cambodia_cube/output_2017/ls_level2/ --exclude '*.aux.xml'
+aws s3 sync /g/data/u46/ s3://dea-public-data-dev/ --exclude '*.aux.xml'
 
 
