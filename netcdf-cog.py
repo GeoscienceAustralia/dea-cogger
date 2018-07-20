@@ -30,48 +30,28 @@ def check_file_exists(fname):
        and Check if the COG conversion is carried out successfully
        by using rasterio
     """
-    list_fnames = ['_swir2.tif', '_swir1.tif', '_nir.tif', '_blue.tif', '_green.tif', '_red.tif']
+    list_fnames = [".yaml"]
     for l_name in list_fnames:
         if os.path.isfile(fname + l_name):
-            with rasterio.open(fname + l_name) as dataset:
-                data = dataset.read(1)
-                if numpy.any(data == 0):
-                    return False
+            pass
         else:
             return False
     return True
 
 
-def check_dir(fname, outdir):
-    """ Split the file folder and year to subfolders
-        For Example if the netcdf name = LS8_GM_NBART_-12_-27_20170101.nc
-        the filename is converted to lower case first
-        the tile number -12_-25 is saved as x_-12/y_-25/2017/01/01/*
-    """
-
-    filename = basename(fname).lower()
-    y = filename.split(".")
-    x = y[0].split('_')
-    f1 = 'x_' + x[3]
-    outf1 = pjoin(outdir, f1)
-    f2 = 'y_' + x[4]
-    outf2 = pjoin(outf1, f2)
-    f3 = x[5][:4]
-    outf3 = pjoin(outf2, f3)
-    f4 = x[5][4:6]
-    outf4 = pjoin(outf3, f4)
-    f5 = x[5][6:8]
-    outf5 = pjoin(outf4, f5)
-    out_dir_file = outf5 + '/' + y[0]
-    return out_dir_file
+def check_dir(fname):
+    file_name = fname.split('/')
+    rel_path = pjoin(*file_name[-2:])
+    file_wo_extension, extension = splitext(rel_path)
+    return file_wo_extension
 
 
 def getfilename(fname, outdir):
     """ To create a temporary filename to add overviews and convert to COG
         and create a file name just as source but without '.TIF' extension
     """
-    file_path = check_dir(fname, outdir)
-
+    file_path = check_dir(fname)
+    file_path = pjoin(outdir, file_path)
     if not exists(dirname(file_path)):
         os.makedirs(dirname(file_path))
     return file_path
@@ -111,7 +91,7 @@ def _write_dataset(fname, file_path, rastercount):
             logging.info("Writing dataset Yaml to %s", basename(y_fname))
 
 
-def _write_cogtiff(out_f_name, subdatasets, rastercount, tmp_root):
+def _write_cogtiff(out_f_name, subdatasets, rastercount):
     """ Convert the Geotiff to COG using gdal commands
         Blocksize is 512
         TILED <boolean>: Switch to tiled format
@@ -125,7 +105,7 @@ def _write_cogtiff(out_f_name, subdatasets, rastercount, tmp_root):
         PREDICTOR <int>: Predictor Type (1=default, 2=horizontal differencing, 3=floating point prediction)
         PROFILE <string-select>: possible values: GDALGeoTIFF,GeoTIFF,BASELINE,
     """
-    with tempfile.TemporaryDirectory(dir=tmp_root) as tmpdir:
+    with tempfile.TemporaryDirectory() as tmpdir:
         for netcdf in subdatasets[:-1]:
             for count in range(1, rastercount + 1):
                 band_name = get_bandname(netcdf[0])
@@ -196,18 +176,19 @@ def _write_cogtiff(out_f_name, subdatasets, rastercount, tmp_root):
 
 
 @click.command(help="\b Convert netcdf to Geotiff and then to Cloud Optimized Geotiff using gdal."
-                    " Mandatory Requirement: GDAL version should be <=2.2")
+                    " Mandatory Requirement: GDAL version should be >=2.2")
 @click.option('--path', '-p', required=True, help="Read the netcdfs from this folder",
               type=click.Path(exists=True, readable=True))
 @click.option('--output', '-o', required=True, help="Write COG's into this folder",
               type=click.Path(exists=True, writable=True))
-@click.option('--subfolder', '-s', required=True, help="Subfolder for this task",
+@click.option('--subfolder', '-s', required=False, default=None, help="Subfolder for this task",
               type=str)
-@click.option('--tmp-root', default=None, help="Subfolder for this task",
-              type=str)
-def main(path, output, subfolder, tmp_root):
+def main(path, output, subfolder):
     logging.basicConfig(format='%(asctime)s %(levelname)s %(message)s', level=logging.INFO)
-    netcdf_path = os.path.abspath(pjoin(path, subfolder))
+    if subfolder is None:
+        netcdf_path = os.path.abspath(path)
+    else:
+        netcdf_path = os.path.abspath(pjoin(path, subfolder))
     output_dir = os.path.abspath(output)
 
     for path, subdirs, files in os.walk(netcdf_path):
@@ -226,8 +207,8 @@ def main(path, output, subfolder, tmp_root):
                     sds_open = gdal.Open(subdatasets[0][0])
                     rastercount = sds_open.RasterCount
                     dataset = None
+                    _write_cogtiff(gtiff_fname, subdatasets, rastercount)
                     _write_dataset(f_name, gtiff_fname, rastercount)
-                    _write_cogtiff(gtiff_fname, subdatasets, rastercount, tmp_root)
                     logging.info("Writing COG to %s", basename(gtiff_fname))
 
                
