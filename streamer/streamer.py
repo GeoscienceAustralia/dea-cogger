@@ -1,4 +1,5 @@
 import threading
+from concurrent.futures import ThreadPoolExecutor
 import queue
 import click
 import os
@@ -7,7 +8,8 @@ import tempfile
 import subprocess
 from subprocess import check_call
 
-MAX_QUEUE_SIZE = 2
+MAX_QUEUE_SIZE = 4
+WORKERS_POOL = 2
 
 
 def run_command(command, work_dir):
@@ -177,7 +179,20 @@ class Streamer(object):
 
     def compute(self, processed_queue):
         while self.items:
-            if not processed_queue.full():
+            if len(self.items) >= WORKERS_POOL and (MAX_QUEUE_SIZE - processed_queue.qsize() >= 0):
+                with ThreadPoolExecutor(max_workers=WORKERS_POOL) as executor:
+                    items = []
+                    futures = []
+                    for i in range(WORKERS_POOL):
+                        items.append(self.items.pop())
+                        futures.append(executor.submit(process_file, items[i], self.src_dir, self.queue_dir))
+                    for i in range(WORKERS_POOL):
+                        try:
+                            futures[i].result()
+                            processed_queue.put(items[i])
+                        except Exception as exc:
+                            pass
+            elif not processed_queue.full():
                 item = self.items.pop()
                 process_file(item, self.src_dir, self.queue_dir)
                 processed_queue.put(item)
