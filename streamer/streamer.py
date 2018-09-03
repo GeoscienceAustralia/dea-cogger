@@ -180,18 +180,17 @@ class Streamer(object):
     def compute(self, processed_queue):
         while self.items:
             if len(self.items) >= WORKERS_POOL and (MAX_QUEUE_SIZE - processed_queue.qsize() >= 0):
+                # Speed-up processing with threads
                 with ThreadPoolExecutor(max_workers=WORKERS_POOL) as executor:
-                    items = []
                     futures = []
+                    items = []
                     for i in range(WORKERS_POOL):
                         items.append(self.items.pop())
                         futures.append(executor.submit(process_file, items[i], self.src_dir, self.queue_dir))
+                    # callbacks behaving strange so try the following
                     for i in range(WORKERS_POOL):
-                        try:
-                            futures[i].result()
-                            processed_queue.put(items[i])
-                        except Exception as exc:
-                            pass
+                        futures[i].result()
+                        processed_queue.put(items[i])
             elif not processed_queue.full():
                 item = self.items.pop()
                 process_file(item, self.src_dir, self.queue_dir)
