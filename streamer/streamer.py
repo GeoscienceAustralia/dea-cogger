@@ -29,20 +29,20 @@ def check_dir(fname):
     return rel_path
 
 
-def getfilename(fname, outdir):
-    """ To create a temporary filename to add overviews and convert to COG
-        and create a file name just as source but without '.TIF' extension
-    """
-    rel_path = check_dir(fname)
-    out_fname = pjoin(outdir, rel_path)
+# def getfilename(fname, outdir):
+#     """ To create a temporary filename to add overviews and convert to COG
+#         and create a file name just as source but without '.TIF' extension
+#     """
+#     rel_path = check_dir(fname)
+#     out_fname = pjoin(outdir, rel_path)
+#
+#     if not exists(dirname(out_fname)):
+#         os.makedirs(dirname(out_fname))
+#     return out_fname
 
-    if not exists(dirname(out_fname)):
-        os.makedirs(dirname(out_fname))
-    return out_fname
 
-
-def geotiff_to_cog(fname, out_fname, outdir):
-    """ Author: Harshu Rampur
+def geotiff_to_cog(fname, src, dest):
+    """ Author: Harshu Rampur (Adapted)
         Convert the Geotiff to COG using gdal commands
         Blocksize is 512
         TILED <boolean>: Switch to tiled format
@@ -57,7 +57,9 @@ def geotiff_to_cog(fname, out_fname, outdir):
         PROFILE <string-select>: possible values: GDALGeoTIFF,GeoTIFF,BASELINE,
     """
     with tempfile.TemporaryDirectory() as tmpdir:
-        temp_fname = pjoin(tmpdir, basename(fname))
+        fname_full = pjoin(src, fname)
+        temp_fname = pjoin(tmpdir, fname)
+        out_fname = pjoin(dest, fname)
 
         env = ['GDAL_DISABLE_READDIR_ON_OPEN=YES',
                'CPL_VSIL_CURL_ALLOWED_EXTENSIONS=.tif']
@@ -68,7 +70,7 @@ def geotiff_to_cog(fname, out_fname, outdir):
             'gdal_translate',
             '-of',
             'GTIFF',
-            fname,
+            fname_full,
             temp_fname]
         run_command(to_cogtif, tmpdir)
 
@@ -114,21 +116,17 @@ def geotiff_to_cog(fname, out_fname, outdir):
             'PROFILE=GeoTIFF',
             temp_fname,
             out_fname]
-        run_command(cogtif, outdir)
+        run_command(cogtif, dest)
 
 
 def process_file(file, src, dest):
-    src_name = os.path.join(src, file)
-    out_name = getfilename(src_name, dest)
-    geotiff_to_cog(src_name, out_name, dest)
+    geotiff_to_cog(file, src, dest)
 
 
 def upload_to_s3(item, src, dest, job_file):
-    # to be removed
-    file = os.path.join('src', item)
-    src_name = os.path.join(src, file)
+    src_name = os.path.join(src, item)
 
-    dest_name = os.path.join(dest, file)
+    dest_name = os.path.join(dest, item)
     aws_copy = [
         'aws',
         's3',
