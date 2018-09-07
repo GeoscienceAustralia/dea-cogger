@@ -6,6 +6,7 @@ import os
 from os.path import join as pjoin, basename, dirname, exists
 import tempfile
 import subprocess
+import glob
 from subprocess import check_call
 from netCDF4 import Dataset
 from datetime import datetime
@@ -49,7 +50,7 @@ def check_dir(fname):
 #     return out_fname
 
 
-def geotiff_to_cog(fname, src, dest):
+def geotiff_to_cog(fname, src, dest, message_queue: None):
     """ Author: Harshu Rampur (Adapted)
         Convert the Geotiff to COG using gdal commands
         Blocksize is 512
@@ -125,22 +126,26 @@ def geotiff_to_cog(fname, src, dest):
             temp_fname,
             out_fname]
         run_command(cogtif, dest)
+        if message_queue:
+            message_queue.put(fname, block=True)
 
 
-def process_file(file, src, dest):
-    geotiff_to_cog(file, src, dest)
+def process_file(file, src, dest, message_queue: None):
+    geotiff_to_cog(file, src, dest, message_queue)
 
 
 def upload_to_s3(item, src, dest, job_file):
-    src_name = os.path.join(src, item)
-
     dest_name = os.path.join(dest, item)
     aws_copy = [
         'aws',
         's3',
-        'cp',
-        src_name,
-        dest_name
+        'sync',
+        src,
+        dest_name,
+        '--exclude',
+        '*',
+        '--include',
+        '{}*'.format(item)
     ]
     with tempfile.TemporaryDirectory() as tmpdir:
         run_command(aws_copy, tmpdir)
@@ -151,7 +156,7 @@ def upload_to_s3(item, src, dest, job_file):
 
     # Remove the file from the queue directory
     with tempfile.TemporaryDirectory() as tmpdir:
-        run_command(['rm', src_name], tmpdir)
+        run_command(['rm', '--'] + glob.glob('{}*'.format(os.path.join(src, item))), tmpdir)
 
 
 class COGWriter(object):
@@ -341,11 +346,11 @@ class JobControl(object):
                             if int(time_stamp[0:4]) == year:
                                 if month:
                                     if int(time_stamp[4:6]) == month:
-                                        names.append(("_".join(name_[0].split('_')[0:-1]), full_name))
+                                        names.append(("_".join(name_[0].split('_')[0:-1]), None, full_name))
                                 else:
-                                    names.append(("_".join(name_[0].split('_')[0:-1]), full_name))
+                                    names.append(("_".join(name_[0].split('_')[0:-1]), None, full_name))
                         else:
-                            names.append(("_".join(name_[0].split('_')[0:-1]), full_name))
+                            names.append(("_".join(name_[0].split('_')[0:-1]), None, full_name))
         return names
 
 
@@ -384,18 +389,14 @@ class Streamer(object):
                 # Speed-up processing with threads
                 with ThreadPoolExecutor(max_workers=WORKERS_POOL) as executor:
                     futures = []
-                    items = []
                     for i in range(WORKERS_POOL):
-                        items.append(self.items.pop())
-                        futures.append(executor.submit(process_file, items[i], self.src_dir, self.queue_dir))
-                    # callbacks behaving strange so try the following
-                    for i in range(WORKERS_POOL):
-                        futures[i].result()
-                        processed_queue.put(items[i])
-            elif not processed_queue.full():
-                item = self.items.pop()
-                process_file(item, self.src_dir, self.queue_dir)
-                processed_queue.put(item)
+                        futures.append(executor.submit(COGWriter.datasets_to_cog,
+                                                       os.path.join(self.src_dir, self.items.pop()),
+                                                       self.queue_dir,
+                                                       processed_queue))
+            else:
+                COGWriter.datasets_to_cog(os.path.join(self.src_dir, self.items.pop()),
+                                          self.queue_dir, processed_queue)
         # Signal end of processing
         processed_queue.put(None)
 
