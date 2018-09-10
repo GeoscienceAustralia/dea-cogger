@@ -16,6 +16,7 @@ import gdal
 import xarray
 import yaml
 from yaml import CLoader as Loader, CDumper as Dumper
+from functools import reduce
 import logging
 
 MAX_QUEUE_SIZE = 12
@@ -136,7 +137,8 @@ def process_file(file, src, dest, message_queue=None):
 
 
 def upload_to_s3(item, src, dest, job_file):
-    dest_name = os.path.join(dest, item)
+    item_dir = JobControl.fc_aws_dir(item)
+    dest_name = os.path.join(dest, item_dir)
     aws_copy = [
         'aws',
         's3',
@@ -159,8 +161,11 @@ def upload_to_s3(item, src, dest, job_file):
         f.write(item + '\n')
 
     # Remove the file from the queue directory
-    with tempfile.TemporaryDirectory() as tmpdir:
-        run_command(['rm', '--'] + glob.glob('{}*'.format(os.path.join(src, item))), tmpdir)
+    try:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            run_command(['rm', '--'] + glob.glob('{}*'.format(os.path.join(src, item))), tmpdir)
+    except Exception as e:
+        print(e)
 
 
 class COGWriter(object):
@@ -169,6 +174,7 @@ class COGWriter(object):
 
     @staticmethod
     def _dataset_to_yaml(prefix, dataset, dest_dir):
+        """ Refactored from Author Harshu Rampur's cog conversion scripts - Write the datasets to separate yaml files"""
         y_fname = os.path.join(dest_dir, prefix + '.yaml')
         dataset_object = dataset.decode('utf-8')
         dataset = yaml.load(dataset_object, Loader=Loader)
@@ -186,7 +192,6 @@ class COGWriter(object):
 
     @staticmethod
     def datasets_to_yaml(file, dest_dir):
-        """ Refactored from Author Harshu Rampur's cog conversion scripts - Write the datasets to separate yaml files"""
 
         file_names = JobControl.get_unstacked_names(file)
         dataset_array = xarray.open_dataset(file)
@@ -196,7 +201,9 @@ class COGWriter(object):
             COGWriter._dataset_to_yaml(prefix, dataset_object, dest_dir)
 
     @staticmethod
-    def _dataset_to_cog(prefix, subdatasets, index, dest_dir):
+    def _dataset_to_cog(prefix, subdatasets, num, dest_dir):
+        """ Refactored from Author Harshu Rampur's cog conversion scripts - Write the datasets to separate cog files"""
+
         with tempfile.TemporaryDirectory() as tmpdir:
             for dts in subdatasets[:-1]:
                 band_name = (dts[0].split(':'))[-1]
@@ -212,7 +219,7 @@ class COGWriter(object):
                     '-of',
                     'GTIFF',
                     '-b',
-                    str(index),
+                    str(num),
                     dts[0],
                     temp_fname]
                 run_command(to_cogtif, tmpdir)
@@ -262,57 +269,84 @@ class COGWriter(object):
                 run_command(cogtif, dest_dir)
 
     @staticmethod
-    def extract_to_cog(prefix, count, file, dest_dir):
+    def extract_to_cog(file, index, dest_dir):
+
+        file_names = JobControl.get_unstacked_names(file)
+        prefix, _, _ = file_names[index]
         dataset_array = xarray.open_dataset(file)
-        dataset_item = dataset_array.dataset.item(count - 1)
+        dataset_item = dataset_array.dataset.item(index)
         COGWriter._dataset_to_yaml(prefix, dataset_item, dest_dir)
         dataset = gdal.Open(file, gdal.GA_ReadOnly)
         subdatasets = dataset.GetSubDatasets()
-        COGWriter._dataset_to_cog(prefix, subdatasets, count, dest_dir)
+        COGWriter._dataset_to_cog(prefix, subdatasets, index + 1, dest_dir)
 
     @staticmethod
     def datasets_to_cog(file, dest_dir, message_queue=None):
-        """ Refactored from Author Harshu Rampur's cog conversion scripts - Write the datasets to separate cog files"""
 
         file_names = JobControl.get_unstacked_names(file)
         dataset = gdal.Open(file, gdal.GA_ReadOnly)
-        subdatasets = dataset.GetSubDatasets()
-        dataset_array = xarray.open_dataset(file)
         results = []
         with Pool(processes=8) as pool:
-            for count in range(1, len(file_names) + 1):
-                prefix, _, _ = file_names[count - 1]
-                results.append(pool.apply_async(func=COGWriter.extract_to_cog, args=(prefix, count, file, dest_dir),
-                                                callback=lambda res : print(res),
+            for index in range(len(file_names)):
+                prefix, _, _ = file_names[index]
+                results.append(pool.apply_async(func=COGWriter.extract_to_cog, args=(file, index, dest_dir),
+                                                callback=lambda res: print(res),
                                                 error_callback=lambda e: print(e)))
-            for count in range(1, len(file_names) + 1):
-                prefix, _, _ = file_names[count - 1]
-                results[count - 1].wait()
+            for index in range(len(file_names)):
+                prefix, _, _ = file_names[index]
+                results[index].wait()
                 if message_queue:
                     message_queue.put(prefix, block=True)
                 print(prefix + ' added to queue')
-                # dataset_item = dataset_array.dataset.item(count - 1)
-                # COGWriter._dataset_to_yaml(prefix, dataset_item, dest_dir)
-                # COGWriter._dataset_to_cog(prefix, subdatasets, count, dest_dir)
-                # if message_queue:
-                #     message_queue.put(prefix, block=True)
+
+
+class ProcessTile:
+    def __init__(self, year=None, month=None):
+        self.year = year
+        self.month = month
+
+    def process_tile_names(self, tile_dir):
+        names = []
+        for top, dirs, files in os.walk(tile_dir):
+            for name in files:
+                name_ = os.path.splitext(name)
+                if name_[1] == '.nc':
+                    full_name = os.path.join(top, name)
+                    time_stamp = name_[0].split('_')[-2]
+                    if self.year:
+                        if int(time_stamp[0:4]) == self.year:
+                            if self.month:
+                                if int(time_stamp[4:6]) == self.month:
+                                    names.append(("_".join(name_[0].split('_')[0:-1]), full_name))
+                            else:
+                                names.append(("_".join(name_[0].split('_')[0:-1]), full_name))
+                    else:
+                        names.append(("_".join(name_[0].split('_')[0:-1]), full_name))
+            break
+        return names
 
 
 class JobControl(object):
-    def __init__(self):
-        pass
+    def __init__(self, aws_top_level=None):
+        self.aws_top_level = aws_top_level
 
-    def aws_dir(self, file_name, aws_top_level=None):
-        """
-        This currently tested only for FC ls5, ls8
-        :param file_name: base NetCDF file name without directory structure,
-                          e.g. 'LS5_TM_FC_3577_-8_-22_1997_v20171127040509.nc'
-        :param aws_top_level: AWS specific top level part of the directory,
-                              e.g. /fractional_cover/fc/v2.2.0
-        :return: directory structure,
-                 e.g. ls5/x_-8/y_-22/1997 for the above LS5 file
-        """
-        pass
+    @staticmethod
+    def fc_aws_dir(item, aws_top_level=None):
+        item_parts = item.split('_')
+        time_stamp = item_parts[-1]
+        assert len(time_stamp) == 20, '{} does have an acceptable timestamp'.format(item)
+        year = time_stamp[0:4]
+        month = time_stamp[4:6]
+        day = time_stamp[6:8]
+
+        y_index = item_parts[-2]
+        x_index = item_parts[-3]
+
+        product = item_parts[0].lower()
+        if aws_top_level:
+            return os.path.join(aws_top_level, product, 'x_' + x_index, 'y_' + y_index, year, month, day)
+        else:
+            return os.path.join(product, 'x_' + x_index, 'y_' + y_index, year, month, day)
 
     @staticmethod
     def get_unstacked_names(netcdf_file, year=None, month=None):
@@ -343,6 +377,24 @@ class JobControl(object):
                 names.append(('{}_{}'.format(prefix, time_stamp), index, netcdf_file))
         return names
 
+    @staticmethod
+    def get_unstacked_files(src_dir, year=None, month=None):
+        """
+        warning: hard coded assumptions about FC file names here
+        :param src_dir:
+        :param year:
+        :param month:
+        :return:
+        """
+
+        names = []
+        for tile_top, tile_dirs, tile_files in os.walk(src_dir):
+            full_name_list = [os.path.join(tile_top, tile_dir) for tile_dir in tile_dirs]
+            with Pool(8) as p:
+                names = p.map(ProcessTile(year, month).process_tile_names, full_name_list)
+            break
+        return reduce((lambda x, y: x + y), names)
+
     def get_dataset_names(self, src_dir, year=None, month=None):
         """
         warning: hard coded assumptions about FC file names here
@@ -352,29 +404,31 @@ class JobControl(object):
         :return:
         """
         names = []
-        for top, dirs, files in os.walk(src_dir):
-            for name in files:
-                name_ = os.path.splitext(name)
-                if name_[1] == '.nc':
-                    full_name = os.path.join(top, name)
-                    time_stamp = name_[0].split('_')[-2]
-                    # Is it a stacked NetCDF file
-                    if len(Dataset(full_name).variables['time']) > 1:
-                        if year:
-                            if int(time_stamp[0:4]) == year:
-                                names.extend(self.get_unstacked_names(full_name, year, month))
-                        else:
-                            names.extend(self.get_unstacked_names(full_name))
-                    else:
-                        if year:
-                            if int(time_stamp[0:4]) == year:
-                                if month:
-                                    if int(time_stamp[4:6]) == month:
-                                        names.append(("_".join(name_[0].split('_')[0:-1]), None, full_name))
+        for tile_top, tile_dirs, tile_files in os.walk(src_dir):
+            for tile_dir in tile_dirs:
+                for top, dirs, files in os.walk(os.path.join(tile_top, tile_dir)):
+                    for name in files:
+                        name_ = os.path.splitext(name)
+                        if name_[1] == '.nc':
+                            full_name = os.path.join(top, name)
+                            time_stamp = name_[0].split('_')[-2]
+                            # Is it a stacked NetCDF file
+                            if len(Dataset(full_name).variables['time']) > 1:
+                                if year:
+                                    if int(time_stamp[0:4]) == year:
+                                        names.extend(self.get_unstacked_names(full_name, year, month))
+                                else:
+                                    names.extend(self.get_unstacked_names(full_name))
+                            else:
+                                if year:
+                                    if int(time_stamp[0:4]) == year:
+                                        if month:
+                                            if int(time_stamp[4:6]) == month:
+                                                names.append(("_".join(name_[0].split('_')[0:-1]), None, full_name))
+                                        else:
+                                            names.append(("_".join(name_[0].split('_')[0:-1]), None, full_name))
                                 else:
                                     names.append(("_".join(name_[0].split('_')[0:-1]), None, full_name))
-                        else:
-                            names.append(("_".join(name_[0].split('_')[0:-1]), None, full_name))
         return names
 
 
