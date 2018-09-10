@@ -1,5 +1,6 @@
 import threading
 from concurrent.futures import ThreadPoolExecutor
+from multiprocessing import Pool
 import queue
 import click
 import os
@@ -17,7 +18,7 @@ import yaml
 from yaml import CLoader as Loader, CDumper as Dumper
 import logging
 
-MAX_QUEUE_SIZE = 4
+MAX_QUEUE_SIZE = 12
 WORKERS_POOL = 2
 
 
@@ -50,7 +51,7 @@ def check_dir(fname):
 #     return out_fname
 
 
-def geotiff_to_cog(fname, src, dest, message_queue: None):
+def geotiff_to_cog(fname, src, dest, message_queue=None):
     """ Author: Harshu Rampur (Adapted)
         Convert the Geotiff to COG using gdal commands
         Blocksize is 512
@@ -130,7 +131,7 @@ def geotiff_to_cog(fname, src, dest, message_queue: None):
             message_queue.put(fname, block=True)
 
 
-def process_file(file, src, dest, message_queue: None):
+def process_file(file, src, dest, message_queue=None):
     geotiff_to_cog(file, src, dest, message_queue)
 
 
@@ -147,8 +148,11 @@ def upload_to_s3(item, src, dest, job_file):
         '--include',
         '{}*'.format(item)
     ]
-    with tempfile.TemporaryDirectory() as tmpdir:
-        run_command(aws_copy, tmpdir)
+    try:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            run_command(aws_copy, tmpdir)
+    except Exception as e:
+        print(e)
 
     # job control logs
     with open(job_file, 'a') as f:
@@ -197,7 +201,6 @@ class COGWriter(object):
             for dts in subdatasets[:-1]:
                 band_name = (dts[0].split(':'))[-1]
                 out_fname = prefix + '_' + band_name + '.tif'
-
                 env = ['GDAL_DISABLE_READDIR_ON_OPEN=YES',
                        'CPL_VSIL_CURL_ALLOWED_EXTENSIONS=.tif']
                 subprocess.check_call(env, shell=True)
@@ -259,6 +262,15 @@ class COGWriter(object):
                 run_command(cogtif, dest_dir)
 
     @staticmethod
+    def extract_to_cog(prefix, count, file, dest_dir):
+        dataset_array = xarray.open_dataset(file)
+        dataset_item = dataset_array.dataset.item(count - 1)
+        COGWriter._dataset_to_yaml(prefix, dataset_item, dest_dir)
+        dataset = gdal.Open(file, gdal.GA_ReadOnly)
+        subdatasets = dataset.GetSubDatasets()
+        COGWriter._dataset_to_cog(prefix, subdatasets, count, dest_dir)
+
+    @staticmethod
     def datasets_to_cog(file, dest_dir, message_queue=None):
         """ Refactored from Author Harshu Rampur's cog conversion scripts - Write the datasets to separate cog files"""
 
@@ -266,19 +278,31 @@ class COGWriter(object):
         dataset = gdal.Open(file, gdal.GA_ReadOnly)
         subdatasets = dataset.GetSubDatasets()
         dataset_array = xarray.open_dataset(file)
-        for count in range(1, len(file_names) + 1):
-            prefix, _, _ = file_names[count - 1]
-            COGWriter._dataset_to_yaml(prefix, dataset_array.dataset.item(count - 1), dest_dir)
-            COGWriter._dataset_to_cog(prefix, subdatasets, count, dest_dir)
-            if message_queue:
-                message_queue.put(prefix, block=True)
+        results = []
+        with Pool(processes=8) as pool:
+            for count in range(1, len(file_names) + 1):
+                prefix, _, _ = file_names[count - 1]
+                results.append(pool.apply_async(func=COGWriter.extract_to_cog, args=(prefix, count, file, dest_dir),
+                                                callback=lambda res : print(res),
+                                                error_callback=lambda e: print(e)))
+            for count in range(1, len(file_names) + 1):
+                prefix, _, _ = file_names[count - 1]
+                results[count - 1].wait()
+                if message_queue:
+                    message_queue.put(prefix, block=True)
+                print(prefix + ' added to queue')
+                # dataset_item = dataset_array.dataset.item(count - 1)
+                # COGWriter._dataset_to_yaml(prefix, dataset_item, dest_dir)
+                # COGWriter._dataset_to_cog(prefix, subdatasets, count, dest_dir)
+                # if message_queue:
+                #     message_queue.put(prefix, block=True)
 
 
 class JobControl(object):
     def __init__(self):
         pass
 
-    def aws_dir(self, file_name, aws_top_level: None):
+    def aws_dir(self, file_name, aws_top_level=None):
         """
         This currently tested only for FC ls5, ls8
         :param file_name: base NetCDF file name without directory structure,
@@ -381,6 +405,7 @@ class Streamer(object):
         items_all = os.listdir(self.src_dir)
         self.items = [item for item in items_all if item not in items_done]
         self.items.sort(reverse=True)
+        print(self.items.__str__() + ' to do')
         self.job_file = job_file
 
     def compute(self, processed_queue):
