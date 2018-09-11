@@ -1,7 +1,6 @@
 import threading
-from concurrent.futures import ThreadPoolExecutor
-from multiprocessing import Pool
-import queue
+from concurrent.futures import ProcessPoolExecutor, wait
+from multiprocessing import Pool, Queue
 import click
 import os
 from os.path import join as pjoin, basename, dirname, exists
@@ -19,8 +18,8 @@ from yaml import CLoader as Loader, CDumper as Dumper
 from functools import reduce
 import logging
 
-MAX_QUEUE_SIZE = 12
-WORKERS_POOL = 2
+MAX_QUEUE_SIZE = 32
+WORKERS_POOL = 8
 
 
 def run_command(command, work_dir):
@@ -38,18 +37,6 @@ def check_dir(fname):
     file_name = fname.split('/')
     rel_path = pjoin(*file_name[-2:])
     return rel_path
-
-
-# def getfilename(fname, outdir):
-#     """ To create a temporary filename to add overviews and convert to COG
-#         and create a file name just as source but without '.TIF' extension
-#     """
-#     rel_path = check_dir(fname)
-#     out_fname = pjoin(outdir, rel_path)
-#
-#     if not exists(dirname(out_fname)):
-#         os.makedirs(dirname(out_fname))
-#     return out_fname
 
 
 def geotiff_to_cog(fname, src, dest, message_queue=None):
@@ -132,43 +119,42 @@ def geotiff_to_cog(fname, src, dest, message_queue=None):
             message_queue.put(fname, block=True)
 
 
-def process_file(file, src, dest, message_queue=None):
-    geotiff_to_cog(file, src, dest, message_queue)
+def upload_to_s3(file, src, dest, job_file):
+    file_names = JobControl.get_unstacked_names(file)
+    for index in range(len(file_names)):
+        prefix = file_names[index]
+        item_dir = JobControl.aws_dir(prefix)
+        dest_name = os.path.join(dest, item_dir)
+        aws_copy = [
+            'aws',
+            's3',
+            'sync',
+            src,
+            dest_name,
+            '--exclude',
+            '*',
+            '--include',
+            '{}*'.format(prefix)
+        ]
+        try:
+            with tempfile.TemporaryDirectory() as tmpdir:
+                run_command(aws_copy, tmpdir)
+        except Exception as e:
+            print(e)
 
-
-def upload_to_s3(item, src, dest, job_file):
-    item_dir = JobControl.fc_aws_dir(item)
-    dest_name = os.path.join(dest, item_dir)
-    aws_copy = [
-        'aws',
-        's3',
-        'sync',
-        src,
-        dest_name,
-        '--exclude',
-        '*',
-        '--include',
-        '{}*'.format(item)
-    ]
-    try:
-        with tempfile.TemporaryDirectory() as tmpdir:
-            run_command(aws_copy, tmpdir)
-    except Exception as e:
-        print(e)
+        # Remove the file from the queue directory
+        try:
+            with tempfile.TemporaryDirectory() as tmpdir:
+                run_command(['rm', '--'] + glob.glob('{}*'.format(os.path.join(src, prefix))), tmpdir)
+        except Exception as e:
+            print(e.__str__() + os.path.join(src, prefix))
 
     # job control logs
     with open(job_file, 'a') as f:
-        f.write(item + '\n')
-
-    # Remove the file from the queue directory
-    try:
-        with tempfile.TemporaryDirectory() as tmpdir:
-            run_command(['rm', '--'] + glob.glob('{}*'.format(os.path.join(src, item))), tmpdir)
-    except Exception as e:
-        print(e)
+        f.write(file + '\n')
 
 
-class COGWriter(object):
+class COGNetCDF(object):
     def __init__(self):
         pass
 
@@ -189,16 +175,6 @@ class COGWriter(object):
         with open(y_fname, 'w') as fp:
             yaml.dump(dataset, fp, default_flow_style=False, Dumper=Dumper)
             logging.info("Writing dataset Yaml to %s", basename(y_fname))
-
-    @staticmethod
-    def datasets_to_yaml(file, dest_dir):
-
-        file_names = JobControl.get_unstacked_names(file)
-        dataset_array = xarray.open_dataset(file)
-        for count in range(len(file_names)):
-            prefix, _, _ = file_names[count]
-            dataset_object = dataset_array.dataset.item(count)
-            COGWriter._dataset_to_yaml(prefix, dataset_object, dest_dir)
 
     @staticmethod
     def _dataset_to_cog(prefix, subdatasets, num, dest_dir):
@@ -269,35 +245,17 @@ class COGWriter(object):
                 run_command(cogtif, dest_dir)
 
     @staticmethod
-    def extract_to_cog(file, index, dest_dir):
+    def datasets_to_cog(file, dest_dir):
 
         file_names = JobControl.get_unstacked_names(file)
-        prefix, _, _ = file_names[index]
         dataset_array = xarray.open_dataset(file)
-        dataset_item = dataset_array.dataset.item(index)
-        COGWriter._dataset_to_yaml(prefix, dataset_item, dest_dir)
         dataset = gdal.Open(file, gdal.GA_ReadOnly)
         subdatasets = dataset.GetSubDatasets()
-        COGWriter._dataset_to_cog(prefix, subdatasets, index + 1, dest_dir)
-
-    @staticmethod
-    def datasets_to_cog(file, dest_dir, message_queue=None):
-
-        file_names = JobControl.get_unstacked_names(file)
-        dataset = gdal.Open(file, gdal.GA_ReadOnly)
-        results = []
-        with Pool(processes=8) as pool:
-            for index in range(len(file_names)):
-                prefix, _, _ = file_names[index]
-                results.append(pool.apply_async(func=COGWriter.extract_to_cog, args=(file, index, dest_dir),
-                                                callback=lambda res: print(res),
-                                                error_callback=lambda e: print(e)))
-            for index in range(len(file_names)):
-                prefix, _, _ = file_names[index]
-                results[index].wait()
-                if message_queue:
-                    message_queue.put(prefix, block=True)
-                print(prefix + ' added to queue')
+        for index in range(len(file_names)):
+            prefix = file_names[index]
+            dataset_item = dataset_array.dataset.item(index)
+            COGNetCDF._dataset_to_yaml(prefix, dataset_item, dest_dir)
+            COGNetCDF._dataset_to_cog(prefix, subdatasets, index + 1, dest_dir)
 
 
 class ProcessTile:
@@ -305,7 +263,7 @@ class ProcessTile:
         self.year = year
         self.month = month
 
-    def process_tile_names(self, tile_dir):
+    def process_tile_files(self, tile_dir):
         names = []
         for top, dirs, files in os.walk(tile_dir):
             for name in files:
@@ -315,13 +273,13 @@ class ProcessTile:
                     time_stamp = name_[0].split('_')[-2]
                     if self.year:
                         if int(time_stamp[0:4]) == self.year:
-                            if self.month:
+                            if self.month and len(time_stamp) >= 6:
                                 if int(time_stamp[4:6]) == self.month:
-                                    names.append(("_".join(name_[0].split('_')[0:-1]), full_name))
+                                    names.append(full_name)
                             else:
-                                names.append(("_".join(name_[0].split('_')[0:-1]), full_name))
+                                names.append(full_name)
                     else:
-                        names.append(("_".join(name_[0].split('_')[0:-1]), full_name))
+                        names.append(full_name)
             break
         return names
 
@@ -331,22 +289,41 @@ class JobControl(object):
         self.aws_top_level = aws_top_level
 
     @staticmethod
-    def fc_aws_dir(item, aws_top_level=None):
+    def wofs_src_dir():
+        return '/g/data/fk4/datacube/002/WOfS/WOfS_25_2_1/netcdf'
+
+    @staticmethod
+    def fc_ls5_src_dir():
+        return '/g/data/fk4/datacube/002/FC/LS5_TM_FC'
+
+    @staticmethod
+    def fc_ls8_src_dir():
+        return '/g/data/fk4/datacube/002/FC/LS8_OLI_FC'
+
+    @staticmethod
+    def wofs_aws_top_level():
+        return 'WOfS/WOFLs/v2.1.0/combined'
+
+    @staticmethod
+    def fc_ls5_aws_top_level():
+        return 'fractional-cover/fc/v2.2.0/ls5'
+
+    @staticmethod
+    def fc_ls8_aws_top_level():
+        return 'fractional-cover/fc/v2.2.0/ls8'
+
+    @staticmethod
+    def aws_dir(item):
         item_parts = item.split('_')
         time_stamp = item_parts[-1]
-        assert len(time_stamp) == 20, '{} does have an acceptable timestamp'.format(item)
+        assert len(time_stamp) == 20, '{} does not have an acceptable timestamp'.format(item)
         year = time_stamp[0:4]
         month = time_stamp[4:6]
         day = time_stamp[6:8]
 
         y_index = item_parts[-2]
         x_index = item_parts[-3]
-
-        product = item_parts[0].lower()
-        if aws_top_level:
-            return os.path.join(aws_top_level, product, 'x_' + x_index, 'y_' + y_index, year, month, day)
-        else:
-            return os.path.join(product, 'x_' + x_index, 'y_' + y_index, year, month, day)
+        return os.path.join('x_' + x_index, 'y_' + y_index, year, month, day)
 
     @staticmethod
     def get_unstacked_names(netcdf_file, year=None, month=None):
@@ -370,15 +347,15 @@ class JobControl(object):
             if year:
                 if month:
                     if dt_.year == year and dt_.month == month:
-                        names.append(('{}_{}'.format(prefix, time_stamp), index, netcdf_file))
+                        names.append('{}_{}'.format(prefix, time_stamp))
                 elif dt_.year == year:
-                    names.append(('{}_{}'.format(prefix, time_stamp), index, netcdf_file))
+                    names.append('{}_{}'.format(prefix, time_stamp))
             else:
-                names.append(('{}_{}'.format(prefix, time_stamp), index, netcdf_file))
+                names.append('{}_{}'.format(prefix, time_stamp))
         return names
 
     @staticmethod
-    def get_unstacked_files(src_dir, year=None, month=None):
+    def get_gridspec_files(src_dir, year=None, month=None):
         """
         warning: hard coded assumptions about FC file names here
         :param src_dir:
@@ -391,49 +368,13 @@ class JobControl(object):
         for tile_top, tile_dirs, tile_files in os.walk(src_dir):
             full_name_list = [os.path.join(tile_top, tile_dir) for tile_dir in tile_dirs]
             with Pool(8) as p:
-                names = p.map(ProcessTile(year, month).process_tile_names, full_name_list)
+                names = p.map(ProcessTile(year, month).process_tile_files, full_name_list)
             break
         return reduce((lambda x, y: x + y), names)
 
-    def get_dataset_names(self, src_dir, year=None, month=None):
-        """
-        warning: hard coded assumptions about FC file names here
-        :param src_dir:
-        :param year:
-        :param month:
-        :return:
-        """
-        names = []
-        for tile_top, tile_dirs, tile_files in os.walk(src_dir):
-            for tile_dir in tile_dirs:
-                for top, dirs, files in os.walk(os.path.join(tile_top, tile_dir)):
-                    for name in files:
-                        name_ = os.path.splitext(name)
-                        if name_[1] == '.nc':
-                            full_name = os.path.join(top, name)
-                            time_stamp = name_[0].split('_')[-2]
-                            # Is it a stacked NetCDF file
-                            if len(Dataset(full_name).variables['time']) > 1:
-                                if year:
-                                    if int(time_stamp[0:4]) == year:
-                                        names.extend(self.get_unstacked_names(full_name, year, month))
-                                else:
-                                    names.extend(self.get_unstacked_names(full_name))
-                            else:
-                                if year:
-                                    if int(time_stamp[0:4]) == year:
-                                        if month:
-                                            if int(time_stamp[4:6]) == month:
-                                                names.append(("_".join(name_[0].split('_')[0:-1]), None, full_name))
-                                        else:
-                                            names.append(("_".join(name_[0].split('_')[0:-1]), None, full_name))
-                                else:
-                                    names.append(("_".join(name_[0].split('_')[0:-1]), None, full_name))
-        return names
-
 
 class Streamer(object):
-    def __init__(self, src_dir, queue_dir, dest_url, job_dir, restart):
+    def __init__(self, product, src_dir, queue_dir, bucket_url, job_dir, restart, year=None, month=None):
         self.src_dir = src_dir
         self.queue_dir = queue_dir
 
@@ -441,11 +382,17 @@ class Streamer(object):
         with tempfile.TemporaryDirectory() as tmpdir:
             run_command(['rm', '-rf', os.path.join(self.queue_dir, '*')], tmpdir)
 
-        self.dest_url = dest_url
+        self.dest_url = bucket_url
         self.job_dir = job_dir
 
+        # Compute the name of job control file
+        job_file = 'streamer_job_control' + '_' + product
+        job_file = job_file + '_' + str(year) if year else job_file
+        job_file = job_file + '_' + str(month) if year and month else job_file
+        job_file = job_file + '.log'
+
         # if restart clear streamer_job_control.log
-        job_file = os.path.join(self.job_dir, 'streamer_job_control.log')
+        job_file = os.path.join(self.job_dir, job_file)
         if restart and os.path.exists(job_file):
             with tempfile.TemporaryDirectory() as tmpdir:
                 run_command(['rm', job_file], tmpdir)
@@ -456,27 +403,26 @@ class Streamer(object):
             with open(job_file) as f:
                 items_done = f.read().splitlines()
 
-        items_all = os.listdir(self.src_dir)
+        items_all = JobControl.get_gridspec_files(self.src_dir, year, month)
         self.items = [item for item in items_all if item not in items_done]
         self.items.sort(reverse=True)
         print(self.items.__str__() + ' to do')
         self.job_file = job_file
 
     def compute(self, processed_queue):
-        while self.items:
-            if len(self.items) >= WORKERS_POOL and (MAX_QUEUE_SIZE - processed_queue.qsize() >= 0):
-                # Speed-up processing with threads
-                with ThreadPoolExecutor(max_workers=WORKERS_POOL) as executor:
-                    futures = []
-                    for i in range(WORKERS_POOL):
-                        futures.append(executor.submit(COGWriter.datasets_to_cog,
-                                                       os.path.join(self.src_dir, self.items.pop()),
-                                                       self.queue_dir,
-                                                       processed_queue))
-            else:
-                COGWriter.datasets_to_cog(os.path.join(self.src_dir, self.items.pop()),
-                                          self.queue_dir, processed_queue)
-        # Signal end of processing
+        with ProcessPoolExecutor(max_workers=WORKERS_POOL) as executor:
+            while self.items:
+                queue_capacity = MAX_QUEUE_SIZE - processed_queue.qsize()
+                run_size = queue_capacity if len(self.items) > queue_capacity else len(self.items)
+                futures = []
+                items = []
+                for i in range(run_size):
+                    items.append(self.items.pop())
+                    futures.append(executor.submit(COGNetCDF.datasets_to_cog,
+                                                   items[i], self.queue_dir))
+                wait(futures)
+                for i in range(run_size):
+                    processed_queue.put(items[i])
         processed_queue.put(None)
 
     def upload(self, processed_queue):
@@ -487,7 +433,7 @@ class Streamer(object):
             upload_to_s3(item, self.queue_dir, self.dest_url, self.job_file)
 
     def run(self):
-        processed_queue = queue.Queue(maxsize=MAX_QUEUE_SIZE)
+        processed_queue = Queue(maxsize=MAX_QUEUE_SIZE)
         producer = threading.Thread(target=self.compute, args=(processed_queue,))
         consumer = threading.Thread(target=self.upload, args=(processed_queue,))
         producer.start()
@@ -497,14 +443,33 @@ class Streamer(object):
 
 
 @click.command()
+@click.option('--product', '-p', required=True, help="Product name: one of fc-ls5, fc-ls8, or wofs")
 @click.option('--queue', '-q', required=True, help="Queue directory")
-@click.option('--dest', '-d', required=True, help="Destination Url")
+@click.option('--bucket', '-b', required=True, help="Destination Bucket Url")
 @click.option('--job', '-j', required=True, help="Job directory that store job tracking info")
 @click.option('--restart', is_flag=True, help="Restarts the job ignoring prior work")
-@click.argument('src', type=click.Path(exists=True))
-def main(queue, dest, job, restart, src):
+@click.option('--year', '-y', type=click.INT, help="The year")
+@click.option('--month', '-m', type=click.INT, help="The month")
+@click.option('--src', '-s',type=click.Path(exists=True), help="Source directory just above tiles directories")
+def main(product, queue, bucket, job, restart, year, month, src):
+    assert product in ['fc-ls5', 'fc-ls8', 'wofs'], "Product name must be one of fc-ls5, fc-ls8, or wofs"
+
+    src_dir = None
+    bucket_url = None
+    if product == 'fc-ls5':
+        src_dir = JobControl.fc_ls5_src_dir()
+        bucket_url = bucket + JobControl.fc_ls5_aws_top_level()
+    elif product == 'fc-ls8':
+        src_dir = JobControl.fc_ls8_src_dir()
+        bucket_url = bucket + JobControl.fc_ls8_aws_top_level()
+    elif product == 'wofs':
+        src_dir = JobControl.wofs_src_dir()
+        bucket_url = bucket + JobControl.wofs_aws_top_level()
+
+    if src:
+        src_dir = src
     restart_ = True if restart else False
-    streamer = Streamer(src, queue, dest, job, restart_)
+    streamer = Streamer(product, src_dir, queue, bucket_url, job, restart_, year, month)
     streamer.run()
 
 
