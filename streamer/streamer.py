@@ -39,7 +39,7 @@ def upload_to_s3(file, src, dest, job_file):
         prefix = file_names[index]
         item_dir = JobControl.aws_dir(prefix)
         dest_name = os.path.join(dest, item_dir)
-        aws_copy = [
+        aws_copy1 = [
             'aws',
             's3',
             'sync',
@@ -48,11 +48,23 @@ def upload_to_s3(file, src, dest, job_file):
             '--exclude',
             '*',
             '--include',
-            '{}*'.format(prefix)
+            '{}*.yaml'.format(prefix)
+        ]
+        aws_copy2 = [
+            'aws',
+            's3',
+            'sync',
+            src,
+            dest_name,
+            '--exclude',
+            '*',
+            '--include',
+            '{}*.tif'.format(prefix)
         ]
         try:
             with tempfile.TemporaryDirectory() as tmpdir:
-                run_command(aws_copy, tmpdir)
+                run_command(aws_copy1, tmpdir)
+                run_command(aws_copy2, tmpdir)
         except Exception as e:
             print(e)
 
@@ -68,9 +80,7 @@ def upload_to_s3(file, src, dest, job_file):
         f.write(file + '\n')
 
 
-class COGNetCDF(object):
-    def __init__(self):
-        pass
+class COGNetCDF:
 
     @staticmethod
     def _dataset_to_yaml(prefix, dataset, dest_dir):
@@ -198,12 +208,10 @@ class ProcessTile:
         return names
 
 
-class JobControl(object):
-    def __init__(self, aws_top_level=None):
-        self.aws_top_level = aws_top_level
+class JobControl:
 
     @staticmethod
-    def wofs_src_dir():
+    def wofs_wofls_src_dir():
         return '/g/data/fk4/datacube/002/WOfS/WOfS_25_2_1/netcdf'
 
     @staticmethod
@@ -215,7 +223,7 @@ class JobControl(object):
         return '/g/data/fk4/datacube/002/FC/LS8_OLI_FC'
 
     @staticmethod
-    def wofs_aws_top_level():
+    def wofs_wofls_aws_top_level():
         return 'WOfS/WOFLs/v2.1.0/combined'
 
     @staticmethod
@@ -357,7 +365,7 @@ class Streamer(object):
 
 
 @click.command()
-@click.option('--product', '-p', required=True, help="Product name: one of fc-ls5, fc-ls8, or wofs")
+@click.option('--product', '-p', required=True, help="Product name: one of fc-ls5, fc-ls8, or wofs-wofls")
 @click.option('--queue', '-q', required=True, help="Queue directory")
 @click.option('--bucket', '-b', required=True, help="Destination Bucket Url")
 @click.option('--job', '-j', required=True, help="Job directory that store job tracking info")
@@ -366,7 +374,7 @@ class Streamer(object):
 @click.option('--month', '-m', type=click.INT, help="The month")
 @click.option('--src', '-s',type=click.Path(exists=True), help="Source directory just above tiles directories")
 def main(product, queue, bucket, job, restart, year, month, src):
-    assert product in ['fc-ls5', 'fc-ls8', 'wofs'], "Product name must be one of fc-ls5, fc-ls8, or wofs"
+    assert product in ['fc-ls5', 'fc-ls8', 'wofs-wofls'], "Product name must be one of fc-ls5, fc-ls8, or wofs-wofls"
 
     src_dir = None
     bucket_url = None
@@ -376,9 +384,9 @@ def main(product, queue, bucket, job, restart, year, month, src):
     elif product == 'fc-ls8':
         src_dir = JobControl.fc_ls8_src_dir()
         bucket_url = os.path.join(bucket, JobControl.fc_ls8_aws_top_level())
-    elif product == 'wofs':
-        src_dir = JobControl.wofs_src_dir()
-        bucket_url = os.path.join(bucket, JobControl.wofs_aws_top_level())
+    elif product == 'wofs-wofls':
+        src_dir = JobControl.wofs_wofls_src_dir()
+        bucket_url = os.path.join(bucket, JobControl.wofs_wofls_aws_top_level())
 
     if src:
         src_dir = src
