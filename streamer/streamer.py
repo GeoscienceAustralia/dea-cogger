@@ -33,92 +33,6 @@ def run_command(command, work_dir):
         raise RuntimeError("command '{}' return with error (code {}): {}".format(e.cmd, e.returncode, e.output))
 
 
-def check_dir(fname):
-    file_name = fname.split('/')
-    rel_path = pjoin(*file_name[-2:])
-    return rel_path
-
-
-def geotiff_to_cog(fname, src, dest, message_queue=None):
-    """ Author: Harshu Rampur (Adapted)
-        Convert the Geotiff to COG using gdal commands
-        Blocksize is 512
-        TILED <boolean>: Switch to tiled format
-        COPY_SRC_OVERVIEWS <boolean>: Force copy of overviews of source dataset
-        COMPRESS=[NONE/DEFLATE]: Set the compression to use. DEFLATE is only available if NetCDF has been compiled with
-                  NetCDF-4 support. NC4C format is the default if DEFLATE compression is used.
-        ZLEVEL=[1-9]: Set the level of compression when using DEFLATE compression. A value of 9 is best,
-                      and 1 is least compression. The default is 1, which offers the best time/compression ratio.
-        BLOCKXSIZE <int>: Tile Width
-        BLOCKYSIZE <int>: Tile/Strip Height
-        PREDICTOR <int>: Predictor Type (1=default, 2=horizontal differencing, 3=floating point prediction)
-        PROFILE <string-select>: possible values: GDALGeoTIFF,GeoTIFF,BASELINE,
-    """
-    with tempfile.TemporaryDirectory() as tmpdir:
-        fname_full = pjoin(src, fname)
-        temp_fname = pjoin(tmpdir, fname)
-        out_fname = pjoin(dest, fname)
-
-        env = ['GDAL_DISABLE_READDIR_ON_OPEN=YES',
-               'CPL_VSIL_CURL_ALLOWED_EXTENSIONS=.tif']
-        subprocess.check_call(env, shell=True)
-
-        # copy to a tempfolder
-        to_cogtif = [
-            'gdal_translate',
-            '-of',
-            'GTIFF',
-            fname_full,
-            temp_fname]
-        run_command(to_cogtif, tmpdir)
-
-        # Add Overviews
-        # gdaladdo - Builds or rebuilds overview images.
-        # 2, 4, 8,16,32 are levels which is a list of integral overview levels to build.
-        add_ovr = [
-            'gdaladdo',
-            '-r',
-            'average',
-            '--config',
-            'GDAL_TIFF_OVR_BLOCKSIZE',
-            '512',
-            temp_fname,
-            '2',
-            '4',
-            '8',
-            '16',
-            '32']
-        run_command(add_ovr, tmpdir)
-
-        # Convert to COG
-        cogtif = [
-            'gdal_translate',
-            '-co',
-            'TILED=YES',
-            '-co',
-            'COPY_SRC_OVERVIEWS=YES',
-            '-co',
-            'COMPRESS=DEFLATE',
-            '-co',
-            'ZLEVEL=9',
-            '--config',
-            'GDAL_TIFF_OVR_BLOCKSIZE',
-            '512',
-            '-co',
-            'BLOCKXSIZE=512',
-            '-co',
-            'BLOCKYSIZE=512',
-            '-co',
-            'PREDICTOR=1',
-            '-co',
-            'PROFILE=GeoTIFF',
-            temp_fname,
-            out_fname]
-        run_command(cogtif, dest)
-        if message_queue:
-            message_queue.put(fname, block=True)
-
-
 def upload_to_s3(file, src, dest, job_file):
     file_names = JobControl.get_unstacked_names(file)
     for index in range(len(file_names)):
@@ -458,13 +372,13 @@ def main(product, queue, bucket, job, restart, year, month, src):
     bucket_url = None
     if product == 'fc-ls5':
         src_dir = JobControl.fc_ls5_src_dir()
-        bucket_url = bucket + JobControl.fc_ls5_aws_top_level()
+        bucket_url = os.path.join(bucket, JobControl.fc_ls5_aws_top_level())
     elif product == 'fc-ls8':
         src_dir = JobControl.fc_ls8_src_dir()
-        bucket_url = bucket + JobControl.fc_ls8_aws_top_level()
+        bucket_url = os.path.join(bucket, JobControl.fc_ls8_aws_top_level())
     elif product == 'wofs':
         src_dir = JobControl.wofs_src_dir()
-        bucket_url = bucket + JobControl.wofs_aws_top_level()
+        bucket_url = os.path.join(bucket, JobControl.wofs_aws_top_level())
 
     if src:
         src_dir = src
