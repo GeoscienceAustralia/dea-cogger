@@ -42,7 +42,7 @@ The '--src' option, the source directory, is not meant to be used during product
 for testing during dev stages.
 """
 import threading
-from concurrent.futures import ProcessPoolExecutor, as_completed
+from concurrent.futures import ProcessPoolExecutor, wait, as_completed
 from multiprocessing import Pool, Queue
 import click
 import os
@@ -408,18 +408,23 @@ class Streamer(object):
                 processed_queue.put(future.result())
         processed_queue.put(None)
 
-    def upload(self, processed_queue):
+    def upload(self, processed_queue, executor):
         while True:
-            item = processed_queue.get(block=True, timeout=None)
-            if item is None:
-                break
-            upload_to_s3(item, self.queue_dir, self.dest_url, self.job_file)
+            items_todo = [processed_queue.get(block=True, timeout=None) for _ in range(processed_queue.qsize())]
+            futures = []
+            while items_todo:
+                item = items_todo.pop()
+                if item is None:
+                    wait(futures)
+                    return
+                futures.append(executor.submit(upload_to_s3, item, self.queue_dir, self.dest_url, self.job_file))
+            wait(futures)
 
     def run(self):
         processed_queue = Queue(maxsize=MAX_QUEUE_SIZE)
         with ProcessPoolExecutor(max_workers=WORKERS_POOL) as executor:
             producer = threading.Thread(target=self.compute, args=(processed_queue, executor))
-            consumer = threading.Thread(target=self.upload, args=(processed_queue,))
+            consumer = threading.Thread(target=self.upload, args=(processed_queue, executor))
             producer.start()
             consumer.start()
             producer.join()
