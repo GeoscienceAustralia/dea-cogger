@@ -42,7 +42,7 @@ The '--src' option, the source directory, is not meant to be used during product
 for testing during dev stages.
 """
 import threading
-from concurrent.futures import ProcessPoolExecutor, wait, as_completed
+from concurrent.futures import ProcessPoolExecutor, as_completed
 from multiprocessing import Pool, Queue
 import click
 import os
@@ -402,12 +402,8 @@ class Streamer(object):
         while self.items:
             queue_capacity = MAX_QUEUE_SIZE - processed_queue.qsize()
             run_size = queue_capacity if len(self.items) > queue_capacity else len(self.items)
-            futures = []
-            items = []
-            for i in range(run_size):
-                items.append(self.items.pop())
-                futures.append(executor.submit(COGNetCDF.datasets_to_cog,
-                                               items[i], self.queue_dir))
+            futures = [executor.submit(COGNetCDF.datasets_to_cog, self.items.pop(),
+                                       self.queue_dir) for _ in range(run_size)]
             for future in as_completed(futures):
                 processed_queue.put(future.result())
         processed_queue.put(None)
