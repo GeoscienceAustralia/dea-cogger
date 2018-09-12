@@ -296,7 +296,8 @@ class JobControl:
 
 
 class Streamer(object):
-    def __init__(self, product, src_dir, queue_dir, bucket_url, job_dir, restart, year=None, month=None):
+    def __init__(self, product, src_dir, queue_dir, bucket_url, job_dir, restart,
+                 year=None, month=None, limit=None, reuse_full_list=None):
         self.src_dir = src_dir
         self.queue_dir = queue_dir
 
@@ -307,11 +308,15 @@ class Streamer(object):
         self.dest_url = bucket_url
         self.job_dir = job_dir
 
-        # Compute the name of job control file
+        # Compute the name of job control files
         job_file = 'streamer_job_control' + '_' + product
         job_file = job_file + '_' + str(year) if year else job_file
         job_file = job_file + '_' + str(month) if year and month else job_file
         job_file = job_file + '.log'
+        items_all_file = 'items_all' + '_' + product
+        items_all_file = items_all_file + '_' + str(year) if year else items_all_file
+        items_all_file = items_all_file + '_' + str(month) if year and month else items_all_file
+        items_all_file = items_all_file + '.log'
 
         # if restart clear streamer_job_control.log
         job_file = os.path.join(self.job_dir, job_file)
@@ -325,9 +330,27 @@ class Streamer(object):
             with open(job_file) as f:
                 items_done = f.read().splitlines()
 
-        items_all = JobControl.get_gridspec_files(self.src_dir, year, month)
+        # If reuse_full_list items_all are read from a file if present
+        # and subsequently save into a file if items are computed new
+        items_all_file = os.path.join(self.job_dir, items_all_file)
+        items_all = None
+        if reuse_full_list:
+            if os.path.exists(items_all_file):
+                with open(items_all_file) as f:
+                    items_all = f.read().splitlines()
+            else:
+                items_all = JobControl.get_gridspec_files(self.src_dir, year, month)
+                with open(items_all_file, 'a') as f:
+                    for item in items_all:
+                        f.write(item + '\n')
+
         self.items = [item for item in items_all if item not in items_done]
         self.items.sort(reverse=True)
+
+        # Enforce if limit
+        if limit:
+            self.items = self.items[0:limit]
+
         print(self.items.__str__() + ' to do')
         self.job_file = job_file
 
@@ -372,8 +395,11 @@ class Streamer(object):
 @click.option('--restart', is_flag=True, help="Restarts the job ignoring prior work")
 @click.option('--year', '-y', type=click.INT, help="The year")
 @click.option('--month', '-m', type=click.INT, help="The month")
+@click.option('--limit', '-l', type=click.INT, help="Number of files to be processed in this run")
+@click.option('--reuse_full_list', is_flag=True,
+              help="Reuse the full file list for the signature(product, year, month)")
 @click.option('--src', '-s',type=click.Path(exists=True), help="Source directory just above tiles directories")
-def main(product, queue, bucket, job, restart, year, month, src):
+def main(product, queue, bucket, job, restart, year, month, limit, reuse_full_list, src):
     assert product in ['fc-ls5', 'fc-ls8', 'wofs-wofls'], "Product name must be one of fc-ls5, fc-ls8, or wofs-wofls"
 
     src_dir = None
@@ -391,7 +417,7 @@ def main(product, queue, bucket, job, restart, year, month, src):
     if src:
         src_dir = src
     restart_ = True if restart else False
-    streamer = Streamer(product, src_dir, queue, bucket_url, job, restart_, year, month)
+    streamer = Streamer(product, src_dir, queue, bucket_url, job, restart_, year, month, limit, reuse_full_list)
     streamer.run()
 
 
