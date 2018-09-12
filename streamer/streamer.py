@@ -1,3 +1,44 @@
+#!/usr/bin/env python
+"""
+This program is designed to stream COG-conversion and AWS uploads to be done same time
+in a streaming fashion that utilises smaller in-between storage footprint. In raijin
+this could be run in copyq in a PBS job. However, copyq lacks processing power, and therefore
+it is advised that the job is run incrementally with appropriate increments. The program is
+designed with vdi or raijin login nodes in mind.
+
+The program utilizes a memory queue with an aligned file system queue of processed files to hook up
+COG-conversion and AWS upload processes which are run on separate threads.
+
+A particular batch run is identified by the signature (product, year, month) combination where
+year and/or month may not be present. The job control tracks a particular batch job based on this signature
+and the relevant log files are kept in the job control directory specified by the '--job' option (short, '-j').
+There are two types of job control files kept, one with a template 'streamer_job_control_<signature>.log'
+and one with a template 'items_all_<signature>.log', where the first tracks the batch run incrementally maintaining
+the NetCDF files that are processed while the second keeps the list of all the files that are part of a specific
+batch job. However, the script need to be told to keep 'items_all_<signature>.log' via the '--reuse_full_list'
+option so that it does not need to recompute in the next incremental run of the same batch job
+if it is not yet complete. The '--limit' option, which specifies the number of files to be processed,
+can be used to incrementally run a specific batch job. Currently, the script is not designed
+for multiple time overlapping runs.
+
+For a specific product, the source NCI directory and the AWS directory within the bucket are hard coded.
+The AWS bucket is specified via '--bucket' option. Therefore, the script currently limited to
+'fc-ls5', 'fc-ls8', and 'wofs-wofls' products. However, additional products could be added easily
+if they have similar 'grid-spec' (tiles) directory structure.
+
+The following are the full list of options:
+'--product', '-p', required=True, help="Product name: one of fc-ls5, fc-ls8, or wofs-wofls"
+'--queue', '-q', required=True, help="Queue directory"
+'--bucket', '-b', required=True, help="Destination Bucket Url"
+'--job', '-j', required=True, help="Job directory that store job tracking info"
+'--restart', is_flag=True, help="Restarts the job ignoring prior work"
+'--year', '-y', type=click.INT, help="The year"
+'--month', '-m', type=click.INT, help="The month"
+'--limit', '-l', type=click.INT, help="Number of files to be processed in this run"
+'--reuse_full_list', is_flag=True, help="Reuse the full file list for the signature(product, year, month)"
+'--src', '-s',type=click.Path(exists=True), help="Source directory just above tiles directories"
+
+"""
 import threading
 from concurrent.futures import ProcessPoolExecutor, wait
 from multiprocessing import Pool, Queue
@@ -19,7 +60,7 @@ from functools import reduce
 import logging
 
 MAX_QUEUE_SIZE = 32
-WORKERS_POOL = 8
+WORKERS_POOL = 6
 
 
 def run_command(command, work_dir):
