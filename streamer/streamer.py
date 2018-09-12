@@ -38,9 +38,11 @@ The following are the full list of options:
 '--reuse_full_list', is_flag=True, help="Reuse the full file list for the signature(product, year, month)"
 '--src', '-s',type=click.Path(exists=True), help="Source directory just above tiles directories"
 
+The '--src' option, the source directory, is not meant to be used during production runs. It is there
+for testing during dev stages.
 """
 import threading
-from concurrent.futures import ProcessPoolExecutor, wait
+from concurrent.futures import ProcessPoolExecutor, wait, as_completed
 from multiprocessing import Pool, Queue
 import click
 import os
@@ -221,9 +223,10 @@ class COGNetCDF:
             dataset_item = dataset_array.dataset.item(index)
             COGNetCDF._dataset_to_yaml(prefix, dataset_item, dest_dir)
             COGNetCDF._dataset_to_cog(prefix, subdatasets, index + 1, dest_dir)
+        return file
 
 
-class ProcessTile:
+class TileFiles:
     def __init__(self, year=None, month=None):
         self.year = year
         self.month = month
@@ -331,7 +334,7 @@ class JobControl:
         for tile_top, tile_dirs, tile_files in os.walk(src_dir):
             full_name_list = [os.path.join(tile_top, tile_dir) for tile_dir in tile_dirs]
             with Pool(8) as p:
-                names = p.map(ProcessTile(year, month).process_tile_files, full_name_list)
+                names = p.map(TileFiles(year, month).process_tile_files, full_name_list)
             break
         return reduce((lambda x, y: x + y), names)
 
@@ -395,20 +398,18 @@ class Streamer(object):
         print(self.items.__str__() + ' to do')
         self.job_file = job_file
 
-    def compute(self, processed_queue):
-        with ProcessPoolExecutor(max_workers=WORKERS_POOL) as executor:
-            while self.items:
-                queue_capacity = MAX_QUEUE_SIZE - processed_queue.qsize()
-                run_size = queue_capacity if len(self.items) > queue_capacity else len(self.items)
-                futures = []
-                items = []
-                for i in range(run_size):
-                    items.append(self.items.pop())
-                    futures.append(executor.submit(COGNetCDF.datasets_to_cog,
-                                                   items[i], self.queue_dir))
-                wait(futures)
-                for i in range(run_size):
-                    processed_queue.put(items[i])
+    def compute(self, processed_queue, executor):
+        while self.items:
+            queue_capacity = MAX_QUEUE_SIZE - processed_queue.qsize()
+            run_size = queue_capacity if len(self.items) > queue_capacity else len(self.items)
+            futures = []
+            items = []
+            for i in range(run_size):
+                items.append(self.items.pop())
+                futures.append(executor.submit(COGNetCDF.datasets_to_cog,
+                                               items[i], self.queue_dir))
+            for future in as_completed(futures):
+                processed_queue.put(future.result())
         processed_queue.put(None)
 
     def upload(self, processed_queue):
@@ -420,12 +421,13 @@ class Streamer(object):
 
     def run(self):
         processed_queue = Queue(maxsize=MAX_QUEUE_SIZE)
-        producer = threading.Thread(target=self.compute, args=(processed_queue,))
-        consumer = threading.Thread(target=self.upload, args=(processed_queue,))
-        producer.start()
-        consumer.start()
-        producer.join()
-        consumer.join()
+        with ProcessPoolExecutor(max_workers=WORKERS_POOL) as executor:
+            producer = threading.Thread(target=self.compute, args=(processed_queue, executor))
+            consumer = threading.Thread(target=self.upload, args=(processed_queue,))
+            producer.start()
+            consumer.start()
+            producer.join()
+            consumer.join()
 
 
 @click.command()
