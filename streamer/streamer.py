@@ -62,13 +62,14 @@ from yaml import CLoader as Loader, CDumper as Dumper
 from functools import reduce
 import logging
 
+LOG = logging.getLogger(__name__)
+
 MAX_QUEUE_SIZE = 16
 WORKERS_POOL = 7
 
 
 def run_command(command, work_dir):
     """
-    Author: Harshu Rampur
     A simple utility to execute a subprocess command.
     """
     try:
@@ -78,6 +79,16 @@ def run_command(command, work_dir):
 
 
 def upload_to_s3(file, src_dir, dest, job_file):
+    """
+    Uploads the .yaml and .tif files that correspond to the given NetCDF 'file' into the AWS
+    destination bucket indicated by 'dest'. Once complete add the file name 'file' to the 'job_file'.
+    Each NetCDF file is assumed to be a stacked NetCDF file where 'unstacked' NetCDF file is viewed as
+    a stacked file with just one dataset. The directory structure in AWS is determined by the
+    'JobControl.aws_dir()' based on 'prefixes' extracted from the NetCDF file. Each dataset within
+    the NetCDF file is assumed to be in separate directory with the name indicated by its corresponding
+    prefix. The 'prefix' would have structure as in 'LS_WATER_3577_9_-39_20180506102018000000'.
+    """
+
     file_names = JobControl.get_unstacked_names(file)
     for index in range(len(file_names)):
         prefix = file_names[index]
@@ -111,15 +122,16 @@ def upload_to_s3(file, src_dir, dest, job_file):
                 run_command(aws_copy1, tmpdir)
                 run_command(aws_copy2, tmpdir)
         except Exception as e:
-            print(e)
+            logging.error("AWS upload error %s", prefix)
+            logging.exception("Exception", e)
 
         # Remove the dir from the queue directory
         try:
             with tempfile.TemporaryDirectory() as tmpdir:
-                # run_command(['rm', '-rf', src], tmpdir)
                 run('rm -fR -- ' + src, stderr=subprocess.STDOUT, cwd=tmpdir, check=True, shell=True)
         except Exception as e:
-            print(e.__str__() + os.path.join(src, prefix))
+            logging.error("Failure in queue: removing dataset %s", prefix)
+            logging.exception("Exception", e)
 
     # job control logs
     with open(job_file, 'a') as f:
@@ -127,6 +139,7 @@ def upload_to_s3(file, src_dir, dest, job_file):
 
 
 class COGNetCDF:
+    """ Bunch of utilities for COG conversion of NetCDF files"""
 
     @staticmethod
     def _dataset_to_yaml(prefix, dataset, dest_dir):
@@ -154,68 +167,77 @@ class COGNetCDF:
             for dts in subdatasets[:-1]:
                 band_name = (dts[0].split(':'))[-1]
                 out_fname = prefix + '_' + band_name + '.tif'
-                env = ['GDAL_DISABLE_READDIR_ON_OPEN=YES',
-                       'CPL_VSIL_CURL_ALLOWED_EXTENSIONS=.tif']
-                subprocess.check_call(env, shell=True)
+                try:
+                    env = ['GDAL_DISABLE_READDIR_ON_OPEN=YES',
+                           'CPL_VSIL_CURL_ALLOWED_EXTENSIONS=.tif']
+                    subprocess.check_call(env, shell=True)
 
-                # copy to a tempfolder
-                temp_fname = pjoin(tmpdir, basename(out_fname))
-                to_cogtif = [
-                    'gdal_translate',
-                    '-of',
-                    'GTIFF',
-                    '-b',
-                    str(num),
-                    dts[0],
-                    temp_fname]
-                run_command(to_cogtif, tmpdir)
+                    # copy to a tempfolder
+                    temp_fname = pjoin(tmpdir, basename(out_fname))
+                    to_cogtif = [
+                        'gdal_translate',
+                        '-of',
+                        'GTIFF',
+                        '-b',
+                        str(num),
+                        dts[0],
+                        temp_fname]
+                    run_command(to_cogtif, tmpdir)
 
-                # Add Overviews
-                # gdaladdo - Builds or rebuilds overview images.
-                # 2, 4, 8,16,32 are levels which is a list of integral overview levels to build.
-                add_ovr = [
-                    'gdaladdo',
-                    '-r',
-                    'average',
-                    '--config',
-                    'GDAL_TIFF_OVR_BLOCKSIZE',
-                    '512',
-                    temp_fname,
-                    '2',
-                    '4',
-                    '8',
-                    '16',
-                    '32']
-                run_command(add_ovr, tmpdir)
+                    # Add Overviews
+                    # gdaladdo - Builds or rebuilds overview images.
+                    # 2, 4, 8,16,32 are levels which is a list of integral overview levels to build.
+                    add_ovr = [
+                        'gdaladdo',
+                        '-r',
+                        'average',
+                        '--config',
+                        'GDAL_TIFF_OVR_BLOCKSIZE',
+                        '512',
+                        temp_fname,
+                        '2',
+                        '4',
+                        '8',
+                        '16',
+                        '32']
+                    run_command(add_ovr, tmpdir)
 
-                # Convert to COG
-                cogtif = [
-                    'gdal_translate',
-                    '-co',
-                    'TILED=YES',
-                    '-co',
-                    'COPY_SRC_OVERVIEWS=YES',
-                    '-co',
-                    'COMPRESS=DEFLATE',
-                    '-co',
-                    'ZLEVEL=9',
-                    '--config',
-                    'GDAL_TIFF_OVR_BLOCKSIZE',
-                    '512',
-                    '-co',
-                    'BLOCKXSIZE=512',
-                    '-co',
-                    'BLOCKYSIZE=512',
-                    '-co',
-                    'PREDICTOR=2',
-                    '-co',
-                    'PROFILE=GeoTIFF',
-                    temp_fname,
-                    out_fname]
-                run_command(cogtif, dest_dir)
+                    # Convert to COG
+                    cogtif = [
+                        'gdal_translate',
+                        '-co',
+                        'TILED=YES',
+                        '-co',
+                        'COPY_SRC_OVERVIEWS=YES',
+                        '-co',
+                        'COMPRESS=DEFLATE',
+                        '-co',
+                        'ZLEVEL=9',
+                        '--config',
+                        'GDAL_TIFF_OVR_BLOCKSIZE',
+                        '512',
+                        '-co',
+                        'BLOCKXSIZE=512',
+                        '-co',
+                        'BLOCKYSIZE=512',
+                        '-co',
+                        'PREDICTOR=2',
+                        '-co',
+                        'PROFILE=GeoTIFF',
+                        temp_fname,
+                        out_fname]
+                    run_command(cogtif, dest_dir)
+                except Exception as e:
+                    logging.error("Failure during COG conversion: %s", out_fname)
+                    logging.exception("Exception", e)
 
     @staticmethod
     def datasets_to_cog(file, dest_dir):
+        """
+        Convert the datasets in the NetCDF file 'file' into 'dest_dir' where each dataset is in
+        a separate directory with the name indicated by the dataset prefix. The prefix would look
+        like 'LS_WATER_3577_9_-39_20180506102018000000'
+        """
 
         file_names = JobControl.get_unstacked_names(file)
         dataset_array = xarray.open_dataset(file)
@@ -233,6 +255,8 @@ class COGNetCDF:
 
 
 class TileFiles:
+    """ A utility class used by multiprocess routines to compute the NetCDF file list for a product"""
+
     def __init__(self, year=None, month=None):
         self.year = year
         self.month = month
@@ -259,6 +283,9 @@ class TileFiles:
 
 
 class JobControl:
+    """
+    Utilities and some hardcoded stuff for tracking and coding job info.
+    """
 
     @staticmethod
     def wofs_wofls_src_dir():
@@ -286,6 +313,7 @@ class JobControl:
 
     @staticmethod
     def aws_dir(item):
+        """ Given a prefix like 'LS_WATER_3577_9_-39_20180506102018000000' what is the AWS directory structure?"""
         item_parts = item.split('_')
         time_stamp = item_parts[-1]
         assert len(time_stamp) == 20, '{} does not have an acceptable timestamp'.format(item)
@@ -300,12 +328,9 @@ class JobControl:
     @staticmethod
     def get_unstacked_names(netcdf_file, year=None, month=None):
         """
-        warning: hard coded assumptions about FC file names here
-        :param netcdf_file: full pathname to a NetCDF file
-        :param year:
-        :param month:
-        :return:
+        Return the dataset prefix names corresponding to each dataset within the given NetCDF file.
         """
+
         dts = Dataset(netcdf_file)
         file_id = os.path.splitext(basename(netcdf_file))[0]
         prefix = "_".join(file_id.split('_')[0:-2])
@@ -329,11 +354,7 @@ class JobControl:
     @staticmethod
     def get_gridspec_files(src_dir, year=None, month=None):
         """
-        warning: hard coded assumptions about FC file names here
-        :param src_dir:
-        :param year:
-        :param month:
-        :return:
+        Extract the NetCDF file list corresponding to 'grid-spec' product for the given year and month
         """
 
         names = []
@@ -384,7 +405,6 @@ class Streamer(object):
         # If reuse_full_list items_all are read from a file if present
         # and subsequently save into a file if items are computed new
         items_all_file = os.path.join(self.job_dir, items_all_file)
-        items_all = []
         if reuse_full_list:
             if os.path.exists(items_all_file):
                 with open(items_all_file) as f:
@@ -408,6 +428,8 @@ class Streamer(object):
         self.job_file = job_file
 
     def compute(self, processed_queue, executor):
+        """ The function that runs in the COG conversion thread """
+
         while self.items:
             queue_capacity = MAX_QUEUE_SIZE - processed_queue.qsize()
             run_size = queue_capacity if len(self.items) > queue_capacity else len(self.items)
@@ -418,10 +440,13 @@ class Streamer(object):
         processed_queue.put(None)
 
     def upload(self, processed_queue, executor):
+        """ The function that run in the file upload to AWS thread """
+        
         while True:
             items_todo = [processed_queue.get(block=True, timeout=None) for _ in range(processed_queue.qsize())]
             futures = []
             while items_todo:
+                # We need to pop from the front
                 item = items_todo.pop(0)
                 if item is None:
                     wait(futures)
