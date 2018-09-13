@@ -61,8 +61,8 @@ from yaml import CLoader as Loader, CDumper as Dumper
 from functools import reduce
 import logging
 
-MAX_QUEUE_SIZE = 32
-WORKERS_POOL = 6
+MAX_QUEUE_SIZE = 8
+WORKERS_POOL = 2
 
 
 def run_command(command, work_dir):
@@ -76,10 +76,11 @@ def run_command(command, work_dir):
         raise RuntimeError("command '{}' return with error (code {}): {}".format(e.cmd, e.returncode, e.output))
 
 
-def upload_to_s3(file, src, dest, job_file):
+def upload_to_s3(file, src_dir, dest, job_file):
     file_names = JobControl.get_unstacked_names(file)
     for index in range(len(file_names)):
         prefix = file_names[index]
+        src = os.path.join(src_dir, prefix)
         item_dir = JobControl.aws_dir(prefix)
         dest_name = os.path.join(dest, item_dir)
         aws_copy1 = [
@@ -114,7 +115,7 @@ def upload_to_s3(file, src, dest, job_file):
         # Remove the file from the queue directory
         try:
             with tempfile.TemporaryDirectory() as tmpdir:
-                run_command(['rm', '--'] + glob.glob('{}*'.format(os.path.join(src, prefix))), tmpdir)
+                run_command(['rm', '-rf', src], tmpdir)
         except Exception as e:
             print(e.__str__() + os.path.join(src, prefix))
 
@@ -221,8 +222,11 @@ class COGNetCDF:
         for index in range(len(file_names)):
             prefix = file_names[index]
             dataset_item = dataset_array.dataset.item(index)
-            COGNetCDF._dataset_to_yaml(prefix, dataset_item, dest_dir)
-            COGNetCDF._dataset_to_cog(prefix, subdatasets, index + 1, dest_dir)
+            dest = os.path.join(dest_dir, prefix)
+            with tempfile.TemporaryDirectory() as tmpdir:
+                run_command(['mkdir', dest], tmpdir)
+            COGNetCDF._dataset_to_yaml(prefix, dataset_item, dest)
+            COGNetCDF._dataset_to_cog(prefix, subdatasets, index + 1, dest)
         return file
 
 
