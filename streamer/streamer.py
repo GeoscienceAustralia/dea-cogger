@@ -36,7 +36,8 @@ The following are the full list of options:
 '--month', '-m', type=click.INT, help="The month"
 '--limit', '-l', type=click.INT, help="Number of files to be processed in this run"
 '--reuse_full_list', is_flag=True, help="Reuse the full file list for the signature(product, year, month)"
-'--src', '-s',type=click.Path(exists=True), help="Source directory just above tiles directories"
+'--src', '-s',type=click.Path(exists=True), help="Source directory just above tiles directories. This option
+                                                  must be used with --restart option"
 
 The '--src' option, the source directory, is not meant to be used during production runs. It is there
 for testing during dev stages.
@@ -49,8 +50,8 @@ import os
 from os.path import join as pjoin, basename, dirname, exists
 import tempfile
 import subprocess
+from subprocess import check_call, run
 import glob
-from subprocess import check_call
 from netCDF4 import Dataset
 from datetime import datetime
 from pandas import to_datetime
@@ -61,8 +62,8 @@ from yaml import CLoader as Loader, CDumper as Dumper
 from functools import reduce
 import logging
 
-MAX_QUEUE_SIZE = 8
-WORKERS_POOL = 2
+MAX_QUEUE_SIZE = 16
+WORKERS_POOL = 7
 
 
 def run_command(command, work_dir):
@@ -71,7 +72,7 @@ def run_command(command, work_dir):
     A simple utility to execute a subprocess command.
     """
     try:
-        check_call(command, stderr=subprocess.STDOUT, cwd=work_dir)
+        run(command, stderr=subprocess.STDOUT, cwd=work_dir, check=True)
     except subprocess.CalledProcessError as e:
         raise RuntimeError("command '{}' return with error (code {}): {}".format(e.cmd, e.returncode, e.output))
 
@@ -112,10 +113,11 @@ def upload_to_s3(file, src_dir, dest, job_file):
         except Exception as e:
             print(e)
 
-        # Remove the file from the queue directory
+        # Remove the dir from the queue directory
         try:
             with tempfile.TemporaryDirectory() as tmpdir:
-                run_command(['rm', '-rf', src], tmpdir)
+                # run_command(['rm', '-rf', src], tmpdir)
+                run('rm -fR -- ' + src, stderr=subprocess.STDOUT, cwd=tmpdir, check=True, shell=True)
         except Exception as e:
             print(e.__str__() + os.path.join(src, prefix))
 
@@ -351,7 +353,8 @@ class Streamer(object):
 
         # We are going to start with a empty queue_dir
         with tempfile.TemporaryDirectory() as tmpdir:
-            run_command(['rm', '-rf', os.path.join(self.queue_dir, '*')], tmpdir)
+            run('rm -fR ' + os.path.join(self.queue_dir, '*'),
+                stderr=subprocess.STDOUT, cwd=tmpdir, check=True, shell=True)
 
         self.dest_url = bucket_url
         self.job_dir = job_dir
@@ -381,7 +384,7 @@ class Streamer(object):
         # If reuse_full_list items_all are read from a file if present
         # and subsequently save into a file if items are computed new
         items_all_file = os.path.join(self.job_dir, items_all_file)
-        items_all = None
+        items_all = []
         if reuse_full_list:
             if os.path.exists(items_all_file):
                 with open(items_all_file) as f:
@@ -391,6 +394,8 @@ class Streamer(object):
                 with open(items_all_file, 'a') as f:
                     for item in items_all:
                         f.write(item + '\n')
+        else:
+            items_all = JobControl.get_gridspec_files(self.src_dir, year, month)
 
         self.items = [item for item in items_all if item not in items_done]
         self.items.sort(reverse=True)
@@ -417,7 +422,7 @@ class Streamer(object):
             items_todo = [processed_queue.get(block=True, timeout=None) for _ in range(processed_queue.qsize())]
             futures = []
             while items_todo:
-                item = items_todo.pop()
+                item = items_todo.pop(0)
                 if item is None:
                     wait(futures)
                     return
@@ -446,7 +451,8 @@ class Streamer(object):
 @click.option('--limit', '-l', type=click.INT, help="Number of files to be processed in this run")
 @click.option('--reuse_full_list', is_flag=True,
               help="Reuse the full file list for the signature(product, year, month)")
-@click.option('--src', '-s',type=click.Path(exists=True), help="Source directory just above tiles directories")
+@click.option('--src', '-s',type=click.Path(exists=True),
+              help="Source directory just above tiles directories. This option must be used with --restart option")
 def main(product, queue, bucket, job, restart, year, month, limit, reuse_full_list, src):
     assert product in ['fc-ls5', 'fc-ls8', 'wofs-wofls'], "Product name must be one of fc-ls5, fc-ls8, or wofs-wofls"
 
@@ -463,7 +469,9 @@ def main(product, queue, bucket, job, restart, year, month, limit, reuse_full_li
         bucket_url = os.path.join(bucket, JobControl.wofs_wofls_aws_top_level())
 
     if src:
+        assert restart, "--src must be used with --restart option"
         src_dir = src
+
     restart_ = True if restart else False
     streamer = Streamer(product, src_dir, queue, bucket_url, job, restart_, year, month, limit, reuse_full_list)
     streamer.run()
