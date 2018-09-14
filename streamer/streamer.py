@@ -190,7 +190,7 @@ class COGNetCDF:
                     add_ovr = [
                         'gdaladdo',
                         '-r',
-                        'average',
+                        'nearest',
                         '--config',
                         'GDAL_TIFF_OVR_BLOCKSIZE',
                         '512',
@@ -441,7 +441,7 @@ class Streamer(object):
 
     def upload(self, processed_queue, executor):
         """ The function that run in the file upload to AWS thread """
-        
+
         while True:
             items_todo = [processed_queue.get(block=True, timeout=None) for _ in range(processed_queue.qsize())]
             futures = []
