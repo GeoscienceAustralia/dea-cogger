@@ -245,10 +245,15 @@ class COGNetCDF:
             prefix = file_names[index]
             dataset_item = dataset_array.dataset.item(index)
             dest = os.path.join(dest_dir, prefix)
-            with tempfile.TemporaryDirectory() as tmpdir:
-                run_command(['mkdir', dest], tmpdir)
-            COGNetCDF._dataset_to_yaml(prefix, dataset_item, dest)
-            COGNetCDF._dataset_to_cog(prefix, subdatasets, index + 1, dest)
+            try:
+                with tempfile.TemporaryDirectory() as tmpdir:
+                    run_command(['mkdir', dest], tmpdir)
+            except Exception as e:
+                logging.error("Failure creating queue dir: %s", dest)
+                logging.exception("Exception", e)
+            else:
+                COGNetCDF._dataset_to_yaml(prefix, dataset_item, dest)
+                COGNetCDF._dataset_to_cog(prefix, subdatasets, index + 1, dest)
         return file
 
 
@@ -410,7 +415,7 @@ class Streamer(object):
             self.items = items_all[start_file: end_file + 1]
 
             # We need the file system queue specific for this run
-            self.queue_dir = os.path.join(self.queue_dir, product + 'range_run_{}_{}'.format(start_file, end_file))
+            self.queue_dir = os.path.join(self.queue_dir, product + '_range_run_{}_{}'.format(start_file, end_file))
         else:
             # Compute file list
             items_done = []
@@ -426,12 +431,12 @@ class Streamer(object):
                 self.items = self.items[0:limit]
 
             # We don't want queue to have conflicts with other runs
-            self.queue_dir = os.path.join(self.queue_dir, product + 'single_run')
+            self.queue_dir = os.path.join(self.queue_dir, product + '_single_run')
 
         # We are going to start with a empty queue_dir
-        if not os.path.exists(queue_dir):
+        if not os.path.exists(self.queue_dir):
             with tempfile.TemporaryDirectory() as tmpdir:
-                run_command(['mkdir', queue_dir], tmpdir)
+                run_command(['mkdir', self.queue_dir], tmpdir)
         else:
             with tempfile.TemporaryDirectory() as tmpdir:
                 run('rm -fR ' + os.path.join(self.queue_dir, '*'),
