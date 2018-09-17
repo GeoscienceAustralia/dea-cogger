@@ -90,38 +90,34 @@ def upload_to_s3(file, src_dir, dest, job_file):
     """
 
     file_names = JobControl.get_unstacked_names(file)
+    success = True
     for index in range(len(file_names)):
         prefix = file_names[index]
         src = os.path.join(src_dir, prefix)
         item_dir = JobControl.aws_dir(prefix)
         dest_name = os.path.join(dest, item_dir)
-        aws_copy1 = [
+
+        # Lets remove *.xml files
+        try:
+            with tempfile.TemporaryDirectory() as tmpdir:
+                run('rm -fR -- ' + src + '/*.xml', stderr=subprocess.STDOUT, cwd=tmpdir, check=True, shell=True)
+        except Exception as e:
+            success = False
+            logging.error("Failure in queue: removing datasets *.xml")
+            logging.exception("Exception", e)
+
+        aws_copy = [
             'aws',
             's3',
             'sync',
             src,
-            dest_name,
-            '--exclude',
-            '*',
-            '--include',
-            '{}*.yaml'.format(prefix)
-        ]
-        aws_copy2 = [
-            'aws',
-            's3',
-            'sync',
-            src,
-            dest_name,
-            '--exclude',
-            '*',
-            '--include',
-            '{}*.tif'.format(prefix)
+            dest_name
         ]
         try:
             with tempfile.TemporaryDirectory() as tmpdir:
-                run_command(aws_copy1, tmpdir)
-                run_command(aws_copy2, tmpdir)
+                run_command(aws_copy, tmpdir)
         except Exception as e:
+            success = False
             logging.error("AWS upload error %s", prefix)
             logging.exception("Exception", e)
 
@@ -130,12 +126,14 @@ def upload_to_s3(file, src_dir, dest, job_file):
             with tempfile.TemporaryDirectory() as tmpdir:
                 run('rm -fR -- ' + src, stderr=subprocess.STDOUT, cwd=tmpdir, check=True, shell=True)
         except Exception as e:
+            success = False
             logging.error("Failure in queue: removing dataset %s", prefix)
             logging.exception("Exception", e)
 
     # job control logs
-    with open(job_file, 'a') as f:
-        f.write(file + '\n')
+    if success:
+        with open(job_file, 'a') as f:
+            f.write(file + '\n')
 
 
 class COGNetCDF:
@@ -316,7 +314,6 @@ class JobControl:
         """ Given a prefix like 'LS_WATER_3577_9_-39_20180506102018000000' what is the AWS directory structure?"""
         item_parts = item.split('_')
         time_stamp = item_parts[-1]
-        assert len(time_stamp) == 20, '{} does not have an acceptable timestamp'.format(item)
         year = time_stamp[0:4]
         month = time_stamp[4:6]
         day = time_stamp[6:8]
@@ -340,7 +337,8 @@ class JobControl:
         names = []
         for index, dt in enumerate(dts_times):
             dt_ = datetime.fromtimestamp(dt)
-            time_stamp = to_datetime(dt_).strftime('%Y%m%d%H%M%S%f')
+            # With nanosecond -use '%Y%m%d%H%M%S%f'
+            time_stamp = to_datetime(dt_).strftime('%Y%m%d%H%M%S')
             if year:
                 if month:
                     if dt_.year == year and dt_.month == month:
@@ -368,14 +366,9 @@ class JobControl:
 
 class Streamer(object):
     def __init__(self, product, src_dir, queue_dir, bucket_url, job_dir, restart,
-                 year=None, month=None, limit=None, reuse_full_list=None):
+                 year=None, month=None, limit=None, file_range=None, reuse_full_list=None):
         self.src_dir = src_dir
         self.queue_dir = queue_dir
-
-        # We are going to start with a empty queue_dir
-        with tempfile.TemporaryDirectory() as tmpdir:
-            run('rm -fR ' + os.path.join(self.queue_dir, '*'),
-                stderr=subprocess.STDOUT, cwd=tmpdir, check=True, shell=True)
 
         self.dest_url = bucket_url
         self.job_dir = job_dir
@@ -396,12 +389,6 @@ class Streamer(object):
             with tempfile.TemporaryDirectory() as tmpdir:
                 run_command(['rm', job_file], tmpdir)
 
-        # Compute file list
-        items_done = []
-        if os.path.exists(job_file):
-            with open(job_file) as f:
-                items_done = f.read().splitlines()
-
         # If reuse_full_list items_all are read from a file if present
         # and subsequently save into a file if items are computed new
         items_all_file = os.path.join(self.job_dir, items_all_file)
@@ -417,12 +404,38 @@ class Streamer(object):
         else:
             items_all = JobControl.get_gridspec_files(self.src_dir, year, month)
 
-        self.items = [item for item in items_all if item not in items_done]
-        self.items.sort(reverse=True)
+        if file_range:
+            start_file, end_file = file_range
+            # start_file and end_file are inclusive so we need end_file + 1
+            self.items = items_all[start_file: end_file + 1]
 
-        # Enforce if limit
-        if limit:
-            self.items = self.items[0:limit]
+            # We need the file system queue specific for this run
+            self.queue_dir = os.path.join(self.queue_dir, product + 'range_run_{}_{}'.format(start_file, end_file))
+        else:
+            # Compute file list
+            items_done = []
+            if os.path.exists(job_file):
+                with open(job_file) as f:
+                    items_done = f.read().splitlines()
+
+            self.items = [item for item in items_all if item not in items_done]
+            self.items.sort(reverse=True)
+
+            # Enforce if limit
+            if limit:
+                self.items = self.items[0:limit]
+
+            # We don't want queue to have conflicts with other runs
+            self.queue_dir = os.path.join(self.queue_dir, product + 'single_run')
+
+        # We are going to start with a empty queue_dir
+        if not os.path.exists(queue_dir):
+            with tempfile.TemporaryDirectory() as tmpdir:
+                run_command(['mkdir', queue_dir], tmpdir)
+        else:
+            with tempfile.TemporaryDirectory() as tmpdir:
+                run('rm -fR ' + os.path.join(self.queue_dir, '*'),
+                    stderr=subprocess.STDOUT, cwd=tmpdir, check=True, shell=True)
 
         print(self.items.__str__() + ' to do')
         self.job_file = job_file
@@ -463,6 +476,9 @@ class Streamer(object):
             consumer.start()
             producer.join()
             consumer.join()
+            # We will remove the queue directory
+            with tempfile.TemporaryDirectory() as tmpdir:
+                run('rm -fR ' + self.queue_dir, stderr=subprocess.STDOUT, cwd=tmpdir, check=True, shell=True)
 
 
 @click.command()
@@ -474,11 +490,13 @@ class Streamer(object):
 @click.option('--year', '-y', type=click.INT, help="The year")
 @click.option('--month', '-m', type=click.INT, help="The month")
 @click.option('--limit', '-l', type=click.INT, help="Number of files to be processed in this run")
+@click.option('--file_range', '-f', nargs=2, type=click.INT,
+              help="The range of files (ends inclusive) with respect to full list")
 @click.option('--reuse_full_list', is_flag=True,
               help="Reuse the full file list for the signature(product, year, month)")
 @click.option('--src', '-s',type=click.Path(exists=True),
               help="Source directory just above tiles directories. This option must be used with --restart option")
-def main(product, queue, bucket, job, restart, year, month, limit, reuse_full_list, src):
+def main(product, queue, bucket, job, restart, year, month, limit, file_range, reuse_full_list, src):
     assert product in ['fc-ls5', 'fc-ls8', 'wofs-wofls'], "Product name must be one of fc-ls5, fc-ls8, or wofs-wofls"
 
     src_dir = None
@@ -498,7 +516,8 @@ def main(product, queue, bucket, job, restart, year, month, limit, reuse_full_li
         src_dir = src
 
     restart_ = True if restart else False
-    streamer = Streamer(product, src_dir, queue, bucket_url, job, restart_, year, month, limit, reuse_full_list)
+    streamer = Streamer(product, src_dir, queue, bucket_url, job, restart_,
+                        year, month, limit, file_range, reuse_full_list)
     streamer.run()
 
 

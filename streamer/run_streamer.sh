@@ -7,5 +7,5 @@ python streamer.py -p wofs-wofls \
                    -j /g/data/u46/users/aj9439/aws/job \
                    -y 2018 \
                    -m 5 \
-                   -l 10 \
+                   -l 5 \
                    --reuse_full_list
