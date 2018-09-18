@@ -62,6 +62,9 @@ from yaml import CLoader as Loader, CDumper as Dumper
 from functools import reduce
 import logging
 
+from datacube import Datacube
+from datacube.model import Range
+
 LOG = logging.getLogger(__name__)
 
 MAX_QUEUE_SIZE = 16
@@ -368,10 +371,35 @@ class JobControl:
             break
         return reduce((lambda x, y: x + y), names)
 
+    @staticmethod
+    def get_indexed_files(product, year=None, month=None):
+        if year and month:
+            time_range = Range(datetime(year=year, month=month, day=1),
+                               datetime(year=year, month=month + 1, day=1))
+        elif year:
+            time_range = Range(datetime(year=year, month=1, day=1),
+                               datetime(year=year + 1, month=1, day=1))
+        else:
+            time_range = None
+        dc = Datacube(app='streamer', env='dea-prod')
+        query = {
+            'product': product,
+            'time': time_range
+        }
+        files = dc.index.datasets.search_returning(field_names=('uri',), **query)
+        return [uri[0].split(':')[1] for uri in files]
+
 
 class Streamer(object):
     def __init__(self, product, src_dir, queue_dir, bucket_url, job_dir, restart,
-                 year=None, month=None, limit=None, file_range=None, reuse_full_list=None):
+                 year=None, month=None, limit=None, file_range=None, reuse_full_list=None, use_datacube=None):
+
+        def _path_check(file, file_list):
+            for item in file_list:
+                if os.path.samefile(file, item):
+                    return True
+            return False
+
         self.src_dir = src_dir
         self.queue_dir = queue_dir
 
@@ -402,12 +430,18 @@ class Streamer(object):
                 with open(items_all_file) as f:
                     items_all = f.read().splitlines()
             else:
-                items_all = JobControl.get_gridspec_files(self.src_dir, year, month)
+                if use_datacube:
+                    items_all = JobControl.get_indexed_files(product, year, month)
+                else:
+                    items_all = JobControl.get_gridspec_files(self.src_dir, year, month)
                 with open(items_all_file, 'a') as f:
                     for item in items_all:
                         f.write(item + '\n')
         else:
-            items_all = JobControl.get_gridspec_files(self.src_dir, year, month)
+            if use_datacube:
+                items_all = JobControl.get_indexed_files(product, year, month)
+            else:
+                items_all = JobControl.get_gridspec_files(self.src_dir, year, month)
 
         if file_range:
             start_file, end_file = file_range
@@ -423,7 +457,7 @@ class Streamer(object):
                 with open(job_file) as f:
                     items_done = f.read().splitlines()
 
-            self.items = [item for item in items_all if item not in items_done]
+            self.items = [item for item in items_all if _path_check(item, items_done)]
             self.items.sort(reverse=True)
 
             # Enforce if limit
@@ -487,7 +521,7 @@ class Streamer(object):
 
 
 @click.command()
-@click.option('--product', '-p', required=True, help="Product name: one of fc-ls5, fc-ls8, or wofs-wofls")
+@click.option('--product', '-p', required=True, help="Product name: one of fc-ls5, fc-ls8, or wofs_albers")
 @click.option('--queue', '-q', required=True, help="Queue directory")
 @click.option('--bucket', '-b', required=True, help="Destination Bucket Url")
 @click.option('--job', '-j', required=True, help="Job directory that store job tracking info")
@@ -499,10 +533,11 @@ class Streamer(object):
               help="The range of files (ends inclusive) with respect to full list")
 @click.option('--reuse_full_list', is_flag=True,
               help="Reuse the full file list for the signature(product, year, month)")
+@click.option('--use_datacube', is_flag=True, help="Use datacube to extract the list of files")
 @click.option('--src', '-s',type=click.Path(exists=True),
               help="Source directory just above tiles directories. This option must be used with --restart option")
-def main(product, queue, bucket, job, restart, year, month, limit, file_range, reuse_full_list, src):
-    assert product in ['fc-ls5', 'fc-ls8', 'wofs-wofls'], "Product name must be one of fc-ls5, fc-ls8, or wofs-wofls"
+def main(product, queue, bucket, job, restart, year, month, limit, file_range, reuse_full_list, use_datacube, src):
+    assert product in ['fc-ls5', 'fc-ls8', 'wofs_albers'], "Product name must be one of fc-ls5, fc-ls8, or wofs_albers"
 
     src_dir = None
     bucket_url = None
@@ -512,7 +547,7 @@ def main(product, queue, bucket, job, restart, year, month, limit, file_range, r
     elif product == 'fc-ls8':
         src_dir = JobControl.fc_ls8_src_dir()
         bucket_url = os.path.join(bucket, JobControl.fc_ls8_aws_top_level())
-    elif product == 'wofs-wofls':
+    elif product == 'wofs_albers':
         src_dir = JobControl.wofs_wofls_src_dir()
         bucket_url = os.path.join(bucket, JobControl.wofs_wofls_aws_top_level())
 
@@ -522,7 +557,7 @@ def main(product, queue, bucket, job, restart, year, month, limit, file_range, r
 
     restart_ = True if restart else False
     streamer = Streamer(product, src_dir, queue, bucket_url, job, restart_,
-                        year, month, limit, file_range, reuse_full_list)
+                        year, month, limit, file_range, reuse_full_list, use_datacube)
     streamer.run()
 
 
