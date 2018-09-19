@@ -61,6 +61,7 @@ import yaml
 from yaml import CLoader as Loader, CDumper as Dumper
 from functools import reduce
 import logging
+import re
 
 from datacube import Datacube
 from datacube.model import Range
@@ -69,24 +70,6 @@ LOG = logging.getLogger(__name__)
 
 MAX_QUEUE_SIZE = 16
 WORKERS_POOL = 7
-
-"""
-In [1]: s = 'WOFS_3577_9_-49_summary.nc'
-
-In [2]: r = r'WOFS_3577_(?P<x>-?[0-9]*)_(?P<y>-?[0-9]*)_summary.nc'
-
-In [3]: import re
-
-In [4]: t = re.compile(r)
-
-In [5]: m = t.match(s)
-
-In [6]: m.groupdict()
-Out[6]: {'x': '9', 'y': '-49'}
-
-In [7]: st = 'WOFS_3577_{x}_{y}_summary.nc'
-In [8]: st1 = st.replace("{x}", "(?P<x>-?[0-9]*)")
-"""
 
 DEFAULT_CONFIG = """
 products: 
@@ -349,43 +332,53 @@ class JobControl:
     def __init__(self, cfg):
         self.cfg = cfg
 
-    @staticmethod
-    def aws_dir(item, product):
+    def aws_dir(self, item, product):
         """ Given a prefix like 'LS_WATER_3577_9_-39_20180506102018000000' what is the AWS directory structure?"""
-        item_parts = item.split('_')
-        time_stamp = item_parts[-1]
-        year = time_stamp[0:4]
-        month = time_stamp[4:6]
-        day = time_stamp[6:8]
+        if self.cfg['products'][product]['time_type'] == 'flat':
+            # only extract x and y
+            tem = self.cfg['products'][product]['template']
+            tem = tem.replace("{x}", "(?P<x>-?[0-9]*)")
+            tem = tem.replace("{y}", "(?P<y>-?[0-9]*)")
+            values = re.compile(tem).match(item + '.nc')
+            return os.path.join('x_' + values['x'], 'y_' + values['y'])
+        elif self.cfg['products'][product]['time_type'] == 'timed':
+            item_parts = item.split('_')
+            time_stamp = item_parts[-1]
+            year = time_stamp[0:4]
+            month = time_stamp[4:6]
+            day = time_stamp[6:8]
 
-        y_index = item_parts[-2]
-        x_index = item_parts[-3]
-        return os.path.join('x_' + x_index, 'y_' + y_index, year, month, day)
+            y_index = item_parts[-2]
+            x_index = item_parts[-3]
+            return os.path.join('x_' + x_index, 'y_' + y_index, year, month, day)
+        else:
+            raise RuntimeError("Incorrect product time_type")
 
     def get_unstacked_names(self, product, netcdf_file, year=None, month=None):
         """
         Return the dataset prefix names corresponding to each dataset within the given NetCDF file.
         """
 
-        dts = Dataset(netcdf_file)
         file_id = os.path.splitext(basename(netcdf_file))[0]
-        prefix = "_".join(file_id.split('_')[0:-2])
-        stack_info = file_id.split('_')[-1]
-
-        dts_times = dts.variables['time']
         names = []
-        for index, dt in enumerate(dts_times):
-            dt_ = datetime.fromtimestamp(dt)
-            # With nanosecond -use '%Y%m%d%H%M%S%f'
-            time_stamp = to_datetime(dt_).strftime('%Y%m%d%H%M%S')
-            if year:
-                if month:
-                    if dt_.year == year and dt_.month == month:
+        if self.cfg['products'][product]['time_type'] == 'flat':
+            names.append(file_id)
+        else:
+            dts = Dataset(netcdf_file)
+            prefix = "_".join(file_id.split('_')[0:-2])
+            dts_times = dts.variables['time']
+            for index, dt in enumerate(dts_times):
+                dt_ = datetime.fromtimestamp(dt)
+                # With nanosecond -use '%Y%m%d%H%M%S%f'
+                time_stamp = to_datetime(dt_).strftime('%Y%m%d%H%M%S')
+                if year:
+                    if month:
+                        if dt_.year == year and dt_.month == month:
+                            names.append('{}_{}'.format(prefix, time_stamp))
+                    elif dt_.year == year:
                         names.append('{}_{}'.format(prefix, time_stamp))
-                elif dt_.year == year:
+                else:
                     names.append('{}_{}'.format(prefix, time_stamp))
-            else:
-                names.append('{}_{}'.format(prefix, time_stamp))
         return names
 
     @staticmethod
@@ -409,19 +402,12 @@ class JobControl:
 
     @staticmethod
     def get_indexed_files(product, year=None, month=None):
+        query = {'product': product}
         if year and month:
-            time_range = Range(datetime(year=year, month=month, day=1),
-                               datetime(year=year, month=month + 1, day=1))
+            query['time'] = Range(datetime(year=year, month=month, day=1), datetime(year=year, month=month + 1, day=1))
         elif year:
-            time_range = Range(datetime(year=year, month=1, day=1),
-                               datetime(year=year + 1, month=1, day=1))
-        else:
-            time_range = None
+            query['time'] = Range(datetime(year=year, month=1, day=1), datetime(year=year + 1, month=1, day=1))
         dc = Datacube(app='streamer', env='dea-prod')
-        query = {
-            'product': product,
-            'time': time_range
-        }
         files = dc.index.datasets.search_returning(field_names=('uri',), **query)
         return [uri[0].split(':')[1] for uri in files]
 
