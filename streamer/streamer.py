@@ -70,6 +70,53 @@ LOG = logging.getLogger(__name__)
 MAX_QUEUE_SIZE = 16
 WORKERS_POOL = 7
 
+"""
+In [1]: s = 'WOFS_3577_9_-49_summary.nc'
+
+In [2]: r = r'WOFS_3577_(?P<x>-?[0-9]*)_(?P<y>-?[0-9]*)_summary.nc'
+
+In [3]: import re
+
+In [4]: t = re.compile(r)
+
+In [5]: m = t.match(s)
+
+In [6]: m.groupdict()
+Out[6]: {'x': '9', 'y': '-49'}
+
+In [7]: st = 'WOFS_3577_{x}_{y}_summary.nc'
+In [8]: st1 = st.replace("{x}", "(?P<x>-?[0-9]*)")
+"""
+
+DEFAULT_CONFIG = """
+products: 
+    wofs_albers: 
+        time_type: timed
+        src_dir: /g/data/fk4/datacube/002/WOfS/WOfS_25_2_1/netcdf
+        src_dir_type: tiled
+        aws_dir: WOfS/WOFLs/v2.1.0/combined
+        bucket:  s3://dea-public-data-dev
+    wofs_filtered_summary:
+        time_type: flat
+        template: wofs_filtered_summary_{x}_{y}.nc
+        src_dir: /g/data2/fk4/datacube/002/WOfS/WOfS_Filt_Stats_25_2_1/netcdf
+        src_dir_type: flat
+        aws_dir: WOfS/filtered_summary/v2.1.0/combined
+        bucket: s3://dea-public-data-dev
+    ls5_fc_albers:
+        time_type: timed
+        src_dir: /g/data/fk4/datacube/002/FC/LS5_TM_FC
+        src_dir_type: tiled
+        aws_dir: fractional-cover/fc/v2.2.0/ls5
+        bucket: s3://dea-public-data-dev
+    ls8_fc_albers:
+        time_type: timed
+        src_dir: /g/data/fk4/datacube/002/FC/LS8_OLI_FC
+        src_dir_type: tiled
+        aws_dir: fractional-cover/fc/v2.2.0/ls8
+        bucket: s3://dea-public-data-dev
+"""
+
 
 def run_command(command, work_dir):
     """
@@ -81,7 +128,7 @@ def run_command(command, work_dir):
         raise RuntimeError("command '{}' return with error (code {}): {}".format(e.cmd, e.returncode, e.output))
 
 
-def upload_to_s3(file, src_dir, dest, job_file):
+def upload_to_s3(product, job_control, file, src_dir, dest, job_file):
     """
     Uploads the .yaml and .tif files that correspond to the given NetCDF 'file' into the AWS
     destination bucket indicated by 'dest'. Once complete add the file name 'file' to the 'job_file'.
@@ -92,12 +139,12 @@ def upload_to_s3(file, src_dir, dest, job_file):
     prefix. The 'prefix' would have structure as in 'LS_WATER_3577_9_-39_20180506102018000000'.
     """
 
-    file_names = JobControl.get_unstacked_names(file)
+    file_names = job_control.get_unstacked_names(product, file)
     success = True
     for index in range(len(file_names)):
         prefix = file_names[index]
         src = os.path.join(src_dir, prefix)
-        item_dir = JobControl.aws_dir(prefix)
+        item_dir = job_control.aws_dir(prefix, product)
         dest_name = os.path.join(dest, item_dir)
 
         # Lets remove *.xml files
@@ -233,14 +280,14 @@ class COGNetCDF:
                     logging.exception("Exception", e)
 
     @staticmethod
-    def datasets_to_cog(file, dest_dir):
+    def datasets_to_cog(product, job_control, file, dest_dir):
         """
         Convert the datasets in the NetCDF file 'file' into 'dest_dir' where each dataset is in
         a separate directory with the name indicated by the dataset prefix. The prefix would look
         like 'LS_WATER_3577_9_-39_20180506102018000000'
         """
 
-        file_names = JobControl.get_unstacked_names(file)
+        file_names = job_control.get_unstacked_names(product, file)
         dataset_array = xarray.open_dataset(file)
         dataset = gdal.Open(file, gdal.GA_ReadOnly)
         subdatasets = dataset.GetSubDatasets()
@@ -267,23 +314,29 @@ class TileFiles:
         self.year = year
         self.month = month
 
+    @staticmethod
+    def check(file, year, month):
+        name, ext = os.path.splitext(basename(file))
+        if ext == '.nc':
+            time_stamp = name.split('_')[-2]
+            if year:
+                if int(time_stamp[0:4]) == year:
+                    if month:
+                        if len(time_stamp) >= 6 and int(time_stamp[4:6]) == month:
+                            return True
+                    else:
+                        return True
+            else:
+                return True
+        return False
+
     def process_tile_files(self, tile_dir):
         names = []
         for top, dirs, files in os.walk(tile_dir):
             for name in files:
-                name_ = os.path.splitext(name)
-                if name_[1] == '.nc':
-                    full_name = os.path.join(top, name)
-                    time_stamp = name_[0].split('_')[-2]
-                    if self.year:
-                        if int(time_stamp[0:4]) == self.year:
-                            if self.month and len(time_stamp) >= 6:
-                                if int(time_stamp[4:6]) == self.month:
-                                    names.append(full_name)
-                            else:
-                                names.append(full_name)
-                    else:
-                        names.append(full_name)
+                full_name = os.path.join(top, name)
+                if self.check(full_name, self.year, self.month):
+                    names.append(full_name)
             break
         return names
 
@@ -293,32 +346,11 @@ class JobControl:
     Utilities and some hardcoded stuff for tracking and coding job info.
     """
 
-    @staticmethod
-    def wofs_wofls_src_dir():
-        return '/g/data/fk4/datacube/002/WOfS/WOfS_25_2_1/netcdf'
+    def __init__(self, cfg):
+        self.cfg = cfg
 
     @staticmethod
-    def fc_ls5_src_dir():
-        return '/g/data/fk4/datacube/002/FC/LS5_TM_FC'
-
-    @staticmethod
-    def fc_ls8_src_dir():
-        return '/g/data/fk4/datacube/002/FC/LS8_OLI_FC'
-
-    @staticmethod
-    def wofs_wofls_aws_top_level():
-        return 'WOfS/WOFLs/v2.1.0/combined'
-
-    @staticmethod
-    def fc_ls5_aws_top_level():
-        return 'fractional-cover/fc/v2.2.0/ls5'
-
-    @staticmethod
-    def fc_ls8_aws_top_level():
-        return 'fractional-cover/fc/v2.2.0/ls8'
-
-    @staticmethod
-    def aws_dir(item):
+    def aws_dir(item, product):
         """ Given a prefix like 'LS_WATER_3577_9_-39_20180506102018000000' what is the AWS directory structure?"""
         item_parts = item.split('_')
         time_stamp = item_parts[-1]
@@ -330,8 +362,7 @@ class JobControl:
         x_index = item_parts[-3]
         return os.path.join('x_' + x_index, 'y_' + y_index, year, month, day)
 
-    @staticmethod
-    def get_unstacked_names(netcdf_file, year=None, month=None):
+    def get_unstacked_names(self, product, netcdf_file, year=None, month=None):
         """
         Return the dataset prefix names corresponding to each dataset within the given NetCDF file.
         """
@@ -358,18 +389,23 @@ class JobControl:
         return names
 
     @staticmethod
-    def get_gridspec_files(src_dir, year=None, month=None):
+    def get_gridspec_files(src_dir, src_dir_type, year=None, month=None):
         """
         Extract the NetCDF file list corresponding to 'grid-spec' product for the given year and month
         """
 
         names = []
         for tile_top, tile_dirs, tile_files in os.walk(src_dir):
-            full_name_list = [os.path.join(tile_top, tile_dir) for tile_dir in tile_dirs]
-            with Pool(8) as p:
-                names = p.map(TileFiles(year, month).process_tile_files, full_name_list)
-            break
-        return reduce((lambda x, y: x + y), names)
+            if src_dir_type == 'tiled':
+                full_name_list = [os.path.join(tile_top, tile_dir) for tile_dir in tile_dirs]
+                with Pool(WORKERS_POOL) as p:
+                    names = p.map(TileFiles(year, month).process_tile_files, full_name_list)
+                    names = reduce((lambda x, y: x + y), names)
+                break
+            elif src_dir_type == 'flat':
+                names = [os.path.join(tile_top, file) for file in tile_files if TileFiles.check(file, year, month)]
+                break
+        return names
 
     @staticmethod
     def get_indexed_files(product, year=None, month=None):
@@ -391,7 +427,7 @@ class JobControl:
 
 
 class Streamer(object):
-    def __init__(self, product, src_dir, queue_dir, bucket_url, job_dir, restart,
+    def __init__(self, cfg, product, queue_dir, job_dir, restart,
                  year=None, month=None, limit=None, file_range=None, reuse_full_list=None, use_datacube=None):
 
         def _path_check(file, file_list):
@@ -400,10 +436,10 @@ class Streamer(object):
                     return True
             return False
 
-        self.src_dir = src_dir
+        self.product = product
+        self.job_control = JobControl(cfg)
         self.queue_dir = queue_dir
-
-        self.dest_url = bucket_url
+        self.dest_url = os.path.join(cfg['products'][product]['bucket'], cfg['products'][product]['aws_dir'])
         self.job_dir = job_dir
 
         # Compute the name of job control files
@@ -416,15 +452,18 @@ class Streamer(object):
         items_all_file = items_all_file + '_' + str(month) if year and month else items_all_file
         items_all_file = items_all_file + '.log'
 
-        # if restart clear streamer_job_control.log
+        # if restart clear streamer_job_control log and items_all log
         job_file = os.path.join(self.job_dir, job_file)
-        if restart and os.path.exists(job_file):
-            with tempfile.TemporaryDirectory() as tmpdir:
-                run_command(['rm', job_file], tmpdir)
-
-        # If reuse_full_list items_all are read from a file if present
-        # and subsequently save into a file if items are computed new
         items_all_file = os.path.join(self.job_dir, items_all_file)
+        if restart:
+            with tempfile.TemporaryDirectory() as tmpdir:
+                if os.path.exists(job_file):
+                    run_command(['rm', job_file], tmpdir)
+                if os.path.exists(items_all_file):
+                    run_command(['rm', items_all_file], tmpdir)
+
+        # If reuse_full_list, items_all are read from a file if present
+        # and save into a file if items are computed new
         if reuse_full_list:
             if os.path.exists(items_all_file):
                 with open(items_all_file) as f:
@@ -433,7 +472,8 @@ class Streamer(object):
                 if use_datacube:
                     items_all = JobControl.get_indexed_files(product, year, month)
                 else:
-                    items_all = JobControl.get_gridspec_files(self.src_dir, year, month)
+                    items_all = JobControl.get_gridspec_files(cfg['products'][product]['src_dir'],
+                                                              cfg['products'][product]['src_dir_type'], year, month)
                 with open(items_all_file, 'a') as f:
                     for item in items_all:
                         f.write(item + '\n')
@@ -441,7 +481,8 @@ class Streamer(object):
             if use_datacube:
                 items_all = JobControl.get_indexed_files(product, year, month)
             else:
-                items_all = JobControl.get_gridspec_files(self.src_dir, year, month)
+                items_all = JobControl.get_gridspec_files(cfg['products'][product]['src_dir'],
+                                                          cfg['products'][product]['src_dir_type'], year, month)
 
         if file_range:
             start_file, end_file = file_range
@@ -457,8 +498,8 @@ class Streamer(object):
                 with open(job_file) as f:
                     items_done = f.read().splitlines()
 
-            self.items = [item for item in items_all if _path_check(item, items_done)]
-            self.items.sort(reverse=True)
+            self.items = [item for item in items_all if not _path_check(item, items_done)]
+            # self.items.sort(reverse=True)
 
             # Enforce if limit
             if limit:
@@ -485,7 +526,7 @@ class Streamer(object):
         while self.items:
             queue_capacity = MAX_QUEUE_SIZE - processed_queue.qsize()
             run_size = queue_capacity if len(self.items) > queue_capacity else len(self.items)
-            futures = [executor.submit(COGNetCDF.datasets_to_cog, self.items.pop(),
+            futures = [executor.submit(COGNetCDF.datasets_to_cog, self.product, self.job_control, self.items.pop(),
                                        self.queue_dir) for _ in range(run_size)]
             for future in as_completed(futures):
                 processed_queue.put(future.result())
@@ -503,7 +544,8 @@ class Streamer(object):
                 if item is None:
                     wait(futures)
                     return
-                futures.append(executor.submit(upload_to_s3, item, self.queue_dir, self.dest_url, self.job_file))
+                futures.append(executor.submit(upload_to_s3, self.product, self.job_control, item,
+                                               self.queue_dir, self.dest_url, self.job_file))
             wait(futures)
 
     def run(self):
@@ -521,9 +563,9 @@ class Streamer(object):
 
 
 @click.command()
-@click.option('--product', '-p', required=True, help="Product name: one of fc-ls5, fc-ls8, or wofs_albers")
+@click.option('--product', '-p', required=True,
+              help="Product name: one of ls5_fc_albers, ls8_fc_albers, wofs_albers, or wofs_filtered_summary")
 @click.option('--queue', '-q', required=True, help="Queue directory")
-@click.option('--bucket', '-b', required=True, help="Destination Bucket Url")
 @click.option('--job', '-j', required=True, help="Job directory that store job tracking info")
 @click.option('--restart', is_flag=True, help="Restarts the job ignoring prior work")
 @click.option('--year', '-y', type=click.INT, help="The year")
@@ -534,29 +576,14 @@ class Streamer(object):
 @click.option('--reuse_full_list', is_flag=True,
               help="Reuse the full file list for the signature(product, year, month)")
 @click.option('--use_datacube', is_flag=True, help="Use datacube to extract the list of files")
-@click.option('--src', '-s',type=click.Path(exists=True),
-              help="Source directory just above tiles directories. This option must be used with --restart option")
-def main(product, queue, bucket, job, restart, year, month, limit, file_range, reuse_full_list, use_datacube, src):
-    assert product in ['fc-ls5', 'fc-ls8', 'wofs_albers'], "Product name must be one of fc-ls5, fc-ls8, or wofs_albers"
+def main(product, queue, job, restart, year, month, limit, file_range, reuse_full_list, use_datacube):
+    assert product in ['ls5_fc_albers', 'ls8_fc_albers', 'wofs_albers', 'wofs_filtered_summary'], \
+        "Product name must be one of ls5_fc_albers, ls8_fc_albers, wofs_albers, or wofs_filtered_summary"
 
-    src_dir = None
-    bucket_url = None
-    if product == 'fc-ls5':
-        src_dir = JobControl.fc_ls5_src_dir()
-        bucket_url = os.path.join(bucket, JobControl.fc_ls5_aws_top_level())
-    elif product == 'fc-ls8':
-        src_dir = JobControl.fc_ls8_src_dir()
-        bucket_url = os.path.join(bucket, JobControl.fc_ls8_aws_top_level())
-    elif product == 'wofs_albers':
-        src_dir = JobControl.wofs_wofls_src_dir()
-        bucket_url = os.path.join(bucket, JobControl.wofs_wofls_aws_top_level())
-
-    if src:
-        assert restart, "--src must be used with --restart option"
-        src_dir = src
+    cfg = yaml.load(DEFAULT_CONFIG)
 
     restart_ = True if restart else False
-    streamer = Streamer(product, src_dir, queue, bucket_url, job, restart_,
+    streamer = Streamer(cfg, product, queue, job, restart_,
                         year, month, limit, file_range, reuse_full_list, use_datacube)
     streamer.run()
 
