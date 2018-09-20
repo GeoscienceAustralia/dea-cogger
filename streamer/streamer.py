@@ -81,7 +81,8 @@ products:
         bucket:  s3://dea-public-data-dev
     wofs_filtered_summary:
         time_type: flat
-        template: wofs_filtered_summary_{x}_{y}.nc
+        src_template: wofs_filtered_summary_{x}_{y}.nc
+        dest_template: wofs_filtered_summary_{x}_{y}
         src_dir: /g/data2/fk4/datacube/002/WOfS/WOfS_Filt_Stats_25_2_1/netcdf
         src_dir_type: flat
         aws_dir: WOfS/filtered_summary/v2.1.0/combined
@@ -336,11 +337,17 @@ class JobControl:
         """ Given a prefix like 'LS_WATER_3577_9_-39_20180506102018000000' what is the AWS directory structure?"""
         if self.cfg['products'][product]['time_type'] == 'flat':
             # only extract x and y
-            tem = self.cfg['products'][product]['template']
+            tem = self.cfg['products'][product]['dest_template']
             tem = tem.replace("{x}", "(?P<x>-?[0-9]*)")
             tem = tem.replace("{y}", "(?P<y>-?[0-9]*)")
-            values = re.compile(tem).match(item + '.nc')
-            return os.path.join('x_' + values['x'], 'y_' + values['y'])
+            values = re.compile(tem).match(item)
+            if not values:
+                raise RuntimeError("There is no tile index values in prefix")
+            values = values.groupdict()
+            if 'x' in values.keys() and 'y' in values.keys():
+                return os.path.join('x_' + values['x'], 'y_' + values['y'])
+            else:
+                raise RuntimeError("There is no tile index values in prefix")
         elif self.cfg['products'][product]['time_type'] == 'timed':
             item_parts = item.split('_')
             time_stamp = item_parts[-1]
@@ -362,7 +369,18 @@ class JobControl:
         file_id = os.path.splitext(basename(netcdf_file))[0]
         names = []
         if self.cfg['products'][product]['time_type'] == 'flat':
-            names.append(file_id)
+            # only extract x and y
+            tem = self.cfg['products'][product]['src_template']
+            tem = tem.replace("{x}", "(?P<x>-?[0-9]*)")
+            tem = tem.replace("{y}", "(?P<y>-?[0-9]*)")
+            values = re.compile(tem).match(basename(netcdf_file))
+            if not values:
+                raise RuntimeError("There is no tile index values in prefix")
+            values = values.groupdict()
+            if 'x' in values.keys() and 'y' in values.keys():
+                names.append(self.cfg['products'][product]['dest_template'].format(x=values['x'], y=values['y']))
+            else:
+                raise RuntimeError("There is no tile index values in prefix")
         else:
             dts = Dataset(netcdf_file)
             prefix = "_".join(file_id.split('_')[0:-2])
