@@ -75,6 +75,8 @@ DEFAULT_CONFIG = """
 products: 
     wofs_albers: 
         time_type: timed
+        src_template: LS_WATER_3577_{x}_{y}_{time}_v{}.nc 
+        dest_template: LS_WATER_3577_{x}_{y}_{time}
         src_dir: /g/data/fk4/datacube/002/WOfS/WOfS_25_2_1/netcdf
         src_dir_type: tiled
         aws_dir: WOfS/WOFLs/v2.1.0/combined
@@ -89,12 +91,16 @@ products:
         bucket: s3://dea-public-data-dev
     ls5_fc_albers:
         time_type: timed
+        src_template: LS5_TM_FC_3577_{x}_{y}_{time}_v{}.nc
+        dest_template: LS5_TM_FC_3577_{x}_{y}_{time}
         src_dir: /g/data/fk4/datacube/002/FC/LS5_TM_FC
         src_dir_type: tiled
         aws_dir: fractional-cover/fc/v2.2.0/ls5
         bucket: s3://dea-public-data-dev
     ls8_fc_albers:
         time_type: timed
+        src_template: LS8_OLI_FC_3577_{x}_{y}_{time}_v{}.nc
+        dest_template: LS8_OLI_FC_3577_{x}_{y}_{time}
         src_dir: /g/data/fk4/datacube/002/FC/LS8_OLI_FC
         src_dir_type: tiled
         aws_dir: fractional-cover/fc/v2.2.0/ls8
@@ -335,31 +341,49 @@ class JobControl:
 
     def aws_dir(self, item, product):
         """ Given a prefix like 'LS_WATER_3577_9_-39_20180506102018000000' what is the AWS directory structure?"""
+
         if self.cfg['products'][product]['time_type'] == 'flat':
-            # only extract x and y
-            tem = self.cfg['products'][product]['dest_template']
-            tem = tem.replace("{x}", "(?P<x>-?[0-9]*)")
-            tem = tem.replace("{y}", "(?P<y>-?[0-9]*)")
-            values = re.compile(tem).match(item)
-            if not values:
-                raise RuntimeError("There is no tile index values in prefix")
-            values = values.groupdict()
-            if 'x' in values.keys() and 'y' in values.keys():
-                return os.path.join('x_' + values['x'], 'y_' + values['y'])
-            else:
-                raise RuntimeError("There is no tile index values in prefix")
+            values = self._extract_x_y(item, self.cfg['products'][product]['dest_template'])
+            return os.path.join('x_' + values['x'], 'y_' + values['y'])
         elif self.cfg['products'][product]['time_type'] == 'timed':
-            item_parts = item.split('_')
-            time_stamp = item_parts[-1]
+            values = self._extract_x_y_time(item, self.cfg['products'][product]['dest_template'])
+            time_stamp = values['time']
             year = time_stamp[0:4]
             month = time_stamp[4:6]
             day = time_stamp[6:8]
-
-            y_index = item_parts[-2]
-            x_index = item_parts[-3]
-            return os.path.join('x_' + x_index, 'y_' + y_index, year, month, day)
+            return os.path.join('x_' + values['x'], 'y_' + values['y'], year, month, day)
         else:
             raise RuntimeError("Incorrect product time_type")
+
+    @staticmethod
+    def _extract_x_y(item, template):
+        tem = template.replace("{x}", "(?P<x>-?[0-9]*)")
+        tem = tem.replace("{y}", "(?P<y>-?[0-9]*)")
+        tem = tem.replace("{time}", "[0-9]*")
+        tem = tem.replace("{}", "[0-9]*")
+        values = re.compile(tem).match(basename(item))
+        if not values:
+            raise RuntimeError("There is no tile index values in item")
+        values = values.groupdict()
+        if 'x' in values.keys() and 'y' in values.keys():
+            return values
+        else:
+            raise RuntimeError("There is no tile index values in item")
+
+    @staticmethod
+    def _extract_x_y_time(item, template):
+        tem = template.replace("{x}", "(?P<x>-?[0-9]*)")
+        tem = tem.replace("{y}", "(?P<y>-?[0-9]*)")
+        tem = tem.replace("{time}", "(?P<time>-?[0-9]*)")
+        tem = tem.replace("{}", "[0-9]*")
+        values = re.compile(tem).match(basename(item))
+        if not values:
+            raise RuntimeError("There is no tile index values in prefix")
+        values = values.groupdict()
+        if 'x' in values.keys() and 'y' in values.keys() and 'time' in values.keys():
+            return values
+        else:
+            raise RuntimeError("There is no tile index values in prefix")
 
     def get_unstacked_names(self, product, netcdf_file, year=None, month=None):
         """
@@ -368,22 +392,13 @@ class JobControl:
 
         file_id = os.path.splitext(basename(netcdf_file))[0]
         names = []
+        values = self._extract_x_y(netcdf_file, self.cfg['products'][product]['src_template'])
         if self.cfg['products'][product]['time_type'] == 'flat':
             # only extract x and y
-            tem = self.cfg['products'][product]['src_template']
-            tem = tem.replace("{x}", "(?P<x>-?[0-9]*)")
-            tem = tem.replace("{y}", "(?P<y>-?[0-9]*)")
-            values = re.compile(tem).match(basename(netcdf_file))
-            if not values:
-                raise RuntimeError("There is no tile index values in prefix")
-            values = values.groupdict()
-            if 'x' in values.keys() and 'y' in values.keys():
-                names.append(self.cfg['products'][product]['dest_template'].format(x=values['x'], y=values['y']))
-            else:
-                raise RuntimeError("There is no tile index values in prefix")
+            names.append(self.cfg['products'][product]['dest_template'].format(x=values['x'], y=values['y']))
         else:
+            # if time_type is not flat we assume it is timed
             dts = Dataset(netcdf_file)
-            prefix = "_".join(file_id.split('_')[0:-2])
             dts_times = dts.variables['time']
             for index, dt in enumerate(dts_times):
                 dt_ = datetime.fromtimestamp(dt)
@@ -392,11 +407,14 @@ class JobControl:
                 if year:
                     if month:
                         if dt_.year == year and dt_.month == month:
-                            names.append('{}_{}'.format(prefix, time_stamp))
+                            names.append(self.cfg['products'][product]['dest_template'].format(
+                                x=values['x'], y=values['y'], time=time_stamp))
                     elif dt_.year == year:
-                        names.append('{}_{}'.format(prefix, time_stamp))
+                        names.append(self.cfg['products'][product]['dest_template'].format(
+                                x=values['x'], y=values['y'], time=time_stamp))
                 else:
-                    names.append('{}_{}'.format(prefix, time_stamp))
+                    names.append(self.cfg['products'][product]['dest_template'].format(
+                                x=values['x'], y=values['y'], time=time_stamp))
         return names
 
     @staticmethod
@@ -427,7 +445,8 @@ class JobControl:
             query['time'] = Range(datetime(year=year, month=1, day=1), datetime(year=year + 1, month=1, day=1))
         dc = Datacube(app='streamer', env='dea-prod')
         files = dc.index.datasets.search_returning(field_names=('uri',), **query)
-        return [uri[0].split(':')[1] for uri in files]
+        # Getting rid of netcdf #part substring may not be a good idea but we do it for now
+        return [uri[0].split(':')[1].split('#')[0] for uri in files]
 
 
 class Streamer(object):
