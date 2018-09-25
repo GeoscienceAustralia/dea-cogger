@@ -68,7 +68,7 @@ from datacube.model import Range
 
 LOG = logging.getLogger(__name__)
 
-MAX_QUEUE_SIZE = 16
+MAX_QUEUE_SIZE = 4
 WORKERS_POOL = 7
 
 DEFAULT_CONFIG = """
@@ -97,6 +97,14 @@ products:
         src_dir_type: tiled
         aws_dir: fractional-cover/fc/v2.2.0/ls5
         bucket: s3://dea-public-data-dev
+    ls7_fc_albers:
+        time_type: timed
+        src_template: LS7_ETM_FC_3577_{x}_{y}_{time}_v{}.nc
+        dest_template: LS7_ETM_FC_3577_{x}_{y}_{time}
+        src_dir: /g/data/fk4/datacube/002/FC/LS7_ETM_FC
+        src_dir_type: tiled
+        aws_dir: fractional-cover/fc/v2.2.0/ls7
+        bucket: s3://dea-public-data-dev        
     ls8_fc_albers:
         time_type: timed
         src_template: LS8_OLI_FC_3577_{x}_{y}_{time}_v{}.nc
@@ -600,7 +608,7 @@ class Streamer(object):
               help="Reuse the full file list for the signature(product, year, month)")
 @click.option('--use_datacube', is_flag=True, help="Use datacube to extract the list of files")
 def main(product, queue, job, restart, year, month, limit, file_range, reuse_full_list, use_datacube):
-    assert product in ['ls5_fc_albers', 'ls8_fc_albers', 'wofs_albers', 'wofs_filtered_summary'], \
+    assert product in ['ls5_fc_albers', 'ls7_fc_albers', 'ls8_fc_albers', 'wofs_albers', 'wofs_filtered_summary'], \
         "Product name must be one of ls5_fc_albers, ls8_fc_albers, wofs_albers, or wofs_filtered_summary"
 
     cfg = yaml.load(DEFAULT_CONFIG)
