@@ -75,7 +75,7 @@ from threading import get_ident
 
 LOG = logging.getLogger(__name__)
 
-MAX_QUEUE_SIZE = 8
+MAX_QUEUE_SIZE = 2
 WORKERS_POOL = 7
 
 DEFAULT_CONFIG = """
@@ -686,7 +686,6 @@ class Streamer(object):
             while items_todo:
                 # We need to pop from the front
                 item = items_todo.pop(0)
-                print(item)
                 if item == 'Done':
                     wait(futures)
                     processed_queue.close_connection(get_ident())
