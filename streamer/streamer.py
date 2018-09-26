@@ -75,7 +75,7 @@ from threading import get_ident
 
 LOG = logging.getLogger(__name__)
 
-MAX_QUEUE_SIZE = 4
+MAX_QUEUE_SIZE = 8
 WORKERS_POOL = 7
 
 DEFAULT_CONFIG = """
@@ -562,7 +562,8 @@ class SQLiteQueue(object):
 
 class Streamer(object):
     def __init__(self, cfg, product, queue_dir, job_dir, restart,
-                 year=None, month=None, limit=None, file_range=None, reuse_full_list=None, use_datacube=None):
+                 year=None, month=None, limit=None, file_range=None,
+                 reuse_full_list=None, use_datacube=None, cog_only=False, upload_only=False):
 
         def _path_check(file, file_list):
             for item in file_list:
@@ -575,6 +576,8 @@ class Streamer(object):
         self.queue_dir = queue_dir
         self.dest_url = os.path.join(cfg['products'][product]['bucket'], cfg['products'][product]['aws_dir'])
         self.job_dir = job_dir
+        self.cog_only = cog_only
+        self.upload_only = upload_only
 
         # Compute the name of job control files
         job_file = 'streamer_job_control' + '_' + product
@@ -645,16 +648,19 @@ class Streamer(object):
             self.message_queue = os.path.join(self.queue_dir, product + '_single_run' + '_queue.db')
             self.queue_dir = os.path.join(self.queue_dir, product + '_single_run')
 
-        # We are going to start with a empty queue_dir
-        if not os.path.exists(self.queue_dir):
-            with tempfile.TemporaryDirectory() as tmpdir:
-                run_command(['mkdir', self.queue_dir], tmpdir)
-        else:
-            with tempfile.TemporaryDirectory() as tmpdir:
-                run('rm -fR ' + os.path.join(self.queue_dir, '*'),
-                    stderr=subprocess.STDOUT, cwd=tmpdir, check=True, shell=True)
+        # We are going to start with a empty queue_dir if not upload_only
+        if not upload_only:
+            if not os.path.exists(self.queue_dir):
+                with tempfile.TemporaryDirectory() as tmpdir:
+                    run_command(['mkdir', self.queue_dir], tmpdir)
+            else:
+                with tempfile.TemporaryDirectory() as tmpdir:
+                    run('rm -fR ' + os.path.join(self.queue_dir, '*'),
+                        stderr=subprocess.STDOUT, cwd=tmpdir, check=True, shell=True)
+                    run('rm -rf ' + self.message_queue, stderr=subprocess.STDOUT, cwd=tmpdir, check=True, shell=True)
 
-        print(self.items.__str__() + ' to do')
+            print(self.items.__str__() + ' to do')
+
         self.job_file = job_file
 
     def compute(self, processed_queue, executor):
@@ -668,6 +674,7 @@ class Streamer(object):
             for future in as_completed(futures):
                 processed_queue.append(future.result())
         processed_queue.append('Done')
+        print('cog conversion done')
         processed_queue.close_connection(get_ident())
 
     def upload(self, processed_queue, executor):
@@ -679,6 +686,7 @@ class Streamer(object):
             while items_todo:
                 # We need to pop from the front
                 item = items_todo.pop(0)
+                print(item)
                 if item == 'Done':
                     wait(futures)
                     processed_queue.close_connection(get_ident())
@@ -690,16 +698,25 @@ class Streamer(object):
     def run(self):
         processed_queue = SQLiteQueue(self.message_queue, max_size=MAX_QUEUE_SIZE)
         with ProcessPoolExecutor(max_workers=WORKERS_POOL) as executor:
-            producer = threading.Thread(target=self.compute, args=(processed_queue, executor))
-            consumer = threading.Thread(target=self.upload, args=(processed_queue, executor))
-            producer.start()
-            consumer.start()
-            producer.join()
-            consumer.join()
-        # We will remove the queues
-        with tempfile.TemporaryDirectory() as tmpdir:
-            run('rm ' + self.message_queue, stderr=subprocess.STDOUT, cwd=tmpdir, check=True, shell=True)
-            run('rm -rf ' + self.queue_dir, stderr=subprocess.STDOUT, cwd=tmpdir, check=True, shell=True)
+            if self.cog_only:
+                self.compute(processed_queue, executor)
+            elif self.upload_only:
+                self.upload(processed_queue, executor)
+                # We will remove the queues
+                with tempfile.TemporaryDirectory() as tmpdir:
+                    run('rm ' + self.message_queue, stderr=subprocess.STDOUT, cwd=tmpdir, check=True, shell=True)
+                    run('rm -rf ' + self.queue_dir, stderr=subprocess.STDOUT, cwd=tmpdir, check=True, shell=True)
+            else:
+                producer = threading.Thread(target=self.compute, args=(processed_queue, executor))
+                consumer = threading.Thread(target=self.upload, args=(processed_queue, executor))
+                producer.start()
+                consumer.start()
+                producer.join()
+                consumer.join()
+                # We will remove the queues
+                with tempfile.TemporaryDirectory() as tmpdir:
+                    run('rm ' + self.message_queue, stderr=subprocess.STDOUT, cwd=tmpdir, check=True, shell=True)
+                    run('rm -rf ' + self.queue_dir, stderr=subprocess.STDOUT, cwd=tmpdir, check=True, shell=True)
 
 
 @click.command()
@@ -716,15 +733,20 @@ class Streamer(object):
 @click.option('--reuse_full_list', is_flag=True,
               help="Reuse the full file list for the signature(product, year, month)")
 @click.option('--use_datacube', is_flag=True, help="Use datacube to extract the list of files")
-def main(product, queue, job, restart, year, month, limit, file_range, reuse_full_list, use_datacube):
+@click.option('--cog_only', is_flag=True, help="Only run COG conversion")
+@click.option('--upload_only', is_flag=True, help="Only run AWS uploads")
+def main(product, queue, job, restart, year, month, limit, file_range, reuse_full_list, use_datacube,
+         cog_only, upload_only):
     assert product in ['ls5_fc_albers', 'ls7_fc_albers', 'ls8_fc_albers', 'wofs_albers', 'wofs_filtered_summary'], \
         "Product name must be one of ls5_fc_albers, ls8_fc_albers, wofs_albers, or wofs_filtered_summary"
+
+    assert not (cog_only and upload_only), "Only one of cog_only or upload_only can be used"
 
     cfg = yaml.load(DEFAULT_CONFIG)
 
     restart_ = True if restart else False
-    streamer = Streamer(cfg, product, queue, job, restart_,
-                        year, month, limit, file_range, reuse_full_list, use_datacube)
+    streamer = Streamer(cfg, product, queue, job, restart_, year, month, limit, file_range,
+                        reuse_full_list, use_datacube, cog_only, upload_only)
     streamer.run()
 
 
