@@ -75,8 +75,8 @@ from threading import get_ident
 
 LOG = logging.getLogger(__name__)
 
-MAX_QUEUE_SIZE = 2
-WORKERS_POOL = 7
+MAX_QUEUE_SIZE = 16
+WORKERS_POOL = 16
 
 DEFAULT_CONFIG = """
 products: 
