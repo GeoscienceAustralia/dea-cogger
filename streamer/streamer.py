@@ -27,20 +27,21 @@ The AWS bucket is specified via '--bucket' option. Therefore, the script current
 if they have similar 'grid-spec' (tiles) directory structure.
 
 The following are the full list of options:
-'--product', '-p', required=True, help="Product name: one of fc-ls5, fc-ls8, or wofs-wofls"
+'--product', '-p', required=True,
+              help="Product name: one of ls5_fc_albers, ls8_fc_albers, wofs_albers, or wofs_filtered_summary"
 '--queue', '-q', required=True, help="Queue directory"
-'--bucket', '-b', required=True, help="Destination Bucket Url"
 '--job', '-j', required=True, help="Job directory that store job tracking info"
 '--restart', is_flag=True, help="Restarts the job ignoring prior work"
 '--year', '-y', type=click.INT, help="The year"
 '--month', '-m', type=click.INT, help="The month"
 '--limit', '-l', type=click.INT, help="Number of files to be processed in this run"
-'--reuse_full_list', is_flag=True, help="Reuse the full file list for the signature(product, year, month)"
-'--src', '-s',type=click.Path(exists=True), help="Source directory just above tiles directories. This option
-                                                  must be used with --restart option"
-
-The '--src' option, the source directory, is not meant to be used during production runs. It is there
-for testing during dev stages.
+'--file_range', '-f', nargs=2, type=click.INT,
+              help="The range of files (ends inclusive) with respect to full list"
+'--reuse_full_list', is_flag=True,
+              help="Reuse the full file list for the signature(product, year, month)"
+'--use_datacube', is_flag=True, help="Use datacube to extract the list of files"
+'--cog_only', is_flag=True, help="Only run COG conversion"
+'--upload_only', is_flag=True, help="Only run AWS uploads"
 """
 import threading
 from concurrent.futures import ProcessPoolExecutor, wait, as_completed
