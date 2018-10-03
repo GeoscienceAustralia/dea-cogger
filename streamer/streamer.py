@@ -1,13 +1,13 @@
 #!/usr/bin/env python
 """
 This program is designed to stream COG-conversion and AWS uploads to be done same time
-in a streaming fashion that utilises smaller in-between storage footprint. In raijin
-this could be run in copyq in a PBS job. However, copyq lacks processing power, and therefore
-it is advised that the job is run incrementally with appropriate increments. The program is
-designed with vdi or raijin login nodes in mind.
+in a streaming fashion that utilises smaller in-between storage footprint. The program is designed
+to so that it could run COG-conversion and AWS uploads in separate processes, i.e. multiple runs
+of the same script concurrently. A database-based queue is used for messaging between COG-conversion
+and AWS upload processes. The database queue is currently implemented with sqlite.
 
-The program utilizes a memory queue with an aligned file system queue of processed files to hook up
-COG-conversion and AWS upload processes which are run on separate threads.
+The program utilizes an aligned file system queue with messaging queue of processed files to hook up
+COG-conversion and AWS upload processes.
 
 A particular batch run is identified by the signature (product, year, month) combination where
 year and/or month may not be present. The job control tracks a particular batch job based on this signature
@@ -17,14 +17,27 @@ and one with a template 'items_all_<signature>.log', where the first tracks the 
 the NetCDF files that are processed while the second keeps the list of all the files that are part of a specific
 batch job. However, the script need to be told to keep 'items_all_<signature>.log' via the '--reuse_full_list'
 option so that it does not need to recompute in the next incremental run of the same batch job
-if it is not yet complete. The '--limit' option, which specifies the number of files to be processed,
-can be used to incrementally run a specific batch job. Currently, the script is not designed
-for multiple time overlapping runs.
+if it is not yet complete. The list of all files to be processed can be reliably computed by using
+the option '--use_datacube' which computes the file list based on what is indexed in the datacube.
 
-For a specific product, the source NCI directory and the AWS directory within the bucket are hard coded.
-The AWS bucket is specified via '--bucket' option. Therefore, the script currently limited to
-'fc-ls5', 'fc-ls8', and 'wofs-wofls' products. However, additional products could be added easily
-if they have similar 'grid-spec' (tiles) directory structure.
+The '--limit' option, which specifies the number of files to be processed, can be used to incrementally
+run a specific batch job. Alternatively, multiple overlapping runs of the program can be done with
+'--file_range' option which specifies the range of files (indexes into 'items_all_<signature>.log').
+For example, if items_all_<signature>.log' has 200 files, you can specify --file_range 0 99 in one of
+the runs and --file_range 100 199 in another run.
+
+The program uses a config, that in particular specify product descriptions such as whether it is timed/flat,
+source and destination filename templates, source file system organization such as tiled/flat, aws directory,
+and bucket. The destination template must only specify the prefix of the file excluding the band name details and
+extension. An example such config spec for a product is as follows:
+    ls5_fc_albers:
+        time_type: timed
+        src_template: LS5_TM_FC_3577_{x}_{y}_{time}_v{}.nc
+        dest_template: LS5_TM_FC_3577_{x}_{y}_{time}
+        src_dir: /g/data/fk4/datacube/002/FC/LS5_TM_FC
+        src_dir_type: tiled
+        aws_dir: fractional-cover/fc/v2.2.0/ls5
+        bucket: s3://dea-public-data-dev
 
 The following are the full list of options:
 '--product', '-p', required=True,
