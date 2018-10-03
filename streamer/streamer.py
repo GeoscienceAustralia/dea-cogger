@@ -466,13 +466,13 @@ class JobControl:
         return names
 
     @staticmethod
-    def get_indexed_files(product, year=None, month=None):
+    def get_indexed_files(product, year=None, month=None, datacube_env=None):
         query = {'product': product}
         if year and month:
             query['time'] = Range(datetime(year=year, month=month, day=1), datetime(year=year, month=month + 1, day=1))
         elif year:
             query['time'] = Range(datetime(year=year, month=1, day=1), datetime(year=year + 1, month=1, day=1))
-        dc = Datacube(app='streamer', env='dea-prod')
+        dc = Datacube(app='streamer', env=datacube_env) if datacube_env else Datacube(app='streamer')
         files = dc.index.datasets.search_returning(field_names=('uri',), **query)
         # Getting rid of netcdf #part substring may not be a good idea but we do it for now
         return [uri[0].split(':')[1].split('#')[0] for uri in files]
@@ -577,7 +577,7 @@ class SQLiteQueue(object):
 class Streamer(object):
     def __init__(self, cfg, product, queue_dir, job_dir, restart,
                  year=None, month=None, limit=None, file_range=None,
-                 reuse_full_list=None, use_datacube=None, cog_only=False, upload_only=False):
+                 reuse_full_list=None, use_datacube=None, datacube_env=None, cog_only=False, upload_only=False):
 
         def _path_check(file, file_list):
             for item in file_list:
@@ -621,7 +621,7 @@ class Streamer(object):
                     items_all = f.read().splitlines()
             else:
                 if use_datacube:
-                    items_all = JobControl.get_indexed_files(product, year, month)
+                    items_all = JobControl.get_indexed_files(product, year, month, datacube_env)
                 else:
                     items_all = JobControl.get_gridspec_files(cfg['products'][product]['src_dir'],
                                                               cfg['products'][product]['src_dir_type'], year, month)
@@ -630,7 +630,7 @@ class Streamer(object):
                         f.write(item + '\n')
         else:
             if use_datacube:
-                items_all = JobControl.get_indexed_files(product, year, month)
+                items_all = JobControl.get_indexed_files(product, year, month, datacube_env)
             else:
                 items_all = JobControl.get_gridspec_files(cfg['products'][product]['src_dir'],
                                                           cfg['products'][product]['src_dir_type'], year, month)
@@ -746,20 +746,24 @@ class Streamer(object):
 @click.option('--reuse_full_list', is_flag=True,
               help="Reuse the full file list for the signature(product, year, month)")
 @click.option('--use_datacube', is_flag=True, help="Use datacube to extract the list of files")
+@click.option('--datacube_env', '-e', help="Specifies the datacube environment")
 @click.option('--cog_only', is_flag=True, help="Only run COG conversion")
 @click.option('--upload_only', is_flag=True, help="Only run AWS uploads")
-def main(product, queue, job, restart, year, month, limit, file_range, reuse_full_list, use_datacube,
+def main(product, queue, job, restart, year, month, limit, file_range, reuse_full_list, use_datacube, datacube_env,
          cog_only, upload_only):
     assert product in ['ls5_fc_albers', 'ls7_fc_albers', 'ls8_fc_albers', 'wofs_albers', 'wofs_filtered_summary'], \
         "Product name must be one of ls5_fc_albers, ls8_fc_albers, wofs_albers, or wofs_filtered_summary"
 
     assert not (cog_only and upload_only), "Only one of cog_only or upload_only can be used"
 
+    if datacube_env:
+        assert use_datacube, "datacube_env must be used with use_datacube option"
+
     cfg = yaml.load(DEFAULT_CONFIG)
 
     restart_ = True if restart else False
     streamer = Streamer(cfg, product, queue, job, restart_, year, month, limit, file_range,
-                        reuse_full_list, use_datacube, cog_only, upload_only)
+                        reuse_full_list, use_datacube, datacube_env, cog_only, upload_only)
     streamer.run()
 
 

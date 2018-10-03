@@ -8,6 +8,7 @@ python streamer.py -p ls8_fc_albers \
                    -y 2018 \
                    -m 5 \
                    --use_datacube \
+                   --datacube_env dea_prod \
                    --reuse_full_list \
                    --cog_only &
 python streamer.py -p ls8_fc_albers \
@@ -17,5 +18,6 @@ python streamer.py -p ls8_fc_albers \
                    -y 2018 \
                    -m 5 \
                    --use_datacube \
+                   --datacube_env dea_prod \
                    --reuse_full_list \
                    --upload_only
