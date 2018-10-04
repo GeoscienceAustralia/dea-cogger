@@ -55,6 +55,13 @@ The following are the full list of options:
 '--use_datacube', is_flag=True, help="Use datacube to extract the list of files"
 '--cog_only', is_flag=True, help="Only run COG conversion"
 '--upload_only', is_flag=True, help="Only run AWS uploads"
+
+When specifying command line options for cog_only and upload_only overlapping runs, it is important
+that consistent command line options are specified so that both processes refer to the same
+'items_all_<signature>.log' and 'streamer_job_control_<signature>.log'. Without this, the two processess
+may not be in sync.
+
+
 """
 import threading
 from concurrent.futures import ProcessPoolExecutor, wait, as_completed
