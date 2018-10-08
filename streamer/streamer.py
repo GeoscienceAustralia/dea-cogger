@@ -89,7 +89,7 @@ from datacube.model import Range
 
 import os
 import psycopg2
-from psycopg2 import pool
+from psycopg2 import pool, ProgrammingError
 from pq import PQ
 
 LOG = logging.getLogger(__name__)
@@ -618,11 +618,18 @@ class Streamer(object):
             wait(futures)
 
     def run(self):
+        # Cannot use pg bouncer: so use the port 5432
         thread_pool = psycopg2.pool.ThreadedConnectionPool(2, 5, user="aj9439", host="agdcdev-db.nci.org.au",
                                                            port="5432", database="aj9439_db")
 
         pq_ = PQ(pool=thread_pool)
-        # pq_.create()
+        try:
+            pq_.create()
+        except ProgrammingError as exc:
+            # We ignore a duplicate table error.
+            if exc.pgcode != '42P07':
+                raise
+
         processed_queue = pq_[basename(self.message_queue)]
         processed_queue.clear()
 
@@ -633,7 +640,6 @@ class Streamer(object):
                 self.upload(processed_queue, executor)
                 # We will remove the queues
                 with tempfile.TemporaryDirectory() as tmpdir:
-                    # run('rm ' + self.message_queue, stderr=subprocess.STDOUT, cwd=tmpdir, check=True, shell=True)
                     run('rm -rf ' + self.queue_dir, stderr=subprocess.STDOUT, cwd=tmpdir, check=True, shell=True)
             else:
                 producer = threading.Thread(target=self.compute, args=(processed_queue, executor))
@@ -644,7 +650,6 @@ class Streamer(object):
                 consumer.join()
                 # We will remove the queues
                 with tempfile.TemporaryDirectory() as tmpdir:
-                    # run('rm ' + self.message_queue, stderr=subprocess.STDOUT, cwd=tmpdir, check=True, shell=True)
                     run('rm -rf ' + self.queue_dir, stderr=subprocess.STDOUT, cwd=tmpdir, check=True, shell=True)
 
 
