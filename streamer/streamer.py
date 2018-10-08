@@ -89,7 +89,7 @@ from datacube.model import Range
 
 import os
 import psycopg2
-from psycopg2 import pool, ProgrammingError
+from psycopg2 import pool, connect, ProgrammingError, OperationalError
 from pq import PQ
 
 LOG = logging.getLogger(__name__)
@@ -98,6 +98,11 @@ MAX_QUEUE_SIZE = 4
 WORKERS_POOL = 4
 
 DEFAULT_CONFIG = """
+queue_db:
+    db_name: aj9439_db
+    host: agdcdev-db.nci.org.au
+    user: aj9439
+    port: 5432
 products: 
     wofs_albers: 
         time_type: timed
@@ -499,6 +504,7 @@ class Streamer(object):
             return False
 
         self.product = product
+        self.cfg = cfg
         self.job_control = JobControl(cfg)
         self.queue_dir = queue_dir
         self.dest_url = os.path.join(cfg['products'][product]['bucket'], cfg['products'][product]['aws_dir'])
@@ -588,24 +594,75 @@ class Streamer(object):
 
         self.job_file = job_file
 
-    def compute(self, processed_queue, executor):
+    def get_queue(self):
+        # Cannot use pg bouncer: so use the port 5432
+        # thread_pool = psycopg2.pool.ThreadedConnectionPool(1, 2,
+        #                                                    user=self.cfg['queue_db']['user'],
+        #                                                    host=self.cfg['queue_db']['host'],
+        #                                                    port='5432',
+        #                                                    database=self.cfg['queue_db']['db_name'])
+        connection = connect(dbname='aj9439_db', host='agdcdev-db.nci.org.au', user='aj9439', port='6432')
+        cur = connection.cursor()
+        cur.execute("""DEALLOCATE PREPARE ALL""")
+
+        pq_ = PQ(conn=connection)
+        try:
+            pq_.create()
+        except ProgrammingError as exc:
+            # We ignore a duplicate table error.
+            if exc.pgcode != '42P07':
+                raise
+
+        return pq_[basename(self.message_queue)]
+
+    def compute(self, executor):
         """ The function that runs in the COG conversion thread """
+        processed_queue = self.get_queue()
+        processed_queue.clear()
 
         while self.items:
-            queue_capacity = MAX_QUEUE_SIZE - len(processed_queue)
+            try:
+                queue_capacity = MAX_QUEUE_SIZE - len(processed_queue)
+            except OperationalError as exc:
+                processed_queue = self.get_queue()
+                queue_capacity = MAX_QUEUE_SIZE - len(processed_queue)
             run_size = queue_capacity if len(self.items) > queue_capacity else len(self.items)
             futures = [executor.submit(COGNetCDF.datasets_to_cog, self.product, self.job_control, self.items.pop(),
                                        self.queue_dir) for _ in range(run_size)]
             for future in as_completed(futures):
-                processed_queue.put(future.result())
-        processed_queue.put('Done')
+                file_done = future.result()
+                try:
+                    processed_queue.put(file_done)
+                except OperationalError as exc:
+                    processed_queue = self.get_queue()
+                    processed_queue.put(file_done)
+        try:
+            processed_queue.put('Done')
+        except OperationalError as exc:
+            processed_queue = self.get_queue()
+            processed_queue.put('Done')
         print('cog conversion done')
 
-    def upload(self, processed_queue, executor):
+    def upload(self, executor):
         """ The function that run in the file upload to AWS thread """
+        processed_queue = self.get_queue()
 
         while True:
-            items_todo = [processed_queue.get().data for _ in range(len(processed_queue))]
+            try:
+                queue_size = len(processed_queue)
+            except (OperationalError, ProgrammingError):
+                processed_queue = self.get_queue()
+                queue_size = len(processed_queue)
+            items_todo = []
+            items_num = 0
+            while items_num < queue_size:
+                try:
+                    new_item = processed_queue.get().data
+                    items_todo.append(new_item)
+                    items_num += 1
+                except OperationalError as exc:
+                    processed_queue = self.get_queue()
+
             futures = []
             while items_todo:
                 # We need to pop from the front
@@ -619,31 +676,31 @@ class Streamer(object):
 
     def run(self):
         # Cannot use pg bouncer: so use the port 5432
-        thread_pool = psycopg2.pool.ThreadedConnectionPool(2, 5, user="aj9439", host="agdcdev-db.nci.org.au",
-                                                           port="5432", database="aj9439_db")
-
-        pq_ = PQ(pool=thread_pool)
-        try:
-            pq_.create()
-        except ProgrammingError as exc:
-            # We ignore a duplicate table error.
-            if exc.pgcode != '42P07':
-                raise
-
-        processed_queue = pq_[basename(self.message_queue)]
-        processed_queue.clear()
+        # thread_pool = psycopg2.pool.ThreadedConnectionPool(1, 2, user="aj9439", host="agdcdev-db.nci.org.au",
+        #                                                    port="5432", database="aj9439_db")
+        # connection = connect(dbname='aj9439_db', host='agdcdev-db.nci.org.au', user='aj9439', port='5432')
+        # pq_ = PQ(conn=connection)
+        # try:
+        #     pq_.create()
+        # except ProgrammingError as exc:
+        #     # We ignore a duplicate table error.
+        #     if exc.pgcode != '42P07':
+        #         raise
+        #
+        # processed_queue = pq_[basename(self.message_queue)]
+        # processed_queue.clear()
 
         with ProcessPoolExecutor(max_workers=WORKERS_POOL) as executor:
             if self.cog_only:
-                self.compute(processed_queue, executor)
+                self.compute(executor)
             elif self.upload_only:
-                self.upload(processed_queue, executor)
+                self.upload(executor)
                 # We will remove the queues
                 with tempfile.TemporaryDirectory() as tmpdir:
                     run('rm -rf ' + self.queue_dir, stderr=subprocess.STDOUT, cwd=tmpdir, check=True, shell=True)
             else:
-                producer = threading.Thread(target=self.compute, args=(processed_queue, executor))
-                consumer = threading.Thread(target=self.upload, args=(processed_queue, executor))
+                producer = threading.Thread(target=self.compute, args=(executor,))
+                consumer = threading.Thread(target=self.upload, args=(executor,))
                 producer.start()
                 consumer.start()
                 producer.join()
@@ -654,6 +711,7 @@ class Streamer(object):
 
 
 @click.command()
+@click.option('--config', '-c', help="Config file")
 @click.option('--product', '-p', required=True,
               help="Product name: one of ls5_fc_albers, ls8_fc_albers, wofs_albers, or wofs_filtered_summary")
 @click.option('--queue', '-q', required=True, help="Queue directory")
@@ -670,8 +728,8 @@ class Streamer(object):
 @click.option('--datacube_env', '-e', help="Specifies the datacube environment")
 @click.option('--cog_only', is_flag=True, help="Only run COG conversion")
 @click.option('--upload_only', is_flag=True, help="Only run AWS uploads")
-def main(product, queue, job, restart, year, month, limit, file_range, reuse_full_list, use_datacube, datacube_env,
-         cog_only, upload_only):
+def main(config, product, queue, job, restart, year, month, limit, file_range,
+         reuse_full_list, use_datacube, datacube_env, cog_only, upload_only):
     assert product in ['ls5_fc_albers', 'ls7_fc_albers', 'ls8_fc_albers', 'wofs_albers', 'wofs_filtered_summary'], \
         "Product name must be one of ls5_fc_albers, ls8_fc_albers, wofs_albers, or wofs_filtered_summary"
 
@@ -680,7 +738,11 @@ def main(product, queue, job, restart, year, month, limit, file_range, reuse_ful
     if datacube_env:
         assert use_datacube, "datacube_env must be used with use_datacube option"
 
-    cfg = yaml.load(DEFAULT_CONFIG)
+    if config:
+        with open(config, 'r') as cfg_file:
+            cfg = yaml.load(cfg_file)
+    else:
+        cfg = yaml.load(DEFAULT_CONFIG)
 
     restart_ = True if restart else False
     streamer = Streamer(cfg, product, queue, job, restart_, year, month, limit, file_range,

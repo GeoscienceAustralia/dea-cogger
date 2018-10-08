@@ -6,7 +6,7 @@ module load dea
 python /g/data/u46/users/aj9439/PycharmProjects/COG-Conversion/streamer/streamer.py -p wofs_albers \
                    -q /g/data/u46/users/aj9439/aws/queue \
                    -j /g/data/u46/users/aj9439/aws/job \
-                   -f 0 14 \
+                   -f 0 7 \
                    -y 2018 \
                    -m 7 \
                    --use_datacube \
