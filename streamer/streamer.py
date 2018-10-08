@@ -58,7 +58,7 @@ The following are the full list of options:
 
 When specifying command line options for cog_only and upload_only overlapping runs, it is important
 that consistent command line options are specified so that both processes refer to the same
-'items_all_<signature>.log' and 'streamer_job_control_<signature>.log'. Without this, the two processess
+'items_all_<signature>.log' and 'streamer_job_control_<signature>.log'. Without this, the two processes
 may not be in sync.
 
 
@@ -88,16 +88,14 @@ from datacube import Datacube
 from datacube.model import Range
 
 import os
-import sqlite3
-from pickle import loads, dumps
-from time import sleep
-from threading import get_ident
-
+import psycopg2
+from psycopg2 import pool
+from pq import PQ
 
 LOG = logging.getLogger(__name__)
 
-MAX_QUEUE_SIZE = 16
-WORKERS_POOL = 16
+MAX_QUEUE_SIZE = 4
+WORKERS_POOL = 4
 
 DEFAULT_CONFIG = """
 products: 
@@ -474,6 +472,10 @@ class JobControl:
 
     @staticmethod
     def get_indexed_files(product, year=None, month=None, datacube_env=None):
+        """
+        Extract the file list corresponding to a product for the given year and month using datacube API.
+        """
+
         query = {'product': product}
         if year and month:
             query['time'] = Range(datetime(year=year, month=month, day=1), datetime(year=year, month=month + 1, day=1))
@@ -483,102 +485,6 @@ class JobControl:
         files = dc.index.datasets.search_returning(field_names=('uri',), **query)
         # Getting rid of netcdf #part substring may not be a good idea but we do it for now
         return [uri[0].split(':')[1].split('#')[0] for uri in files]
-
-
-class SQLiteQueue(object):
-    """
-    based on 'http://flask.pocoo.org/snippets/88/'
-    """
-    _create = (
-        'CREATE TABLE IF NOT EXISTS queue '
-        '('
-        '  id INTEGER PRIMARY KEY AUTOINCREMENT,'
-        '  item BLOB'
-        ')'
-    )
-    _count = 'SELECT COUNT(*) FROM queue'
-    _iterate = 'SELECT id, item FROM queue'
-    _append = 'INSERT INTO queue (item) VALUES (?)'
-    _write_lock = 'BEGIN IMMEDIATE'
-    _popleft_get = (
-        'SELECT id, item FROM queue '
-        'ORDER BY id LIMIT 1'
-    )
-    _popleft_del = 'DELETE FROM queue WHERE id = ?'
-    _peek = (
-        'SELECT item FROM queue '
-        'ORDER BY id LIMIT 1'
-    )
-
-    def __init__(self, path, max_size):
-        self.max_size = max_size
-        self.path = os.path.abspath(path)
-        self._connection_cache = {}
-        with self._get_conn() as conn:
-            conn.execute(self._create)
-
-    def __len__(self):
-        with self._get_conn() as conn:
-            l_ = next(conn.execute(self._count))[0]
-        return l_
-
-    def __iter__(self):
-        with self._get_conn() as conn:
-            for id, obj_buffer in conn.execute(self._iterate):
-                yield loads(str(obj_buffer))
-
-    def _get_conn(self):
-        id = get_ident()
-        if id not in self._connection_cache:
-            self._connection_cache[id] = sqlite3.Connection(self.path, timeout=60)
-        return self._connection_cache[id]
-
-    def append(self, obj):
-        obj_buffer = memoryview(dumps(obj, 2))
-        with self._get_conn() as conn:
-            if self.__len__() < self.max_size:
-                conn.execute(self._append, (obj_buffer,))
-                return True
-            else:
-                return False
-
-    def popleft(self, sleep_wait=True):
-        keep_pooling = True
-        wait = 0.1
-        max_wait = 2
-        tries = 0
-        with self._get_conn() as conn:
-            id = None
-            while keep_pooling:
-                conn.execute(self._write_lock)
-                cursor = conn.execute(self._popleft_get)
-                try:
-                    id, obj_buffer = next(cursor)
-                    keep_pooling = False
-                except StopIteration:
-                    conn.commit()  # unlock the database
-                    if not sleep_wait:
-                        keep_pooling = False
-                        continue
-                    tries += 1
-                    sleep(wait)
-                    wait = min(max_wait, tries / 10 + wait)
-            if id:
-                conn.execute(self._popleft_del, (id,))
-                # ToDo: check obj_buffer
-                return loads(obj_buffer)
-        return None
-
-    def peek(self):
-        with self._get_conn() as conn:
-            cursor = conn.execute(self._peek)
-            try:
-                return loads(str(cursor.next()[0]))
-            except StopIteration:
-                return None
-
-    def close_connection(self, thread_id):
-        self._connection_cache[thread_id].close()
 
 
 class Streamer(object):
@@ -649,7 +555,7 @@ class Streamer(object):
 
             # We need the file system queue specific for this run
             self.message_queue = os.path.join(self.queue_dir,
-                                              product + '_range_run_{}_{}'.format(start_file, end_file) + '_queue.db')
+                                              product + '_range_run_{}_{}'.format(start_file, end_file))
             self.queue_dir = os.path.join(self.queue_dir, product + '_range_run_{}_{}'.format(start_file, end_file))
         else:
             # Compute file list
@@ -659,14 +565,13 @@ class Streamer(object):
                     items_done = f.read().splitlines()
 
             self.items = [item for item in items_all if not _path_check(item, items_done)]
-            # self.items.sort(reverse=True)
 
             # Enforce if limit
             if limit:
                 self.items = self.items[0:limit]
 
             # We don't want queue to have conflicts with other runs
-            self.message_queue = os.path.join(self.queue_dir, product + '_single_run' + '_queue.db')
+            self.message_queue = os.path.join(self.queue_dir, product + '_single_run')
             self.queue_dir = os.path.join(self.queue_dir, product + '_single_run')
 
         # We are going to start with a empty queue_dir if not upload_only
@@ -678,7 +583,6 @@ class Streamer(object):
                 with tempfile.TemporaryDirectory() as tmpdir:
                     run('rm -fR ' + os.path.join(self.queue_dir, '*'),
                         stderr=subprocess.STDOUT, cwd=tmpdir, check=True, shell=True)
-                    run('rm -rf ' + self.message_queue, stderr=subprocess.STDOUT, cwd=tmpdir, check=True, shell=True)
 
             print(self.items.__str__() + ' to do')
 
@@ -693,30 +597,35 @@ class Streamer(object):
             futures = [executor.submit(COGNetCDF.datasets_to_cog, self.product, self.job_control, self.items.pop(),
                                        self.queue_dir) for _ in range(run_size)]
             for future in as_completed(futures):
-                processed_queue.append(future.result())
-        processed_queue.append('Done')
+                processed_queue.put(future.result())
+        processed_queue.put('Done')
         print('cog conversion done')
-        processed_queue.close_connection(get_ident())
 
     def upload(self, processed_queue, executor):
         """ The function that run in the file upload to AWS thread """
 
         while True:
-            items_todo = [processed_queue.popleft() for _ in range(len(processed_queue))]
+            items_todo = [processed_queue.get().data for _ in range(len(processed_queue))]
             futures = []
             while items_todo:
                 # We need to pop from the front
                 item = items_todo.pop(0)
                 if item == 'Done':
                     wait(futures)
-                    processed_queue.close_connection(get_ident())
                     return
                 futures.append(executor.submit(upload_to_s3, self.product, self.job_control, item,
                                                self.queue_dir, self.dest_url, self.job_file))
             wait(futures)
 
     def run(self):
-        processed_queue = SQLiteQueue(self.message_queue, max_size=MAX_QUEUE_SIZE)
+        thread_pool = psycopg2.pool.ThreadedConnectionPool(2, 5, user="aj9439", host="agdcdev-db.nci.org.au",
+                                                           port="5432", database="aj9439_db")
+
+        pq_ = PQ(pool=thread_pool)
+        # pq_.create()
+        processed_queue = pq_[basename(self.message_queue)]
+        processed_queue.clear()
+
         with ProcessPoolExecutor(max_workers=WORKERS_POOL) as executor:
             if self.cog_only:
                 self.compute(processed_queue, executor)
@@ -724,7 +633,7 @@ class Streamer(object):
                 self.upload(processed_queue, executor)
                 # We will remove the queues
                 with tempfile.TemporaryDirectory() as tmpdir:
-                    run('rm ' + self.message_queue, stderr=subprocess.STDOUT, cwd=tmpdir, check=True, shell=True)
+                    # run('rm ' + self.message_queue, stderr=subprocess.STDOUT, cwd=tmpdir, check=True, shell=True)
                     run('rm -rf ' + self.queue_dir, stderr=subprocess.STDOUT, cwd=tmpdir, check=True, shell=True)
             else:
                 producer = threading.Thread(target=self.compute, args=(processed_queue, executor))
@@ -735,7 +644,7 @@ class Streamer(object):
                 consumer.join()
                 # We will remove the queues
                 with tempfile.TemporaryDirectory() as tmpdir:
-                    run('rm ' + self.message_queue, stderr=subprocess.STDOUT, cwd=tmpdir, check=True, shell=True)
+                    # run('rm ' + self.message_queue, stderr=subprocess.STDOUT, cwd=tmpdir, check=True, shell=True)
                     run('rm -rf ' + self.queue_dir, stderr=subprocess.STDOUT, cwd=tmpdir, check=True, shell=True)
 
 
