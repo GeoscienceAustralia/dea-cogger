@@ -30,6 +30,7 @@ The program uses a config, that in particular specify product descriptions such 
 source and destination filename templates, source file system organization such as tiled/flat, aws directory,
 and bucket. The destination template must only specify the prefix of the file excluding the band name details and
 extension. An example such config spec for a product is as follows:
+
     ls5_fc_albers:
         time_type: timed
         src_template: LS5_TM_FC_3577_{x}_{y}_{time}_v{}.nc
@@ -39,22 +40,7 @@ extension. An example such config spec for a product is as follows:
         aws_dir: fractional-cover/fc/v2.2.0/ls5
         bucket: s3://dea-public-data-dev
 
-The following are the full list of options:
-'--product', '-p', required=True,
-              help="Product name: one of ls5_fc_albers, ls8_fc_albers, wofs_albers, or wofs_filtered_summary"
-'--queue', '-q', required=True, help="Queue directory"
-'--job', '-j', required=True, help="Job directory that store job tracking info"
-'--restart', is_flag=True, help="Restarts the job ignoring prior work"
-'--year', '-y', type=click.INT, help="The year"
-'--month', '-m', type=click.INT, help="The month"
-'--limit', '-l', type=click.INT, help="Number of files to be processed in this run"
-'--file_range', '-f', nargs=2, type=click.INT,
-              help="The range of files (ends inclusive) with respect to full list"
-'--reuse_full_list', is_flag=True,
-              help="Reuse the full file list for the signature(product, year, month)"
-'--use_datacube', is_flag=True, help="Use datacube to extract the list of files"
-'--cog_only', is_flag=True, help="Only run COG conversion"
-'--upload_only', is_flag=True, help="Only run AWS uploads"
+
 
 When specifying command line options for cog_only and upload_only overlapping runs, it is important
 that consistent command line options are specified so that both processes refer to the same
@@ -63,34 +49,30 @@ may not be in sync.
 
 
 """
+import logging
+import os
+import re
+import subprocess
+import tempfile
 import threading
 from concurrent.futures import ProcessPoolExecutor, wait, as_completed
-from multiprocessing import Pool, Queue
-import click
-import os
-from os.path import join as pjoin, basename, dirname, exists
-import tempfile
-import subprocess
-from subprocess import check_call, run
-import glob
-from netCDF4 import Dataset
 from datetime import datetime
-from pandas import to_datetime
+from functools import reduce
+from multiprocessing import Pool
+from os.path import join as pjoin, basename
+from subprocess import run
+
+import click
 import gdal
 import xarray
 import yaml
-from yaml import CLoader as Loader, CDumper as Dumper
-from functools import reduce
-import logging
-import re
-
 from datacube import Datacube
 from datacube.model import Range
-
-import os
-import psycopg2
-from psycopg2 import pool, connect, ProgrammingError, OperationalError
+from netCDF4 import Dataset
+from pandas import to_datetime
 from pq import PQ
+from psycopg2 import connect, ProgrammingError, OperationalError
+from yaml import CLoader as Loader, CDumper as Dumper
 
 LOG = logging.getLogger(__name__)
 
@@ -101,8 +83,7 @@ DEFAULT_CONFIG = """
 queue_db:
     db_name: aj9439_db
     host: agdcdev-db.nci.org.au
-    user: aj9439
-    port: 5432
+    port: 5432  # Does not work with PgBouncer, must use 5432
 products: 
     wofs_albers: 
         time_type: timed
@@ -147,39 +128,41 @@ products:
 """
 
 
-def run_command(command, work_dir):
+def run_command(command, work_dir=None):
     """
     A simple utility to execute a subprocess command.
     """
     try:
         run(command, stderr=subprocess.STDOUT, cwd=work_dir, check=True)
     except subprocess.CalledProcessError as e:
-        raise RuntimeError("command '{}' return with error (code {}): {}".format(e.cmd, e.returncode, e.output))
+        raise RuntimeError("command '{}' failed with error (code {}): {}".format(e.cmd, e.returncode, e.output))
 
 
 def upload_to_s3(product, job_control, file, src_dir, dest, job_file):
     """
     Uploads the .yaml and .tif files that correspond to the given NetCDF 'file' into the AWS
-    destination bucket indicated by 'dest'. Once complete add the file name 'file' to the 'job_file'.
+    destination bucket indicated by 'dest'.
+
+    Once complete add the file name 'file' to the 'job_file'.
+
     Each NetCDF file is assumed to be a stacked NetCDF file where 'unstacked' NetCDF file is viewed as
     a stacked file with just one dataset. The directory structure in AWS is determined by the
-    'JobControl.aws_dir()' based on 'prefixes' extracted from the NetCDF file. Each dataset within
-    the NetCDF file is assumed to be in separate directory with the name indicated by its corresponding
+    'JobControl.aws_dir()' based on 'prefixes' extracted from the NetCDF file.
+
+    Each dataset within the NetCDF file is assumed to be in separate directory with the name indicated by its corresponding
     prefix. The 'prefix' would have structure as in 'LS_WATER_3577_9_-39_20180506102018000000'.
     """
 
-    file_names = job_control.get_unstacked_names(product, file)
+    file_names = job_control.get_unstacked_names(file)
     success = True
-    for index in range(len(file_names)):
-        prefix = file_names[index]
+    for prefix in file_names:
         src = os.path.join(src_dir, prefix)
         item_dir = job_control.aws_dir(prefix, product)
         dest_name = os.path.join(dest, item_dir)
 
-        # Lets remove *.xml files
+        # GDAL creates extra XML files which we don't want
         try:
-            with tempfile.TemporaryDirectory() as tmpdir:
-                run('rm -fR -- ' + src + '/*.xml', stderr=subprocess.STDOUT, cwd=tmpdir, check=True, shell=True)
+            run('rm -fR -- ' + src + '/*.xml', stderr=subprocess.STDOUT, check=True, shell=True)
         except Exception as e:
             success = False
             logging.error("Failure in queue: removing datasets *.xml")
@@ -193,8 +176,7 @@ def upload_to_s3(product, job_control, file, src_dir, dest, job_file):
             dest_name
         ]
         try:
-            with tempfile.TemporaryDirectory() as tmpdir:
-                run_command(aws_copy, tmpdir)
+            run_command(aws_copy)
         except Exception as e:
             success = False
             logging.error("AWS upload error %s", prefix)
@@ -202,8 +184,7 @@ def upload_to_s3(product, job_control, file, src_dir, dest, job_file):
 
         # Remove the dir from the queue directory
         try:
-            with tempfile.TemporaryDirectory() as tmpdir:
-                run('rm -fR -- ' + src, stderr=subprocess.STDOUT, cwd=tmpdir, check=True, shell=True)
+            run('rm -fR -- ' + src, stderr=subprocess.STDOUT, check=True, shell=True)
         except Exception as e:
             success = False
             logging.error("Failure in queue: removing dataset %s", prefix)
@@ -219,10 +200,12 @@ class COGNetCDF:
     """ Bunch of utilities for COG conversion of NetCDF files"""
 
     @staticmethod
-    def _dataset_to_yaml(prefix, dataset, dest_dir):
-        """ Refactored from Author Harshu Rampur's cog conversion scripts - Write the datasets to separate yaml files"""
+    def _dataset_to_yaml(prefix, nc_dataset: xarray.DataArray, dest_dir):
+        """
+        Write the datasets to separate yaml files
+        """
         y_fname = os.path.join(dest_dir, prefix + '.yaml')
-        dataset_object = dataset.decode('utf-8')
+        dataset_object = nc_dataset.decode('utf-8')
         dataset = yaml.load(dataset_object, Loader=Loader)
 
         # Update band urls
@@ -237,26 +220,28 @@ class COGNetCDF:
             logging.info("Writing dataset Yaml to %s", basename(y_fname))
 
     @staticmethod
-    def _dataset_to_cog(prefix, subdatasets, num, dest_dir):
-        """ Refactored from Author Harshu Rampur's cog conversion scripts - Write the datasets to separate cog files"""
+    def _dataset_to_cog(prefix, subdatasets, band_num, dest_dir):
+        """
+        Write the datasets to separate cog files
+        """
+
+        env = ['GDAL_DISABLE_READDIR_ON_OPEN=YES',
+               'CPL_VSIL_CURL_ALLOWED_EXTENSIONS=.tif']
 
         with tempfile.TemporaryDirectory() as tmpdir:
             for dts in subdatasets[:-1]:
-                band_name = (dts[0].split(':'))[-1]
+                band_name = dts[0].split(':')[-1]
                 out_fname = prefix + '_' + band_name + '.tif'
                 try:
-                    env = ['GDAL_DISABLE_READDIR_ON_OPEN=YES',
-                           'CPL_VSIL_CURL_ALLOWED_EXTENSIONS=.tif']
-                    subprocess.check_call(env, shell=True)
 
                     # copy to a tempfolder
                     temp_fname = pjoin(tmpdir, basename(out_fname))
-                    to_cogtif = [
+                    to_cogtif = env + [
                         'gdal_translate',
                         '-of',
                         'GTIFF',
                         '-b',
-                        str(num),
+                        str(band_num),
                         dts[0],
                         temp_fname]
                     run_command(to_cogtif, tmpdir)
@@ -264,7 +249,7 @@ class COGNetCDF:
                     # Add Overviews
                     # gdaladdo - Builds or rebuilds overview images.
                     # 2, 4, 8,16,32 are levels which is a list of integral overview levels to build.
-                    add_ovr = [
+                    add_ovr = env + [
                         'gdaladdo',
                         '-r',
                         'nearest',
@@ -280,7 +265,7 @@ class COGNetCDF:
                     run_command(add_ovr, tmpdir)
 
                     # Convert to COG
-                    cogtif = [
+                    cogtif = env + [
                         'gdal_translate',
                         '-co',
                         'TILED=YES',
@@ -309,31 +294,27 @@ class COGNetCDF:
                     logging.exception("Exception", e)
 
     @staticmethod
-    def datasets_to_cog(product, job_control, file, dest_dir):
+    def datasets_to_cog(product, job_control, input_file, dest_dir):
         """
         Convert the datasets in the NetCDF file 'file' into 'dest_dir' where each dataset is in
         a separate directory with the name indicated by the dataset prefix. The prefix would look
         like 'LS_WATER_3577_9_-39_20180506102018000000'
         """
 
-        file_names = job_control.get_unstacked_names(product, file)
-        dataset_array = xarray.open_dataset(file)
-        dataset = gdal.Open(file, gdal.GA_ReadOnly)
-        subdatasets = dataset.GetSubDatasets()
-        for index in range(len(file_names)):
+        file_names = job_control.get_unstacked_names(input_file)
+
+        dataset_array = xarray.open_dataset(input_file)
+        with gdal.Open(input_file, gdal.GA_ReadOnly) as dataset:
+            subdatasets = dataset.GetSubDatasets()
+
+        for index, prefix in enumerate(file_names):
             prefix = file_names[index]
             dataset_item = dataset_array.dataset.item(index)
             dest = os.path.join(dest_dir, prefix)
-            try:
-                with tempfile.TemporaryDirectory() as tmpdir:
-                    run_command(['mkdir', dest], tmpdir)
-            except Exception as e:
-                logging.error("Failure creating queue dir: %s", dest)
-                logging.exception("Exception", e)
-            else:
-                COGNetCDF._dataset_to_yaml(prefix, dataset_item, dest)
-                COGNetCDF._dataset_to_cog(prefix, subdatasets, index + 1, dest)
-        return file
+
+            COGNetCDF._dataset_to_yaml(prefix, dataset_item, dest)
+            COGNetCDF._dataset_to_cog(prefix, subdatasets, index + 1, dest)
+        return input_file
 
 
 class TileFiles:
@@ -373,24 +354,25 @@ class TileFiles:
 class JobControl:
     """
     Utilities and some hardcoded stuff for tracking and coding job info.
+
+    :param dict cfg: Configuration for the product we're processing
     """
 
     def __init__(self, cfg):
         self.cfg = cfg
 
-    def aws_dir(self, item, product):
+    def aws_dir(self, item):
         """ Given a prefix like 'LS_WATER_3577_9_-39_20180506102018000000' what is the AWS directory structure?"""
 
-        if self.cfg['products'][product]['time_type'] == 'flat':
-            values = self._extract_x_y(item, self.cfg['products'][product]['dest_template'])
-            return os.path.join('x_' + values['x'], 'y_' + values['y'])
-        elif self.cfg['products'][product]['time_type'] == 'timed':
-            values = self._extract_x_y_time(item, self.cfg['products'][product]['dest_template'])
-            time_stamp = values['time']
+        if self.cfg['time_type'] == 'flat':
+            x, y = self._extract_x_y(item, self.cfg['dest_template'])
+            return os.path.join('x_' + x, 'y_' + y)
+        elif self.cfg['time_type'] == 'timed':
+            x, y, time_stamp = self._extract_x_y_time(item, self.cfg['dest_template'])
             year = time_stamp[0:4]
             month = time_stamp[4:6]
             day = time_stamp[6:8]
-            return os.path.join('x_' + values['x'], 'y_' + values['y'], year, month, day)
+            return f'x_{x}/y_{y}/{year}/{month}/{day}'
         else:
             raise RuntimeError("Incorrect product time_type")
 
@@ -405,7 +387,7 @@ class JobControl:
             raise RuntimeError("There is no tile index values in item")
         values = values.groupdict()
         if 'x' in values.keys() and 'y' in values.keys():
-            return values
+            return values['x'], values['y']
         else:
             raise RuntimeError("There is no tile index values in item")
 
@@ -420,21 +402,20 @@ class JobControl:
             raise RuntimeError("There is no tile index values in prefix")
         values = values.groupdict()
         if 'x' in values.keys() and 'y' in values.keys() and 'time' in values.keys():
-            return values
+            return values['x'], values['y'], values['time']
         else:
             raise RuntimeError("There is no tile index values in prefix")
 
-    def get_unstacked_names(self, product, netcdf_file, year=None, month=None):
+    def get_unstacked_names(self, netcdf_file, year=None, month=None):
         """
         Return the dataset prefix names corresponding to each dataset within the given NetCDF file.
         """
 
-        file_id = os.path.splitext(basename(netcdf_file))[0]
         names = []
-        values = self._extract_x_y(netcdf_file, self.cfg['products'][product]['src_template'])
-        if self.cfg['products'][product]['time_type'] == 'flat':
+        x, y = self._extract_x_y(netcdf_file, self.cfg['src_template'])
+        if self.cfg['time_type'] == 'flat':
             # only extract x and y
-            names.append(self.cfg['products'][product]['dest_template'].format(x=values['x'], y=values['y']))
+            names.append(self.cfg['dest_template'].format(x=x, y=y))
         else:
             # if time_type is not flat we assume it is timed
             dts = Dataset(netcdf_file)
@@ -446,14 +427,11 @@ class JobControl:
                 if year:
                     if month:
                         if dt_.year == year and dt_.month == month:
-                            names.append(self.cfg['products'][product]['dest_template'].format(
-                                x=values['x'], y=values['y'], time=time_stamp))
+                            names.append(self.cfg['dest_template'].format(x=x, y=y, time=time_stamp))
                     elif dt_.year == year:
-                        names.append(self.cfg['products'][product]['dest_template'].format(
-                                x=values['x'], y=values['y'], time=time_stamp))
+                        names.append(self.cfg['dest_template'].format(x=x, y=y, time=time_stamp))
                 else:
-                    names.append(self.cfg['products'][product]['dest_template'].format(
-                                x=values['x'], y=values['y'], time=time_stamp))
+                    names.append(self.cfg['dest_template'].format(x=x, y=y, time=time_stamp))
         return names
 
     @staticmethod
@@ -486,14 +464,15 @@ class JobControl:
             query['time'] = Range(datetime(year=year, month=month, day=1), datetime(year=year, month=month + 1, day=1))
         elif year:
             query['time'] = Range(datetime(year=year, month=1, day=1), datetime(year=year + 1, month=1, day=1))
-        dc = Datacube(app='streamer', env=datacube_env) if datacube_env else Datacube(app='streamer')
+        dc = Datacube(app='streamer', env=datacube_env)
         files = dc.index.datasets.search_returning(field_names=('uri',), **query)
-        # Getting rid of netcdf #part substring may not be a good idea but we do it for now
-        return [uri[0].split(':')[1].split('#')[0] for uri in files]
+
+        # TODO: For now, turn the URL into a file name by removing the schema and #part. Should be made more robust
+        return set(uri[0].split(':')[1].split('#')[0] for uri in files)
 
 
 class Streamer(object):
-    def __init__(self, cfg, product, queue_dir, job_dir, restart,
+    def __init__(self, queue_config, product_name, product_config, queue_dir, job_dir, restart,
                  year=None, month=None, limit=None, file_range=None,
                  reuse_full_list=None, use_datacube=None, datacube_env=None, cog_only=False, upload_only=False):
 
@@ -503,21 +482,20 @@ class Streamer(object):
                     return True
             return False
 
-        self.product = product
-        self.cfg = cfg
-        self.job_control = JobControl(cfg)
+        self.product = product_name
+        self.job_control = JobControl(product_config)
         self.queue_dir = queue_dir
-        self.dest_url = os.path.join(cfg['products'][product]['bucket'], cfg['products'][product]['aws_dir'])
+        self.dest_url = os.path.join(product_config['bucket'], product_config['aws_dir'])
         self.job_dir = job_dir
         self.cog_only = cog_only
         self.upload_only = upload_only
 
         # Compute the name of job control files
-        job_file = 'streamer_job_control' + '_' + product
+        job_file = 'streamer_job_control' + '_' + product_name
         job_file = job_file + '_' + str(year) if year else job_file
         job_file = job_file + '_' + str(month) if year and month else job_file
         job_file = job_file + '.log'
-        items_all_file = 'items_all' + '_' + product
+        items_all_file = 'items_all' + '_' + product_name
         items_all_file = items_all_file + '_' + str(year) if year else items_all_file
         items_all_file = items_all_file + '_' + str(month) if year and month else items_all_file
         items_all_file = items_all_file + '.log'
@@ -525,12 +503,12 @@ class Streamer(object):
         # if restart clear streamer_job_control log and items_all log
         job_file = os.path.join(self.job_dir, job_file)
         items_all_file = os.path.join(self.job_dir, items_all_file)
+
         if restart:
-            with tempfile.TemporaryDirectory() as tmpdir:
-                if os.path.exists(job_file):
-                    run_command(['rm', job_file], tmpdir)
-                if os.path.exists(items_all_file):
-                    run_command(['rm', items_all_file], tmpdir)
+            if os.path.exists(job_file):
+                run_command(['rm', job_file])
+            if os.path.exists(items_all_file):
+                run_command(['rm', items_all_file])
 
         # If reuse_full_list, items_all are read from a file if present
         # and save into a file if items are computed new
@@ -540,19 +518,19 @@ class Streamer(object):
                     items_all = f.read().splitlines()
             else:
                 if use_datacube:
-                    items_all = JobControl.get_indexed_files(product, year, month, datacube_env)
+                    items_all = JobControl.get_indexed_files(product_name, year, month, datacube_env)
                 else:
-                    items_all = JobControl.get_gridspec_files(cfg['products'][product]['src_dir'],
-                                                              cfg['products'][product]['src_dir_type'], year, month)
+                    items_all = JobControl.get_gridspec_files(product_config['src_dir'],
+                                                              product_config['src_dir_type'], year, month)
                 with open(items_all_file, 'a') as f:
                     for item in items_all:
                         f.write(item + '\n')
         else:
             if use_datacube:
-                items_all = JobControl.get_indexed_files(product, year, month, datacube_env)
+                items_all = JobControl.get_indexed_files(product_name, year, month, datacube_env)
             else:
-                items_all = JobControl.get_gridspec_files(cfg['products'][product]['src_dir'],
-                                                          cfg['products'][product]['src_dir_type'], year, month)
+                items_all = JobControl.get_gridspec_files(product_config['src_dir'],
+                                                          product_config['src_dir_type'], year, month)
 
         if file_range:
             start_file, end_file = file_range
@@ -561,8 +539,9 @@ class Streamer(object):
 
             # We need the file system queue specific for this run
             self.message_queue = os.path.join(self.queue_dir,
-                                              product + '_range_run_{}_{}'.format(start_file, end_file))
-            self.queue_dir = os.path.join(self.queue_dir, product + '_range_run_{}_{}'.format(start_file, end_file))
+                                              product_name + '_range_run_{}_{}'.format(start_file, end_file))
+            self.queue_dir = os.path.join(self.queue_dir,
+                                          product_name + '_range_run_{}_{}'.format(start_file, end_file))
         else:
             # Compute file list
             items_done = []
@@ -577,18 +556,16 @@ class Streamer(object):
                 self.items = self.items[0:limit]
 
             # We don't want queue to have conflicts with other runs
-            self.message_queue = os.path.join(self.queue_dir, product + '_single_run')
-            self.queue_dir = os.path.join(self.queue_dir, product + '_single_run')
+            self.message_queue = os.path.join(self.queue_dir, product_name + '_single_run')
+            self.queue_dir = os.path.join(self.queue_dir, product_name + '_single_run')
 
         # We are going to start with a empty queue_dir if not upload_only
         if not upload_only:
             if not os.path.exists(self.queue_dir):
-                with tempfile.TemporaryDirectory() as tmpdir:
-                    run_command(['mkdir', self.queue_dir], tmpdir)
+                run_command(['mkdir', self.queue_dir])
             else:
-                with tempfile.TemporaryDirectory() as tmpdir:
-                    run('rm -fR ' + os.path.join(self.queue_dir, '*'),
-                        stderr=subprocess.STDOUT, cwd=tmpdir, check=True, shell=True)
+                run('rm -fR ' + os.path.join(self.queue_dir, '*'),
+                    stderr=subprocess.STDOUT, check=True, shell=True)
 
             print(self.items.__str__() + ' to do')
 
@@ -605,15 +582,15 @@ class Streamer(object):
         cur = connection.cursor()
         cur.execute("""DEALLOCATE PREPARE ALL""")
 
-        pq_ = PQ(conn=connection)
+        pq = PQ(conn=connection)
         try:
-            pq_.create()
+            pq.create()
         except ProgrammingError as exc:
             # We ignore a duplicate table error.
             if exc.pgcode != '42P07':
                 raise
 
-        return pq_[basename(self.message_queue)]
+        return pq[basename(self.message_queue)]
 
     def compute(self, executor):
         """ The function that runs in the COG conversion thread """
@@ -623,7 +600,7 @@ class Streamer(object):
         while self.items:
             try:
                 queue_capacity = MAX_QUEUE_SIZE - len(processed_queue)
-            except OperationalError as exc:
+            except OperationalError:
                 processed_queue = self.get_queue()
                 queue_capacity = MAX_QUEUE_SIZE - len(processed_queue)
             run_size = queue_capacity if len(self.items) > queue_capacity else len(self.items)
@@ -633,7 +610,7 @@ class Streamer(object):
                 file_done = future.result()
                 try:
                     processed_queue.put(file_done)
-                except OperationalError as exc:
+                except OperationalError:
                     processed_queue = self.get_queue()
                     processed_queue.put(file_done)
         try:
@@ -660,7 +637,7 @@ class Streamer(object):
                     new_item = processed_queue.get().data
                     items_todo.append(new_item)
                     items_num += 1
-                except OperationalError as exc:
+                except OperationalError:
                     processed_queue = self.get_queue()
 
             futures = []
@@ -675,29 +652,13 @@ class Streamer(object):
             wait(futures)
 
     def run(self):
-        # Cannot use pg bouncer: so use the port 5432
-        # thread_pool = psycopg2.pool.ThreadedConnectionPool(1, 2, user="aj9439", host="agdcdev-db.nci.org.au",
-        #                                                    port="5432", database="aj9439_db")
-        # connection = connect(dbname='aj9439_db', host='agdcdev-db.nci.org.au', user='aj9439', port='5432')
-        # pq_ = PQ(conn=connection)
-        # try:
-        #     pq_.create()
-        # except ProgrammingError as exc:
-        #     # We ignore a duplicate table error.
-        #     if exc.pgcode != '42P07':
-        #         raise
-        #
-        # processed_queue = pq_[basename(self.message_queue)]
-        # processed_queue.clear()
-
         with ProcessPoolExecutor(max_workers=WORKERS_POOL) as executor:
             if self.cog_only:
                 self.compute(executor)
             elif self.upload_only:
                 self.upload(executor)
                 # We will remove the queues
-                with tempfile.TemporaryDirectory() as tmpdir:
-                    run('rm -rf ' + self.queue_dir, stderr=subprocess.STDOUT, cwd=tmpdir, check=True, shell=True)
+                run('rm -rf ' + self.queue_dir, stderr=subprocess.STDOUT, check=True, shell=True)
             else:
                 producer = threading.Thread(target=self.compute, args=(executor,))
                 consumer = threading.Thread(target=self.upload, args=(executor,))
@@ -706,21 +667,57 @@ class Streamer(object):
                 producer.join()
                 consumer.join()
                 # We will remove the queues
-                with tempfile.TemporaryDirectory() as tmpdir:
-                    run('rm -rf ' + self.queue_dir, stderr=subprocess.STDOUT, cwd=tmpdir, check=True, shell=True)
+                run('rm -rf ' + self.queue_dir, stderr=subprocess.STDOUT, check=True, shell=True)
+
+
+class Uploader:
+    def __init__(self, config):
+        self.config = config
+        self.queue = Queue()
+
+    def upload(self, executor):
+        """ The function that run in the file upload to AWS thread """
+        processed_queue = self.queue
+
+        while True:
+            try:
+                queue_size = len(processed_queue)
+            except (OperationalError, ProgrammingError):
+                processed_queue = self.get_queue()
+                queue_size = len(processed_queue)
+
+            items_todo = []
+            items_num = 0
+            while items_num < queue_size:
+                try:
+                    new_item = processed_queue.get().data
+                    items_todo.append(new_item)
+                    items_num += 1
+                except OperationalError:
+                    processed_queue = self.get_queue()
+
+            futures = []
+            while items_todo:
+                # We need to pop from the front
+                item = items_todo.pop(0)
+                if item == 'Done':
+                    wait(futures)
+                    return
+                futures.append(executor.submit(upload_to_s3, self.product, self.job_control, item,
+                                               self.queue_dir, self.dest_url, self.job_file))
+            wait(futures)
 
 
 @click.command()
 @click.option('--config', '-c', help="Config file")
-@click.option('--product', '-p', required=True,
-              help="Product name: one of ls5_fc_albers, ls8_fc_albers, wofs_albers, or wofs_filtered_summary")
+@click.option('--product', '-p', required=True, help="Product name")
 @click.option('--queue', '-q', required=True, help="Queue directory")
 @click.option('--job', '-j', required=True, help="Job directory that store job tracking info")
 @click.option('--restart', is_flag=True, help="Restarts the job ignoring prior work")
-@click.option('--year', '-y', type=click.INT, help="The year")
-@click.option('--month', '-m', type=click.INT, help="The month")
-@click.option('--limit', '-l', type=click.INT, help="Number of files to be processed in this run")
-@click.option('--file_range', '-f', nargs=2, type=click.INT,
+@click.option('--year', '-y', type=int, help="The year")
+@click.option('--month', '-m', type=int, help="The month")
+@click.option('--limit', '-l', type=int, help="Number of files to be processed in this run")
+@click.option('--file_range', '-f', nargs=2, type=int,
               help="The range of files (ends inclusive) with respect to full list")
 @click.option('--reuse_full_list', is_flag=True,
               help="Reuse the full file list for the signature(product, year, month)")
@@ -730,9 +727,6 @@ class Streamer(object):
 @click.option('--upload_only', is_flag=True, help="Only run AWS uploads")
 def main(config, product, queue, job, restart, year, month, limit, file_range,
          reuse_full_list, use_datacube, datacube_env, cog_only, upload_only):
-    assert product in ['ls5_fc_albers', 'ls7_fc_albers', 'ls8_fc_albers', 'wofs_albers', 'wofs_filtered_summary'], \
-        "Product name must be one of ls5_fc_albers, ls8_fc_albers, wofs_albers, or wofs_filtered_summary"
-
     assert not (cog_only and upload_only), "Only one of cog_only or upload_only can be used"
 
     if datacube_env:
@@ -744,10 +738,18 @@ def main(config, product, queue, job, restart, year, month, limit, file_range,
     else:
         cfg = yaml.load(DEFAULT_CONFIG)
 
+    queue_config = cfg['queue_db']
+    product_config = cfg['products'][product]
+
     restart_ = True if restart else False
-    streamer = Streamer(cfg, product, queue, job, restart_, year, month, limit, file_range,
+    streamer = Streamer(queue_config, product, product_config, queue, job, restart_, year, month, limit,
+                        file_range,
                         reuse_full_list, use_datacube, datacube_env, cog_only, upload_only)
     streamer.run()
+
+
+def upload():
+    pass
 
 
 if __name__ == '__main__':
