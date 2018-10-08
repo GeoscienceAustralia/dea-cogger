@@ -72,7 +72,7 @@ from netCDF4 import Dataset
 from pandas import to_datetime
 from pq import PQ
 from psycopg2 import connect, ProgrammingError, OperationalError
-from yaml import CLoader as Loader, CDumper as Dumper
+from yaml import CSafeLoader as Loader, CSafeDumper as Dumper
 
 LOG = logging.getLogger(__name__)
 
@@ -138,7 +138,7 @@ def run_command(command, work_dir=None):
         raise RuntimeError("command '{}' failed with error (code {}): {}".format(e.cmd, e.returncode, e.output))
 
 
-def upload_to_s3(product, job_control, file, src_dir, dest, job_file):
+def upload_to_s3(job_control, input_file, src_dir, dest_url, job_file):
     """
     Uploads the .yaml and .tif files that correspond to the given NetCDF 'file' into the AWS
     destination bucket indicated by 'dest'.
@@ -153,12 +153,12 @@ def upload_to_s3(product, job_control, file, src_dir, dest, job_file):
     prefix. The 'prefix' would have structure as in 'LS_WATER_3577_9_-39_20180506102018000000'.
     """
 
-    file_names = job_control.get_unstacked_names(file)
+    prefix_names = job_control.get_unstacked_names(input_file)
     success = True
-    for prefix in file_names:
+    for prefix in prefix_names:
         src = os.path.join(src_dir, prefix)
-        item_dir = job_control.aws_dir(prefix, product)
-        dest_name = os.path.join(dest, item_dir)
+        item_dir = job_control.aws_dir(prefix)
+        dest_path = f'{dest_url}/{item_dir}'
 
         # GDAL creates extra XML files which we don't want
         try:
@@ -173,7 +173,7 @@ def upload_to_s3(product, job_control, file, src_dir, dest, job_file):
             's3',
             'sync',
             src,
-            dest_name
+            dest_path
         ]
         try:
             run_command(aws_copy)
@@ -193,7 +193,7 @@ def upload_to_s3(product, job_control, file, src_dir, dest, job_file):
     # job control logs
     if success:
         with open(job_file, 'a') as f:
-            f.write(file + '\n')
+            f.write(input_file + '\n')
 
 
 class COGNetCDF:
@@ -204,7 +204,7 @@ class COGNetCDF:
         """
         Write the datasets to separate yaml files
         """
-        y_fname = os.path.join(dest_dir, prefix + '.yaml')
+        yaml_fname = os.path.join(dest_dir, prefix + '.yaml')
         dataset_object = nc_dataset.decode('utf-8')
         dataset = yaml.load(dataset_object, Loader=Loader)
 
@@ -215,9 +215,9 @@ class COGNetCDF:
 
         dataset['format'] = {'name': 'GeoTIFF'}
         dataset['lineage'] = {'source_datasets': {}}
-        with open(y_fname, 'w') as fp:
+        with open(yaml_fname, 'w') as fp:
             yaml.dump(dataset, fp, default_flow_style=False, Dumper=Dumper)
-            logging.info("Writing dataset Yaml to %s", basename(y_fname))
+            logging.info("Writing dataset Yaml to %s", basename(yaml_fname))
 
     @staticmethod
     def _dataset_to_cog(prefix, subdatasets, band_num, dest_dir):
@@ -294,7 +294,7 @@ class COGNetCDF:
                     logging.exception("Exception", e)
 
     @staticmethod
-    def datasets_to_cog(product, job_control, input_file, dest_dir):
+    def datasets_to_cog(job_control, input_file, dest_dir):
         """
         Convert the datasets in the NetCDF file 'file' into 'dest_dir' where each dataset is in
         a separate directory with the name indicated by the dataset prefix. The prefix would look
