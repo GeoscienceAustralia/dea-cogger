@@ -325,8 +325,9 @@ class COGNetCDF:
             dataset_item = dataset_array.dataset.item(index)
             dest = os.path.join(dest_dir, prefix)
             try:
-                with tempfile.TemporaryDirectory() as tmpdir:
-                    run_command(['mkdir', dest], tmpdir)
+                if not os.path.exists(dest):
+                    with tempfile.TemporaryDirectory() as tmpdir:
+                        run_command(['mkdir', dest], tmpdir)
             except Exception as e:
                 logging.error("Failure creating queue dir: %s", dest)
                 logging.exception("Exception", e)
@@ -512,6 +513,9 @@ class Streamer(object):
         self.cog_only = cog_only
         self.upload_only = upload_only
 
+        self.message_queue = os.path.join(self.queue_dir, product)
+        self.queue_dir = os.path.join(self.queue_dir, product)
+
         # Compute the name of job control files
         job_file = 'streamer_job_control' + '_' + product
         job_file = job_file + '_' + str(year) if year else job_file
@@ -531,6 +535,14 @@ class Streamer(object):
                     run_command(['rm', job_file], tmpdir)
                 if os.path.exists(items_all_file):
                     run_command(['rm', items_all_file], tmpdir)
+                if os.path.exists(self.queue_dir):
+                    run('rm -fR ' + os.path.join(self.queue_dir, '*'),
+                        stderr=subprocess.STDOUT, cwd=tmpdir, check=True, shell=True)
+
+        if not upload_only:
+            if not os.path.exists(self.queue_dir):
+                with tempfile.TemporaryDirectory() as tmpdir:
+                    run_command(['mkdir', self.queue_dir], tmpdir)
 
         # If reuse_full_list, items_all are read from a file if present
         # and save into a file if items are computed new
@@ -558,11 +570,6 @@ class Streamer(object):
             start_file, end_file = file_range
             # start_file and end_file are inclusive so we need end_file + 1
             self.items = items_all[start_file: end_file + 1]
-
-            # We need the file system queue specific for this run
-            self.message_queue = os.path.join(self.queue_dir,
-                                              product + '_range_run_{}_{}'.format(start_file, end_file))
-            self.queue_dir = os.path.join(self.queue_dir, product + '_range_run_{}_{}'.format(start_file, end_file))
         else:
             # Compute file list
             items_done = []
@@ -576,20 +583,6 @@ class Streamer(object):
             if limit:
                 self.items = self.items[0:limit]
 
-            # We don't want queue to have conflicts with other runs
-            self.message_queue = os.path.join(self.queue_dir, product + '_single_run')
-            self.queue_dir = os.path.join(self.queue_dir, product + '_single_run')
-
-        # We are going to start with a empty queue_dir if not upload_only
-        if not upload_only:
-            if not os.path.exists(self.queue_dir):
-                with tempfile.TemporaryDirectory() as tmpdir:
-                    run_command(['mkdir', self.queue_dir], tmpdir)
-            else:
-                with tempfile.TemporaryDirectory() as tmpdir:
-                    run('rm -fR ' + os.path.join(self.queue_dir, '*'),
-                        stderr=subprocess.STDOUT, cwd=tmpdir, check=True, shell=True)
-
             print(self.items.__str__() + ' to do')
 
         self.job_file = job_file
@@ -601,7 +594,9 @@ class Streamer(object):
         #                                                    host=self.cfg['queue_db']['host'],
         #                                                    port='5432',
         #                                                    database=self.cfg['queue_db']['db_name'])
-        connection = connect(dbname='aj9439_db', host='agdcdev-db.nci.org.au', user='aj9439', port='6432')
+        connection = connect(dbname=self.cfg['queue_db']['db_name'],
+                             host=self.cfg['queue_db']['host'],
+                             user=self.cfg['queue_db']['user'], port='6432')
         cur = connection.cursor()
         cur.execute("""DEALLOCATE PREPARE ALL""")
 
@@ -623,7 +618,7 @@ class Streamer(object):
         while self.items:
             try:
                 queue_capacity = MAX_QUEUE_SIZE - len(processed_queue)
-            except OperationalError as exc:
+            except (OperationalError, ProgrammingError):
                 processed_queue = self.get_queue()
                 queue_capacity = MAX_QUEUE_SIZE - len(processed_queue)
             run_size = queue_capacity if len(self.items) > queue_capacity else len(self.items)
@@ -633,7 +628,7 @@ class Streamer(object):
                 file_done = future.result()
                 try:
                     processed_queue.put(file_done)
-                except OperationalError as exc:
+                except (OperationalError, ProgrammingError):
                     processed_queue = self.get_queue()
                     processed_queue.put(file_done)
         try:
@@ -675,20 +670,6 @@ class Streamer(object):
             wait(futures)
 
     def run(self):
-        # Cannot use pg bouncer: so use the port 5432
-        # thread_pool = psycopg2.pool.ThreadedConnectionPool(1, 2, user="aj9439", host="agdcdev-db.nci.org.au",
-        #                                                    port="5432", database="aj9439_db")
-        # connection = connect(dbname='aj9439_db', host='agdcdev-db.nci.org.au', user='aj9439', port='5432')
-        # pq_ = PQ(conn=connection)
-        # try:
-        #     pq_.create()
-        # except ProgrammingError as exc:
-        #     # We ignore a duplicate table error.
-        #     if exc.pgcode != '42P07':
-        #         raise
-        #
-        # processed_queue = pq_[basename(self.message_queue)]
-        # processed_queue.clear()
 
         with ProcessPoolExecutor(max_workers=WORKERS_POOL) as executor:
             if self.cog_only:
@@ -748,6 +729,20 @@ def main(config, product, queue, job, restart, year, month, limit, file_range,
     streamer = Streamer(cfg, product, queue, job, restart_, year, month, limit, file_range,
                         reuse_full_list, use_datacube, datacube_env, cog_only, upload_only)
     streamer.run()
+
+
+@click.command()
+@click.option('--product', '-p', required=True,
+              help="Product name: one of ls5_fc_albers, ls8_fc_albers, wofs_albers, or wofs_filtered_summary")
+@click.option('--year', '-y', type=click.INT, help="The year")
+@click.option('--month', '-m', type=click.INT, help="The month")
+@click.option('--datacube_env', '-e', help="Specifies the datacube environment")
+@click.argument('filename')
+def file_list(product, year, month, datacube_env, filename):
+    items_all = JobControl.get_indexed_files(product, year, month, datacube_env)
+    with open(filename, 'w') as f:
+        for item in items_all:
+            f.write(item + '\n')
 
 
 if __name__ == '__main__':

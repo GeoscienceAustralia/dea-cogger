@@ -4,7 +4,7 @@ module load dea
 python streamer.py -p wofs_albers \
                    -q /g/data/u46/users/aj9439/aws/queue \
                    -j /g/data/u46/users/aj9439/aws/job \
-                   -f 0 10 \
+                   -f 0 5 \
                    -y 2018 \
                    -m 6 \
                    --use_datacube \
@@ -14,7 +14,7 @@ python streamer.py -p wofs_albers \
 python streamer.py -p wofs_albers \
                    -q /g/data/u46/users/aj9439/aws/queue \
                    -j /g/data/u46/users/aj9439/aws/job \
-                   -f 0 10 \
+                   -f 0 5 \
                    -y 2018 \
                    -m 6 \
                    --use_datacube \
