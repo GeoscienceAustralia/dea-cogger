@@ -481,11 +481,7 @@ def convert_cog(config, output_dir, product, num_procs, filenames):
                     dataset_directory.rename(ready_for_upload_dir / prefix)
 
 
-#                    print(prefix, dataset_directory, destination_url)
-
-
 @cli.command()
-@click.option('--config', '-c', help="Config file")
 @click.option('--output-dir', help='Output directory', required=True)
 def upload(config, output_dir):
     """
@@ -532,10 +528,6 @@ def upload(config, output_dir):
                         logging.error("Failure in queue: removing dataset %s", src_path)
                         logging.exception("Exception", e)
         time.sleep(1)
-
-#    for completed_dataset_directory, destination_url in queue:
-
-#        upload_to_s3(completed_dataset_directory, destination_url)
 
 
 if __name__ == '__main__':
