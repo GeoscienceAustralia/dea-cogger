@@ -485,16 +485,11 @@ def convert_cog(config, output_dir, product, num_procs, filenames):
 
 @cli.command()
 @click.option('--config', '-c', help="Config file")
+@click.option('--output-dir', help='Output directory', required=True)
 @click.option('--product', '-p', help='Product name', required=True)
-def upload(config, product):
+def upload(config, output_dir, product):
     """
     Connect to the PQ queue of completed COGs and upload them to S3
-
-    Will wait for new items for up to 3 minutes...
-
-    :param connection_string:
-    :param queue_name:
-    :return:
     """
     if config:
         with open(config, 'r') as cfg_file:
@@ -502,13 +497,15 @@ def upload(config, product):
     else:
         cfg = yaml.load(DEFAULT_CONFIG)
 
-    ready_dir = '/g/data1a/u46/users/dra547/test1/TO_UPLOAD'
-    failed_dir = '/g/data1a/u46/users/dra547/test1/FAILED'
+    output_dir = Path(output_dir)
+
+    ready_for_upload_dir = output_dir / 'TO_UPLOAD'
+    failed_dir = output_dir / 'FAILED'
 
     while True:
-        datasets_ready = check_output(['ls', ready_dir]).decode('utf-8').splitlines()
+        datasets_ready = check_output(['ls', ready_for_upload_dir]).decode('utf-8').splitlines()
         for dataset in datasets_ready:
-            src_path = f'{ready_dir}/{dataset}'
+            src_path = f'{ready_for_upload_dir}/{dataset}'
             dest_file = f'{src_path}/upload-destination.txt'
             if os.path.exists(dest_file):
                 with open(dest_file) as f:
