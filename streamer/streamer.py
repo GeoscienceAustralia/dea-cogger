@@ -62,6 +62,7 @@ from os.path import join as pjoin, basename
 from pathlib import Path
 
 import time
+from datetime import datetime, timedelta
 import click
 import gdal
 import xarray
@@ -493,6 +494,8 @@ def upload(output_dir):
     ready_for_upload_dir = output_dir / 'TO_UPLOAD'
     failed_dir = output_dir / 'FAILED'
 
+    max_wait_time_without_upload = timedelta(minutes=5)
+    time_last_upload = None
     while True:
         datasets_ready = check_output(['ls', ready_for_upload_dir]).decode('utf-8').splitlines()
         for dataset in datasets_ready:
@@ -527,7 +530,12 @@ def upload(output_dir):
                     except Exception as e:
                         logging.error("Failure in queue: removing dataset %s", src_path)
                         logging.exception("Exception", e)
+            time_last_upload = datetime.now()
         time.sleep(1)
+        if time_last_upload:
+            elapsed_time = datetime.now() - time_last_upload
+            if elapsed_time > max_wait_time_without_upload:
+                break
 
 
 if __name__ == '__main__':
