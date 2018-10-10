@@ -483,7 +483,7 @@ def convert_cog(config, output_dir, product, num_procs, filenames):
 
 @cli.command()
 @click.option('--output-dir', help='Output directory', required=True)
-def upload(config, output_dir):
+def upload(output_dir):
     """
     Connect to the PQ queue of completed COGs and upload them to S3
     """
