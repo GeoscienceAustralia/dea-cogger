@@ -61,6 +61,7 @@ from datetime import datetime
 from os.path import join as pjoin, basename
 from pathlib import Path
 
+import time
 import click
 import gdal
 import xarray
@@ -490,11 +491,6 @@ def upload(config, output_dir):
     """
     Connect to the PQ queue of completed COGs and upload them to S3
     """
-    if config:
-        with open(config, 'r') as cfg_file:
-            cfg = yaml.load(cfg_file)
-    else:
-        cfg = yaml.load(DEFAULT_CONFIG)
 
     output_dir = Path(output_dir)
 
@@ -535,6 +531,7 @@ def upload(config, output_dir):
                     except Exception as e:
                         logging.error("Failure in queue: removing dataset %s", src_path)
                         logging.exception("Exception", e)
+        time.sleep(1)
 
 #    for completed_dataset_directory, destination_url in queue:
 
