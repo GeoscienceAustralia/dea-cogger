@@ -1,1 +1,1 @@
-from .streamer import JobControl, Streamer, COGNetCDF
+from .streamer import COGProductConfiguration, Streamer, COGNetCDF
