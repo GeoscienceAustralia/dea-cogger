@@ -514,7 +514,8 @@ def upload(config, product):
     else:
         cfg = yaml.load(DEFAULT_CONFIG)
 
-    ready_dir = '/g/data/u46/users/aj9439/aws/queue/wofs_albers'
+    ready_dir = '/g/data1a/u46/users/dra547/test1/TO_UPLOAD'
+    failed_dir = '/g/data1a/u46/users/dra547/test1/FAILED'
 
     while True:
         datasets_ready = check_output(['ls', ready_dir]).decode('utf-8').splitlines()
@@ -524,20 +525,26 @@ def upload(config, product):
             if os.path.exists(dest_file):
                 with open(dest_file) as f:
                     dest_path = f.read().splitlines()[0]
-                call(['rm', dest_file])
                 aws_copy = [
                     'aws',
                     's3',
                     'sync',
                     src_path,
-                    dest_path
+                    dest_path,
+                    '--exclude',
+                    dest_file
                 ]
                 try:
                     print(dest_path)
-                    # run_command(aws_copy)
+                    run_command(aws_copy)
                 except Exception as e:
                     logging.error("AWS upload error %s", dest_path)
                     logging.exception("Exception", e)
+                    try:
+                        run_command(['mv', '-f', '--', src_path, failed_dir])
+                    except Exception as e:
+                        logging.error("Failure moving dataset %s to FAILED dir", src_path)
+                        logging.exception("Exception", e)
                 else:
                     try:
                         run('rm -fR -- ' + src_path, stderr=subprocess.STDOUT, check=True, shell=True)
