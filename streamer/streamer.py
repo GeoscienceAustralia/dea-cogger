@@ -53,13 +53,13 @@ import logging
 import os
 import re
 import subprocess
-from subprocess import call, check_output
+from subprocess import call, check_output, run
 import sys
 import tempfile
-from concurrent.futures import ProcessPoolExecutor, wait, as_completed
+from concurrent.futures import ProcessPoolExecutor, as_completed
 from datetime import datetime
 from os.path import join as pjoin, basename
-from subprocess import run
+from pathlib import Path
 
 import click
 import gdal
@@ -69,8 +69,6 @@ from datacube import Datacube
 from datacube.model import Range
 from netCDF4 import Dataset
 from pandas import to_datetime
-from pq import PQ
-from psycopg2 import connect, ProgrammingError
 from yaml import CSafeLoader as Loader, CSafeDumper as Dumper
 
 LOG = logging.getLogger(__name__)
@@ -132,7 +130,7 @@ def run_command(command, work_dir=None):
     A simple utility to execute a subprocess command.
     """
     try:
-        run(command, stderr=subprocess.STDOUT, cwd=work_dir, check=True)
+        run(command, cwd=work_dir, check=True, stderr=subprocess.PIPE, stdout=subprocess.PIPE)
     except subprocess.CalledProcessError as e:
         raise RuntimeError("command '{}' failed with error (code {}): {}".format(e.cmd, e.returncode, e.output))
 
@@ -201,17 +199,19 @@ class COGNetCDF:
 
         The directory names will look like 'LS_WATER_3577_9_-39_20180506102018'
         """
-
+        dest_dir = Path(dest_dir)
         prefix_names = product_config.get_unstacked_names(input_file)
 
         dataset_array = xarray.open_dataset(input_file)
         dataset = gdal.Open(input_file, gdal.GA_ReadOnly)
         subdatasets = dataset.GetSubDatasets()
 
+        generated_datasets = {}
+
         for index, prefix in enumerate(prefix_names):
             prefix = prefix_names[index]
-            dest = os.path.join(dest_dir, prefix)
-            os.makedirs(dest, exist_ok=True)
+            dest = dest_dir / prefix
+            dest.mkdir(exist_ok=True)
 
             # Read the Dataset Metadata from the 'dataset' variable in the NetCDF file, and save as YAML
             dataset_item = dataset_array.dataset.item(index)
@@ -222,16 +222,19 @@ class COGNetCDF:
 
             # Clean up XML files from GDAL
             # GDAL creates extra XML files which we don't want
-            run('rm -fR -- ' + dest + '/*.xml', stderr=subprocess.STDOUT, check=True, shell=True)
+            for xmlfile in dest.glob('*.xml'):
+                xmlfile.unlink()
 
-        return input_file
+            generated_datasets[prefix] = dest
+
+        return generated_datasets
 
     @staticmethod
     def _dataset_to_yaml(prefix, nc_dataset: xarray.DataArray, dest_dir):
         """
         Write the datasets to separate yaml files
         """
-        yaml_fname = os.path.join(dest_dir, prefix + '.yaml')
+        yaml_fname = dest_dir / (prefix + '.yaml')
         dataset_object = nc_dataset.decode('utf-8')
         dataset = yaml.load(dataset_object, Loader=Loader)
 
@@ -244,7 +247,7 @@ class COGNetCDF:
         dataset['lineage'] = {'source_datasets': {}}
         with open(yaml_fname, 'w') as fp:
             yaml.dump(dataset, fp, default_flow_style=False, Dumper=Dumper)
-            logging.info("Writing dataset Yaml to %s", basename(yaml_fname))
+            logging.info("Writing dataset Yaml to %s", yaml_fname.name)
 
     @staticmethod
     def _dataset_to_cog(prefix, subdatasets, band_num, dest_dir):
@@ -265,54 +268,35 @@ class COGNetCDF:
                     temp_fname = pjoin(tmpdir, basename(out_fname))
                     to_cogtif = [
                         'gdal_translate',
-                        '-of',
-                        'GTIFF',
-                        '-b',
-                        str(band_num),
+                        '-of', 'GTIFF',
+                        '-b', str(band_num),
                         dts[0],
                         temp_fname]
                     run_command(to_cogtif, tmpdir)
 
                     # Add Overviews
                     # gdaladdo - Builds or rebuilds overview images.
-                    # 2, 4, 8,16,32 are levels which is a list of integral overview levels to build.
+                    # 2, 4, 8,16, 32 are levels which is a list of integral overview levels to build.
                     add_ovr = [
                         'gdaladdo',
-                        '-r',
-                        'nearest',
-                        '--config',
-                        'GDAL_TIFF_OVR_BLOCKSIZE',
-                        '512',
+                        '-r', 'nearest',
+                        '--config', 'GDAL_TIFF_OVR_BLOCKSIZE', '512',
                         temp_fname,
-                        '2',
-                        '4',
-                        '8',
-                        '16',
-                        '32']
+                        '2', '4', '8', '16', '32']
                     run_command(add_ovr, tmpdir)
 
                     # Convert to COG
                     cogtif = [
                         'gdal_translate',
-                        '-co',
-                        'TILED=YES',
-                        '-co',
-                        'COPY_SRC_OVERVIEWS=YES',
-                        '-co',
-                        'COMPRESS=DEFLATE',
-                        '-co',
-                        'ZLEVEL=9',
-                        '--config',
-                        'GDAL_TIFF_OVR_BLOCKSIZE',
-                        '512',
-                        '-co',
-                        'BLOCKXSIZE=512',
-                        '-co',
-                        'BLOCKYSIZE=512',
-                        '-co',
-                        'PREDICTOR=2',
-                        '-co',
-                        'PROFILE=GeoTIFF',
+                        '-co', 'TILED=YES',
+                        '-co', 'COPY_SRC_OVERVIEWS=YES',
+                        '-co', 'COMPRESS=DEFLATE',
+                        '-co', 'ZLEVEL=9',
+                        '--config', 'GDAL_TIFF_OVR_BLOCKSIZE', '512',
+                        '-co', 'BLOCKXSIZE=512',
+                        '-co', 'BLOCKYSIZE=512',
+                        '-co', 'PREDICTOR=2',
+                        '-co', 'PROFILE=GeoTIFF',
                         temp_fname,
                         out_fname]
                     run_command(cogtif, dest_dir)
@@ -330,6 +314,10 @@ class COGProductConfiguration:
 
     def __init__(self, cfg):
         self.cfg = cfg
+
+    def aws_destination(self, item):
+        dir = self.aws_dir(item)
+        return self.cfg['bucket'] + '/' + self.cfg['aws_dir'] + '/' + dir
 
     def aws_dir(self, item):
         """
@@ -426,22 +414,6 @@ def get_indexed_files(product, year=None, month=None, datacube_env=None):
     return set(filename_from_uri(uri) for uri in files)
 
 
-def get_queue(queue_name):
-    connection = connect(dbname='aj9439_db', host='agdcdev-db.nci.org.au', port='6432')
-    cur = connection.cursor()
-    cur.execute("DEALLOCATE PREPARE ALL")
-
-    pq = PQ(conn=connection)
-    try:
-        pq.create()
-    except ProgrammingError as exc:
-        # We ignore a duplicate table error.
-        if exc.pgcode != '42P07':
-            raise
-
-    return pq[queue_name]
-
-
 @click.group()
 def cli():
     pass
@@ -478,21 +450,37 @@ def convert_cog(config, output_dir, product, num_procs, filenames):
     else:
         cfg = yaml.load(DEFAULT_CONFIG)
 
-    product_config = COGProductConfiguration(cfg['products'][product])
+    output_dir = Path(output_dir)
 
-    thequeue = get_queue(product)
+    working_dir = output_dir / 'WORKING'
+    ready_for_upload_dir = output_dir / 'TO_UPLOAD'
+
+    working_dir.mkdir(parents=True, exist_ok=True)
+    ready_for_upload_dir.mkdir(parents=True, exist_ok=True)
+
+    product_config = COGProductConfiguration(cfg['products'][product])
 
     with ProcessPoolExecutor(max_workers=num_procs) as executor:
 
         futures = (
-            executor.submit(COGNetCDF.netcdf_to_cog, filename, dest_dir=output_dir, product_config=product_config)
-            for filename in filenames)
+            executor.submit(COGNetCDF.netcdf_to_cog, filename, dest_dir=working_dir, product_config=product_config)
+            for filename in filenames
+        )
 
-        for future in as_completed(futures):
-            # Submit to completed Queue
-            result = future.result()
-            print(future.result())
-            thequeue.put(result)
+        with click.progressbar(as_completed(futures), length=len(filenames), label='Processing NetCDF Files',
+                               width=0) as bar:
+            for future in bar:
+                # Submit to completed Queue
+                generated_cog_dict = future.result()
+                for prefix, dataset_directory in generated_cog_dict.items():
+                    destination_url = product_config.aws_destination(prefix)
+
+                    (dataset_directory / 'upload-destination.txt').write_text(destination_url)
+
+                    dataset_directory.rename(ready_for_upload_dir / prefix)
+
+
+#                    print(prefix, dataset_directory, destination_url)
 
 
 @cli.command()
