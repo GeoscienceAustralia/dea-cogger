@@ -53,6 +53,7 @@ import logging
 import os
 import re
 import subprocess
+from subprocess import call, check_output
 import sys
 import tempfile
 from concurrent.futures import ProcessPoolExecutor, wait, as_completed
@@ -496,7 +497,7 @@ def convert_cog(config, output_dir, product, num_procs, filenames):
 
 @cli.command()
 @click.option('--config', '-c', help="Config file")
-@click.option('--product', help='Product name', required=True)
+@click.option('--product', '-p', help='Product name', required=True)
 def upload(config, product):
     """
     Connect to the PQ queue of completed COGs and upload them to S3
@@ -513,14 +514,37 @@ def upload(config, product):
     else:
         cfg = yaml.load(DEFAULT_CONFIG)
 
-    thequeue = get_queue(product)
+    ready_dir = '/g/data/u46/users/aj9439/aws/queue/wofs_albers'
 
-    with thequeue:
-        for result in thequeue:
-            if result is None:
-                sys.exit('No datasets to upload, exiting')
+    while True:
+        datasets_ready = check_output(['ls', ready_dir]).decode('utf-8').splitlines()
+        for dataset in datasets_ready:
+            src_path = f'{ready_dir}/{dataset}'
+            dest_file = f'{src_path}/upload-destination.txt'
+            if os.path.exists(dest_file):
+                with open(dest_file) as f:
+                    dest_path = f.read().splitlines()[0]
+                call(['rm', dest_file])
+                aws_copy = [
+                    'aws',
+                    's3',
+                    'sync',
+                    src_path,
+                    dest_path
+                ]
+                try:
+                    print(dest_path)
+                    # run_command(aws_copy)
+                except Exception as e:
+                    logging.error("AWS upload error %s", dest_path)
+                    logging.exception("Exception", e)
+                else:
+                    try:
+                        run('rm -fR -- ' + src_path, stderr=subprocess.STDOUT, check=True, shell=True)
+                    except Exception as e:
+                        logging.error("Failure in queue: removing dataset %s", src_path)
+                        logging.exception("Exception", e)
 
-            print(result.data)
 #    for completed_dataset_directory, destination_url in queue:
 
 #        upload_to_s3(completed_dataset_directory, destination_url)
