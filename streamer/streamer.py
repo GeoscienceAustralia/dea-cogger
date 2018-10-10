@@ -483,8 +483,9 @@ def convert_cog(config, output_dir, product, num_procs, filenames):
 
 
 @cli.command()
-@click.option('--output-dir', help='Output directory', required=True)
-def upload(output_dir):
+@click.option('--output-dir', '-o', help='Output directory', required=True)
+@click.option('--retain-datasets', '-r', help='Retain datasets rather than delete them after upload')
+def upload(output_dir, retain_datasets):
     """
     Connect to the PQ queue of completed COGs and upload them to S3
     """
@@ -493,6 +494,7 @@ def upload(output_dir):
 
     ready_for_upload_dir = output_dir / 'TO_UPLOAD'
     failed_dir = output_dir / 'FAILED'
+    complete_dir = output_dir / 'COMPLETE'
 
     max_wait_time_without_upload = timedelta(minutes=5)
     time_last_upload = None
@@ -525,11 +527,18 @@ def upload(output_dir):
                         logging.error("Failure moving dataset %s to FAILED dir", src_path)
                         logging.exception("Exception", e)
                 else:
-                    try:
-                        run('rm -fR -- ' + src_path, stderr=subprocess.STDOUT, check=True, shell=True)
-                    except Exception as e:
-                        logging.error("Failure in queue: removing dataset %s", src_path)
-                        logging.exception("Exception", e)
+                    if retain_datasets:
+                        try:
+                            run_command(['mv', '-f', '--', src_path, complete_dir])
+                        except Exception as e:
+                            logging.error("Failure moving dataset %s to COMPLETE dir", src_path)
+                            logging.exception("Exception", e)
+                    else:
+                        try:
+                            run('rm -fR -- ' + src_path, stderr=subprocess.STDOUT, check=True, shell=True)
+                        except Exception as e:
+                            logging.error("Failure in queue: removing dataset %s", src_path)
+                            logging.exception("Exception", e)
             time_last_upload = datetime.now()
         time.sleep(1)
         if time_last_upload:
