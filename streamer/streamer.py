@@ -53,16 +53,14 @@ import logging
 import os
 import re
 import subprocess
-from subprocess import call, check_output, run
-import sys
 import tempfile
+import time
 from concurrent.futures import ProcessPoolExecutor, as_completed
-from datetime import datetime
+from datetime import datetime, timedelta
 from os.path import join as pjoin, basename
 from pathlib import Path
+from subprocess import check_output, run
 
-import time
-from datetime import datetime, timedelta
 import click
 import gdal
 import xarray
@@ -71,6 +69,7 @@ from datacube import Datacube
 from datacube.model import Range
 from netCDF4 import Dataset
 from pandas import to_datetime
+from tqdm import tqdm
 from yaml import CSafeLoader as Loader, CSafeDumper as Dumper
 
 LOG = logging.getLogger(__name__)
@@ -92,6 +91,7 @@ products:
         src_dir_type: tiled
         aws_dir: WOfS/WOFLs/v2.1.0/combined
         bucket:  s3://dea-public-data-dev
+        resampling_method: mode
     wofs_filtered_summary:
         time_type: flat
         src_template: wofs_filtered_summary_{x}_{y}.nc
@@ -220,7 +220,11 @@ class COGNetCDF:
             COGNetCDF._dataset_to_yaml(prefix, dataset_item, dest)
 
             # Extract each band from the NetCDF and write to individual GeoTIFF files
-            COGNetCDF._dataset_to_cog(prefix, subdatasets, index + 1, dest)
+            COGNetCDF._dataset_to_cog(prefix,
+                                      subdatasets,
+                                      index + 1,
+                                      dest,
+                                      resampling_method=product_config.get('resampling_method'))
 
             # Clean up XML files from GDAL
             # GDAL creates extra XML files which we don't want
@@ -252,7 +256,7 @@ class COGNetCDF:
             logging.info("Writing dataset Yaml to %s", yaml_fname.name)
 
     @staticmethod
-    def _dataset_to_cog(prefix, subdatasets, band_num, dest_dir):
+    def _dataset_to_cog(prefix, subdatasets, band_num, dest_dir, resampling_method='average'):
         """
         Write the datasets to separate cog files
         """
@@ -281,7 +285,7 @@ class COGNetCDF:
                     # 2, 4, 8,16, 32 are levels which is a list of integral overview levels to build.
                     add_ovr = [
                         'gdaladdo',
-                        '-r', 'nearest',
+                        '-r', resampling_method,
                         '--config', 'GDAL_TIFF_OVR_BLOCKSIZE', '512',
                         temp_fname,
                         '2', '4', '8', '16', '32']
@@ -469,17 +473,15 @@ def convert_cog(config, output_dir, product, num_procs, filenames):
             for filename in filenames
         )
 
-        with click.progressbar(as_completed(futures), length=len(filenames), label='Processing NetCDF Files',
-                               width=0) as bar:
-            for future in bar:
-                # Submit to completed Queue
-                generated_cog_dict = future.result()
-                for prefix, dataset_directory in generated_cog_dict.items():
-                    destination_url = product_config.aws_dir(prefix)
+        for future in tqdm(as_completed(futures), desc='Converting NetCDF Files', total=len(filenames)):
+            # Submit to completed Queue
+            generated_cog_dict = future.result()
+            for prefix, dataset_directory in generated_cog_dict.items():
+                destination_url = product_config.aws_dir(prefix)
 
-                    (dataset_directory / 'upload-destination.txt').write_text(destination_url)
+                (dataset_directory / 'upload-destination.txt').write_text(destination_url)
 
-                    dataset_directory.rename(ready_for_upload_dir / prefix)
+                dataset_directory.rename(ready_for_upload_dir / prefix)
 
 
 @cli.command()
