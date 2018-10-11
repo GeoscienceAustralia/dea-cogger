@@ -92,6 +92,7 @@ products:
         src_dir_type: tiled
         aws_dir: WOfS/WOFLs/v2.1.0/combined
         bucket:  s3://dea-public-data-dev
+        resampling_method: mode
     wofs_filtered_summary:
         time_type: flat
         src_template: wofs_filtered_summary_{x}_{y}.nc
@@ -220,7 +221,11 @@ class COGNetCDF:
             COGNetCDF._dataset_to_yaml(prefix, dataset_item, dest)
 
             # Extract each band from the NetCDF and write to individual GeoTIFF files
-            COGNetCDF._dataset_to_cog(prefix, subdatasets, index + 1, dest)
+            COGNetCDF._dataset_to_cog(prefix,
+                                      subdatasets,
+                                      index + 1,
+                                      dest,
+                                      resampling_method=product_config.get('resampling_method'))
 
             # Clean up XML files from GDAL
             # GDAL creates extra XML files which we don't want
@@ -252,7 +257,7 @@ class COGNetCDF:
             logging.info("Writing dataset Yaml to %s", yaml_fname.name)
 
     @staticmethod
-    def _dataset_to_cog(prefix, subdatasets, band_num, dest_dir):
+    def _dataset_to_cog(prefix, subdatasets, band_num, dest_dir, resampling_method='average'):
         """
         Write the datasets to separate cog files
         """
@@ -281,7 +286,7 @@ class COGNetCDF:
                     # 2, 4, 8,16, 32 are levels which is a list of integral overview levels to build.
                     add_ovr = [
                         'gdaladdo',
-                        '-r', 'nearest',
+                        '-r', resampling_method,
                         '--config', 'GDAL_TIFF_OVR_BLOCKSIZE', '512',
                         temp_fname,
                         '2', '4', '8', '16', '32']
