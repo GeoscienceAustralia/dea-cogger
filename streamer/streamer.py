@@ -224,7 +224,7 @@ class COGNetCDF:
                                       subdatasets,
                                       index + 1,
                                       dest,
-                                      resampling_method=product_config.get('resampling_method'))
+                                      resampling_method=product_config.cfg.get('resampling_method'))
 
             # Clean up XML files from GDAL
             # GDAL creates extra XML files which we don't want
