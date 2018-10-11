@@ -475,7 +475,7 @@ def convert_cog(config, output_dir, product, num_procs, filenames):
                 # Submit to completed Queue
                 generated_cog_dict = future.result()
                 for prefix, dataset_directory in generated_cog_dict.items():
-                    destination_url = product_config.aws_destination(prefix)
+                    destination_url = product_config.aws_dir(prefix)
 
                     (dataset_directory / 'upload-destination.txt').write_text(destination_url)
 
@@ -484,8 +484,10 @@ def convert_cog(config, output_dir, product, num_procs, filenames):
 
 @cli.command()
 @click.option('--output-dir', '-o', help='Output directory', required=True)
-@click.option('--retain-datasets', '-r', help='Retain datasets rather than delete them after upload')
-def upload(output_dir, retain_datasets):
+@click.option('--upload-destination', '-u', nargs=1, type=click.Path(),
+              help="Upload destination, typically including the bucket as well as prefix")
+@click.option('--retain-datasets', '-r', is_flag=True, help='Retain datasets rather than delete them after upload')
+def upload(output_dir, upload_destination, retain_datasets):
     """
     Connect to the PQ queue of completed COGs and upload them to S3
     """
@@ -506,6 +508,8 @@ def upload(output_dir, retain_datasets):
             if os.path.exists(dest_file):
                 with open(dest_file) as f:
                     dest_path = f.read().splitlines()[0]
+                if upload_destination:
+                    dest_path = f'{upload_destination}/{dest_path}'
                 aws_copy = [
                     'aws',
                     's3',
