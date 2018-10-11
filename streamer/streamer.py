@@ -53,16 +53,14 @@ import logging
 import os
 import re
 import subprocess
-from subprocess import call, check_output, run
-import sys
 import tempfile
+import time
 from concurrent.futures import ProcessPoolExecutor, as_completed
-from datetime import datetime
+from datetime import datetime, timedelta
 from os.path import join as pjoin, basename
 from pathlib import Path
+from subprocess import check_output, run
 
-import time
-from datetime import datetime, timedelta
 import click
 import gdal
 import xarray
@@ -71,6 +69,7 @@ from datacube import Datacube
 from datacube.model import Range
 from netCDF4 import Dataset
 from pandas import to_datetime
+from tqdm import tqdm
 from yaml import CSafeLoader as Loader, CSafeDumper as Dumper
 
 LOG = logging.getLogger(__name__)
@@ -474,17 +473,15 @@ def convert_cog(config, output_dir, product, num_procs, filenames):
             for filename in filenames
         )
 
-        with click.progressbar(as_completed(futures), length=len(filenames), label='Processing NetCDF Files',
-                               width=0) as bar:
-            for future in bar:
-                # Submit to completed Queue
-                generated_cog_dict = future.result()
-                for prefix, dataset_directory in generated_cog_dict.items():
-                    destination_url = product_config.aws_destination(prefix)
+        for future in tqdm(as_completed(futures), desc='Converting NetCDF Files', total=len(filenames)):
+            # Submit to completed Queue
+            generated_cog_dict = future.result()
+            for prefix, dataset_directory in generated_cog_dict.items():
+                destination_url = product_config.aws_destination(prefix)
 
-                    (dataset_directory / 'upload-destination.txt').write_text(destination_url)
+                (dataset_directory / 'upload-destination.txt').write_text(destination_url)
 
-                    dataset_directory.rename(ready_for_upload_dir / prefix)
+                dataset_directory.rename(ready_for_upload_dir / prefix)
 
 
 @cli.command()
