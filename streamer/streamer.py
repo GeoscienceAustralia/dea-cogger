@@ -178,7 +178,7 @@ class COGNetCDF:
                                       subdatasets,
                                       index + 1,
                                       dest,
-                                      resampling_method=product_config.cfg.get('resampling_method'))
+                                      resampling_method=product_config.cfg.get('resampling_method', 'average'))
 
             # Clean up XML files from GDAL
             # GDAL creates extra XML files which we don't want
@@ -210,7 +210,7 @@ class COGNetCDF:
             logging.info("Writing dataset Yaml to %s", yaml_fname.name)
 
     @staticmethod
-    def _dataset_to_cog(prefix, subdatasets, band_num, dest_dir, resampling_method='average'):
+    def _dataset_to_cog(prefix, subdatasets, band_num, dest_dir, resampling_method):
         """
         Write the datasets to separate cog files
         """
@@ -440,8 +440,9 @@ def convert_cog(config, output_dir, product, num_procs, filenames):
 
 @cli.command()
 @click.option('--output-dir', '-o', help='Output directory', required=True)
-@click.option('--upload-destination', '-u', nargs=1, type=click.Path(),
-              help="Upload destination, typically including the bucket as well as prefix")
+@click.option('--upload-destination', '-u', required=True, type=click.Path(),
+              help="Upload destination, typically including the bucket as well as prefix.\n""
+                   "eg. s3://dea-public-data/my-favourite-product")
 @click.option('--retain-datasets', '-r', is_flag=True, help='Retain datasets rather than delete them after upload')
 def upload(output_dir, upload_destination, retain_datasets):
     """
@@ -464,8 +465,8 @@ def upload(output_dir, upload_destination, retain_datasets):
             if os.path.exists(dest_file):
                 with open(dest_file) as f:
                     dest_path = f.read().splitlines()[0]
-                if upload_destination:
-                    dest_path = f'{upload_destination}/{dest_path}'
+
+                dest_path = f'{upload_destination}/{dest_path}'
                 aws_copy = [
                     'aws',
                     's3',
