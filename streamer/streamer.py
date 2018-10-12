@@ -105,56 +105,53 @@ WORKERS_POOL = 4
 DEFAULT_CONFIG = """
 products: 
     wofs_albers: 
-        time_type: timed
+        time_taken_from: dataset
         src_template: LS_WATER_3577_{x}_{y}_{time}_v{}.nc 
         dest_template: LS_WATER_3577_{x}_{y}_{time}
         src_dir: /g/data/fk4/datacube/002/WOfS/WOfS_25_2_1/netcdf
-        src_dir_type: tiled
         aws_dir: WOfS/WOFLs/v2.1.0/combined
         aws_dir_suffix: x_{x}/y_{y}/{year}/{month}/{day}
         resampling_method: mode
     wofs_filtered_summary:
-        time_type: flat
+        time_taken_from: dataset
         src_template: wofs_filtered_summary_{x}_{y}.nc
         dest_template: wofs_filtered_summary_{x}_{y}
         src_dir: /g/data2/fk4/datacube/002/WOfS/WOfS_Filt_Stats_25_2_1/netcdf
-        src_dir_type: flat
         aws_dir: WOfS/filtered_summary/v2.1.0/combined
         aws_dir_suffix: x_{x}/y_{y}
         resampling_method: mode
     wofs_annual_summary:
-        time_type: timed
+        time_taken_from: filename
         src_template: WOFS_3577_{x}_{y}_{time}_summary.nc
         dest_template: WOFS_3577_{x}_{y}_{time}_summary
         src_dir: /g/data/fk4/datacube/002/WOfS/WOfS_Stats_Ann_25_2_1/netcdf
-        src_dir_type: flat
         aws_dir: WOfS/annual_summary/v2.1.5/combined
         aws_dir_suffix: x_{x}/y_{y}/{year}
         resampling_method: mode
         bucket: s3://dea-public-data-dev
     ls5_fc_albers:
-        time_type: timed
+        time_taken_from: dataset
         src_template: LS5_TM_FC_3577_{x}_{y}_{time}_v{}.nc
         dest_template: LS5_TM_FC_3577_{x}_{y}_{time}
         src_dir: /g/data/fk4/datacube/002/FC/LS5_TM_FC
-        src_dir_type: tiled
         aws_dir: fractional-cover/fc/v2.2.0/ls5
+        aws_dir_suffix: x_{x}/y_{y}/{year}/{month}/{day}
         resampling_method: average
     ls7_fc_albers:
-        time_type: timed
+        time_taken_from: dataset
         src_template: LS7_ETM_FC_3577_{x}_{y}_{time}_v{}.nc
         dest_template: LS7_ETM_FC_3577_{x}_{y}_{time}
         src_dir: /g/data/fk4/datacube/002/FC/LS7_ETM_FC
-        src_dir_type: tiled
         aws_dir: fractional-cover/fc/v2.2.0/ls7
+        aws_dir_suffix: x_{x}/y_{y}/{year}/{month}/{day}
         resampling_method: average
     ls8_fc_albers:
-        time_type: timed
+        time_taken_from: dataset
         src_template: LS8_OLI_FC_3577_{x}_{y}_{time}_v{}.nc
         dest_template: LS8_OLI_FC_3577_{x}_{y}_{time}
         src_dir: /g/data/fk4/datacube/002/FC/LS8_OLI_FC
-        src_dir_type: tiled
         aws_dir: fractional-cover/fc/v2.2.0/ls8
+        aws_dir_suffix: x_{x}/y_{y}/{year}/{month}/{day}
         resampling_method: average
 """
 
@@ -312,79 +309,41 @@ class COGProductConfiguration:
         aws_dir_params = compile(self.cfg['aws_dir_suffix'])._named_fields
 
         # parse time values
-        time_types = set(aws_dir_params).intersection(['time', 'year', 'month', 'day'])
-        time_param_values = {}
-        if len(time_types):
-            time_value =  aws_file_param_values.get('time')
-            if time_value:
-                year = time_value[0:4]
-                month = time_value[4:6]
-                day = time_value[6:8]
-            else:
-                year = aws_file_param_values.get('year')
-                month = aws_file_param_values.get('month')
-                day = aws_file_param_values.get('day')
-            time_param_values = {'time': time_value, 'year': year, 'month': month, 'day': day}
+        date_param_values = {}
+        time_value = aws_file_param_values.get('time')
+        if time_value:
+            year = time_value[0:4]
+            month = time_value[4:6]
+            day = time_value[6:8]
+            date_param_values = {'time': time_value, 'year': year, 'month': month, 'day': day}
 
         # All available parameter values
-        all_param_values = dict(time_param_values, **aws_file_param_values)
+        all_param_values = dict(date_param_values, **aws_file_param_values)
 
         # Fill aws_dir_suffix
         return self.cfg['aws_dir_suffix'].format(**all_param_values)
-
-
-        # if self.cfg['time_type'] == 'flat':
-        #     x, y = self._extract_x_y(item, self.cfg['dest_template'])
-        #     return os.path.join('x_' + x, 'y_' + y)
-        # elif self.cfg['time_type'] == 'timed':
-        #     x, y, time_stamp = self._extract_x_y_time(item, self.cfg['dest_template'])
-        #     year = time_stamp[0:4]
-        #     month = time_stamp[4:6]
-        #     day = time_stamp[6:8]
-        #     return f'x_{x}/y_{y}/{year}/{month}/{day}'
-        # else:
-        #     raise RuntimeError("Incorrect product time_type")
-
-    @staticmethod
-    def _extract_x_y(item, template):
-        tem = template.replace("{x}", "(?P<x>-?[0-9]*)")
-        tem = tem.replace("{y}", "(?P<y>-?[0-9]*)")
-        tem = tem.replace("{time}", "[0-9]*")
-        tem = tem.replace("{}", "[0-9]*")
-        values = re.compile(tem).match(basename(item))
-        if not values:
-            raise RuntimeError("There is no tile index values in item")
-        values = values.groupdict()
-        if 'x' in values.keys() and 'y' in values.keys():
-            return values['x'], values['y']
-        else:
-            raise RuntimeError("There is no tile index values in item")
-
-    @staticmethod
-    def _extract_x_y_time(item, template):
-        tem = template.replace("{x}", "(?P<x>-?[0-9]*)")
-        tem = tem.replace("{y}", "(?P<y>-?[0-9]*)")
-        tem = tem.replace("{time}", "(?P<time>-?[0-9]*)")
-        tem = tem.replace("{}", "[0-9]*")
-        values = re.compile(tem).match(basename(item))
-        if not values:
-            raise RuntimeError("There is no tile index values in prefix")
-        values = values.groupdict()
-        if 'x' in values.keys() and 'y' in values.keys() and 'time' in values.keys():
-            return values['x'], values['y'], values['time']
-        else:
-            raise RuntimeError("There is no tile index values in prefix")
 
     def get_unstacked_names(self, netcdf_file, year=None, month=None):
         """
         Return the dataset prefix names corresponding to each dataset within the given NetCDF file.
         """
 
+        src_file_param_values = parse(self.cfg['src_template'], basename(netcdf_file)).__dict__['named']
+
         names = []
-        x, y = self._extract_x_y(netcdf_file, self.cfg['src_template'])
-        if self.cfg['time_type'] == 'flat':
-            # only extract x and y
-            names.append(self.cfg['dest_template'].format(x=x, y=y))
+        if self.cfg['time_taken_from'] == 'filename':
+            date_param_values = {}
+            time_value = src_file_param_values.get('time')
+            if time_value:
+                year = time_value[0:4]
+                month = time_value[4:6]
+                day = time_value[6:8]
+                date_param_values = {'year': year, 'month': month, 'day': day}
+
+            # All available parameter values
+            all_param_values = dict(src_file_param_values, **date_param_values)
+
+            names.append(self.cfg['dest_template'].format(**all_param_values))
         else:
             # if time_type is not flat we assume it is timed
             dts = Dataset(netcdf_file)
@@ -393,14 +352,22 @@ class COGProductConfiguration:
                 dt_ = datetime.fromtimestamp(dt)
                 # With nanosecond -use '%Y%m%d%H%M%S%f'
                 time_stamp = to_datetime(dt_).strftime('%Y%m%d%H%M%S')
+                year = time_stamp[0:4]
+                month = time_stamp[4:6]
+                day = time_stamp[6:8]
+                time_param_values = {'time': time_stamp, 'year': year, 'month': month, 'day': day}
+
+                # All available parameter values
+                all_param_values = dict(src_file_param_values, **time_param_values)
+
                 if year:
                     if month:
                         if dt_.year == year and dt_.month == month:
-                            names.append(self.cfg['dest_template'].format(x=x, y=y, time=time_stamp))
+                            names.append(self.cfg['dest_template'].format(**all_param_values))
                     elif dt_.year == year:
-                        names.append(self.cfg['dest_template'].format(x=x, y=y, time=time_stamp))
+                        names.append(self.cfg['dest_template'].format(**all_param_values))
                 else:
-                    names.append(self.cfg['dest_template'].format(x=x, y=y, time=time_stamp))
+                    names.append(self.cfg['dest_template'].format(**all_param_values))
         return names
 
 
