@@ -288,10 +288,6 @@ class COGProductConfiguration:
     def __init__(self, cfg):
         self.cfg = cfg
 
-    def aws_destination(self, item):
-        dir = self.aws_dir(item)
-        return self.cfg['bucket'] + '/' + self.cfg['aws_dir'] + '/' + dir
-
     def aws_dir(self, item):
         """
         Given a prefix like 'LS_WATER_3577_9_-39_20180506102018000000' what is the AWS directory structure?
