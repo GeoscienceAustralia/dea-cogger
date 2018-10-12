@@ -100,6 +100,7 @@ products:
         src_dir_type: flat
         aws_dir: WOfS/filtered_summary/v2.1.0/combined
         bucket: s3://dea-public-data-dev
+        resampling_method: mode
     ls5_fc_albers:
         time_type: timed
         src_template: LS5_TM_FC_3577_{x}_{y}_{time}_v{}.nc
@@ -108,6 +109,7 @@ products:
         src_dir_type: tiled
         aws_dir: fractional-cover/fc/v2.2.0/ls5
         bucket: s3://dea-public-data-dev
+        resampling_method: mode
     ls7_fc_albers:
         time_type: timed
         src_template: LS7_ETM_FC_3577_{x}_{y}_{time}_v{}.nc
@@ -115,7 +117,8 @@ products:
         src_dir: /g/data/fk4/datacube/002/FC/LS7_ETM_FC
         src_dir_type: tiled
         aws_dir: fractional-cover/fc/v2.2.0/ls7
-        bucket: s3://dea-public-data-dev        
+        bucket: s3://dea-public-data-dev  
+        resampling_method: mode
     ls8_fc_albers:
         time_type: timed
         src_template: LS8_OLI_FC_3577_{x}_{y}_{time}_v{}.nc
@@ -124,6 +127,7 @@ products:
         src_dir_type: tiled
         aws_dir: fractional-cover/fc/v2.2.0/ls8
         bucket: s3://dea-public-data-dev
+        resampling_method: mode
 """
 
 
@@ -157,6 +161,7 @@ def upload_to_s3(product_config, input_file, src_dir, dest_url, job_file):
     for prefix in prefix_names:
         src = os.path.join(src_dir, prefix)
         item_dir = product_config.aws_dir(prefix)
+        import ipdb; ipdb.set_trace()
         dest_path = f'{dest_url}/{item_dir}'
 
         aws_copy = [

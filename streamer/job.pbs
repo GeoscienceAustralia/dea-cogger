@@ -1,14 +1,18 @@
 #!/bin/bash
 #PBS -P u46
-#PBS -l ncpus=32,mem=32GB,walltime=00:30:00,wd
-#PBS -q normal
+#PBS -l ncpus=32,mem=64GB,walltime=00:10:00,wd
+#PBS -q express
 
 module use /g/data/v10/public/modules/modulefiles
 module load dea
 
-INDEX=/short/v10/$USER/$PBS_JOBID
+# The directory that keeps COG converted datasets - need to UPDATE this
+OUTPUTDIR=/g/data/u46/users/aj9439/aws/tmp2
 
-# Number of cpus requested
+
+INDEX=$OUTPUTDIR/$PBS_JOBID
+
+# Number of cpus requested - UPDATE this
 NCPUS=32
 
 # This will print the nodes allocated and count of this must be number of nodes (NNODES)
@@ -17,44 +21,41 @@ cat $PBS_NODEFILE | uniq
 echo --
 
 # The number of nodes to be used
-NNODES=2
+NNODES=$( cat $PBS_NODEFILE | uniq | wc -l )
 
-# CPUs per node
+# CPUs per node - UPDATE this
 CPUSPERNODE=16
 # Number of worker processes per node
 WORKERS=$(( $CPUSPERNODE -1 ))
-# Number of jobs - should this be number of cpus per node or just one
-# since we have multiprocessing
-NJOBS=$CPUSPERNODE
 
 JOBDIR=$PWD
 cp /g/data/u46/users/aj9439/wofs/tests/datacube.conf $JOBDIR
 
 # Generate the file list, split and save for individual nodes to run
 mkdir -p $INDEX
-/g/data/u46/users/aj9439/PycharmProjects/COG-Conversion/streamer/streamer.py \
-                   generate_work_list -p ls8_fc_albers -y 2018 -m 02 > $PBS_JOBFS/file_list
+
+# MAKE SURE TO REMOVE SED PIPE
+python /g/data/u46/users/aj9439/PycharmProjects/COG-Conversion/streamer/streamer.py \
+                   generate_work_list -p ls8_fc_albers -y 2018 -m 02 | sed -n '1,20p' > $PBS_JOBFS/file_list
+
 NFILES=$(cat $PBS_JOBFS/file_list | wc -l)
 NSPLIT=$(( ($NFILES + $NNODES - 1)/$NNODES ))
 sort -r -n $PBS_JOBFS/file_list | split -l $NSPLIT - $INDEX/x
 
-# The directory that keeps COG converted datasets
-OUTPUTDIR=$TMPDIR/test1
 
 # Distribute work
 
 FILES=($INDEX/x*)
-for i in $(seq 1 $NNODES); do
-  FILEINDEX=$(($i-1))
+for i in $(seq 0 $(( NNODES - 1))); do
+  FILEINDEX=$i
   FILENAME="${FILES[$FILEINDEX]}"
-  pbsdsh -n $(( $NCPUS*$i )) -- \
+  pbsdsh -n $(( $CPUSPERNODE*$i )) -- \
   bash -l -c "\
         module use /g/data/v10/public/modules/modulefiles;\
-        module load parallel dea; cd $JOBDIR;\
-        parallel --wc -j$NJOBS --delay 5 --linebuffer --colsep ' ' \
-        -a $FILENAME \
-        "/g/data/u46/users/aj9439/PycharmProjects/COG-Conversion/streamer/streamer.py \
-        convert_cog --num-procs $WORKERS --output-dir $OUTPUTDIR --product ls8_fc_albers "" &
+        module load dea; \
+        cat $FILENAME | \
+        xargs python /g/data/u46/users/aj9439/PycharmProjects/COG-Conversion/streamer/streamer.py \
+        convert_cog --num-procs $WORKERS --output-dir $OUTPUTDIR --product ls8_fc_albers " &
 done;
 wait
 
