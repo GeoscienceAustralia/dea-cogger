@@ -1,30 +1,57 @@
 #!/usr/bin/env python
 """
-This program is designed to stream COG-conversion and AWS uploads to be done same time
-in a streaming fashion that utilises smaller in-between storage footprint. The program is designed
-to so that it could run COG-conversion and AWS uploads in separate processes, i.e. multiple runs
-of the same script concurrently. A database-based queue is used for messaging between COG-conversion
-and AWS upload processes. The database queue is currently implemented with sqlite.
+Batch Convert NetCDF files to Cloud-Optimised-GeoTIFF and upload to S3
 
-The program utilizes an aligned file system queue with messaging queue of processed files to hook up
-COG-conversion and AWS upload processes.
+This tool is broken into 3 pieces:
 
-A particular batch run is identified by the signature (product, year, month) combination where
-year and/or month may not be present. The job control tracks a particular batch job based on this signature
-and the relevant log files are kept in the job control directory specified by the '--job' option (short, '-j').
-There are two types of job control files kept, one with a template 'streamer_job_control_<signature>.log'
-and one with a template 'items_all_<signature>.log', where the first tracks the batch run incrementally maintaining
-the NetCDF files that are processed while the second keeps the list of all the files that are part of a specific
-batch job. However, the script need to be told to keep 'items_all_<signature>.log' via the '--reuse_full_list'
-option so that it does not need to recompute in the next incremental run of the same batch job
-if it is not yet complete. The list of all files to be processed can be reliably computed by using
-the option '--use_datacube' which computes the file list based on what is indexed in the datacube.
+ 1) Work out the difference between NetCDF files stored locally, and GeoTIFF files in S3
+ 2) Batch convert NetCDF files into Cloud Optimised GeoTIFFs
+ 3) Watch a directory and upload files to S3
 
-The '--limit' option, which specifies the number of files to be processed, can be used to incrementally
-run a specific batch job. Alternatively, multiple overlapping runs of the program can be done with
-'--file_range' option which specifies the range of files (indexes into 'items_all_<signature>.log').
-For example, if items_all_<signature>.log' has 200 files, you can specify --file_range 0 99 in one of
-the runs and --file_range 100 199 in another run.
+
+Finding files to process
+------------------------
+This can either be done manually with a command like `find <dir> --name '*.nc'`, or
+by searching an ODC Index using::
+
+    python streamer.py generate_work_list --product-name <name> [--year <year>] [--month <month>]
+
+This will print a list of NetCDF files which can be piped to `convert_cog`.
+
+
+Batch Converting NetCDF files
+-----------------------------
+::
+
+    python streamer.py convert_cog [--max-procs <int>] --config <file> --product <product> --output-dir <dir> List of NetCDF files...
+
+Use the settings in a configuration file to:
+
+- Parse variables from the NetCDF filename/directory
+- Generate output directory structure and filenames
+- Configure COG Overview resampling method
+
+When run, each `ODC Dataset` in each NetCDF file will be converted into an output directory containing a COG
+for each `band`, as well as a `.yaml` dataset definition, and a `upload-destination.txt` file containing
+the full destination directory.
+
+During processing, `<output-directory/WORKING/` will contain in-progress Datasets.
+Once a Dataset is complete, it will be moved into the `<output-directory>/TO_UPLOAD/`
+
+
+
+Uploading to S3
+---------------
+
+Watch `<output-directory>/TO_UPLOAD/` for new COG Dataset Directories, and upload them to the `<upload-destination>`.
+
+Once uploaded, directories can either be deleted or moved elsewhere for safe keeping.
+
+
+
+
+Configuration
+-------------
 
 The program uses a config, that in particular specify product descriptions such as whether it is timed/flat,
 source and destination filename templates, source file system organization such as tiled/flat, aws directory,
@@ -42,10 +69,6 @@ extension. An example such config spec for a product is as follows:
 
 
 
-When specifying command line options for cog_only and upload_only overlapping runs, it is important
-that consistent command line options are specified so that both processes refer to the same
-'items_all_<signature>.log' and 'streamer_job_control_<signature>.log'. Without this, the two processes
-may not be in sync.
 
 
 """
@@ -74,14 +97,9 @@ from yaml import CSafeLoader as Loader, CSafeDumper as Dumper
 
 LOG = logging.getLogger(__name__)
 
-MAX_QUEUE_SIZE = 4
 WORKERS_POOL = 4
 
 DEFAULT_CONFIG = """
-queue_db:
-    db_name: aj9439_db
-    host: agdcdev-db.nci.org.au
-    port: 6432  # Does not work with PgBouncer, must use 5432
 products: 
     wofs_albers: 
         time_type: timed
@@ -90,7 +108,6 @@ products:
         src_dir: /g/data/fk4/datacube/002/WOfS/WOfS_25_2_1/netcdf
         src_dir_type: tiled
         aws_dir: WOfS/WOFLs/v2.1.0/combined
-        bucket:  s3://dea-public-data-dev
         resampling_method: mode
     wofs_filtered_summary:
         time_type: flat
@@ -99,7 +116,6 @@ products:
         src_dir: /g/data2/fk4/datacube/002/WOfS/WOfS_Filt_Stats_25_2_1/netcdf
         src_dir_type: flat
         aws_dir: WOfS/filtered_summary/v2.1.0/combined
-        bucket: s3://dea-public-data-dev
         resampling_method: mode
     ls5_fc_albers:
         time_type: timed
@@ -108,7 +124,6 @@ products:
         src_dir: /g/data/fk4/datacube/002/FC/LS5_TM_FC
         src_dir_type: tiled
         aws_dir: fractional-cover/fc/v2.2.0/ls5
-        bucket: s3://dea-public-data-dev
         resampling_method: mode
     ls7_fc_albers:
         time_type: timed
@@ -117,7 +132,6 @@ products:
         src_dir: /g/data/fk4/datacube/002/FC/LS7_ETM_FC
         src_dir_type: tiled
         aws_dir: fractional-cover/fc/v2.2.0/ls7
-        bucket: s3://dea-public-data-dev  
         resampling_method: mode
     ls8_fc_albers:
         time_type: timed
@@ -126,7 +140,6 @@ products:
         src_dir: /g/data/fk4/datacube/002/FC/LS8_OLI_FC
         src_dir_type: tiled
         aws_dir: fractional-cover/fc/v2.2.0/ls8
-        bucket: s3://dea-public-data-dev
         resampling_method: mode
 """
 
@@ -374,7 +387,7 @@ def get_indexed_files(product, year=None, month=None, datacube_env=None):
     return set(filename_from_uri(uri) for uri in files)
 
 
-@click.group()
+@click.group(help=__doc__)
 def cli():
     pass
 
@@ -384,6 +397,9 @@ def cli():
 @click.option('--year', '-y', type=int, help="The year")
 @click.option('--month', '-m', type=int, help="The month")
 def generate_work_list(product_name, year, month):
+    """
+    Connect to an ODC database and list NetCDF files
+    """
     items_all = get_indexed_files(product_name, year, month)
 
     for item in sorted(items_all):
@@ -402,7 +418,6 @@ def convert_cog(config, output_dir, product, num_procs, filenames):
 
     Uses a configuration file to define the file naming schema.
 
-    Can optionally record completed conversions into a PostgreSQL queue.
     """
     if config:
         with open(config, 'r') as cfg_file:
@@ -446,7 +461,7 @@ def convert_cog(config, output_dir, product, num_procs, filenames):
 @click.option('--retain-datasets', '-r', is_flag=True, help='Retain datasets rather than delete them after upload')
 def upload(output_dir, upload_destination, retain_datasets):
     """
-    Connect to the PQ queue of completed COGs and upload them to S3
+    Watch a Directory and upload new contents to Amazon S3
     """
 
     output_dir = Path(output_dir)
