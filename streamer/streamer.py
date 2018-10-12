@@ -139,7 +139,7 @@ products:
         src_dir: /g/data/fk4/datacube/002/FC/LS5_TM_FC
         src_dir_type: tiled
         aws_dir: fractional-cover/fc/v2.2.0/ls5
-        resampling_method: mode
+        resampling_method: average
     ls7_fc_albers:
         time_type: timed
         src_template: LS7_ETM_FC_3577_{x}_{y}_{time}_v{}.nc
@@ -147,7 +147,7 @@ products:
         src_dir: /g/data/fk4/datacube/002/FC/LS7_ETM_FC
         src_dir_type: tiled
         aws_dir: fractional-cover/fc/v2.2.0/ls7
-        resampling_method: mode
+        resampling_method: average
     ls8_fc_albers:
         time_type: timed
         src_template: LS8_OLI_FC_3577_{x}_{y}_{time}_v{}.nc
@@ -155,7 +155,7 @@ products:
         src_dir: /g/data/fk4/datacube/002/FC/LS8_OLI_FC
         src_dir_type: tiled
         aws_dir: fractional-cover/fc/v2.2.0/ls8
-        resampling_method: mode
+        resampling_method: average
 """
 
 
@@ -302,10 +302,6 @@ class COGProductConfiguration:
 
     def __init__(self, cfg):
         self.cfg = cfg
-
-    def aws_destination(self, item):
-        dir = self.aws_dir(item)
-        return self.cfg['bucket'] + '/' + self.cfg['aws_dir'] + '/' + dir
 
     def aws_dir(self, item):
         """
