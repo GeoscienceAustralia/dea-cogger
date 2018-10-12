@@ -95,6 +95,9 @@ from pandas import to_datetime
 from tqdm import tqdm
 from yaml import CSafeLoader as Loader, CSafeDumper as Dumper
 
+from parse import *
+from parse import compile
+
 LOG = logging.getLogger(__name__)
 
 WORKERS_POOL = 4
@@ -108,6 +111,7 @@ products:
         src_dir: /g/data/fk4/datacube/002/WOfS/WOfS_25_2_1/netcdf
         src_dir_type: tiled
         aws_dir: WOfS/WOFLs/v2.1.0/combined
+        aws_dir_suffix: x_{x}/y_{y}/{year}/{month}/{day}
         resampling_method: mode
     wofs_filtered_summary:
         time_type: flat
@@ -116,7 +120,18 @@ products:
         src_dir: /g/data2/fk4/datacube/002/WOfS/WOfS_Filt_Stats_25_2_1/netcdf
         src_dir_type: flat
         aws_dir: WOfS/filtered_summary/v2.1.0/combined
+        aws_dir_suffix: x_{x}/y_{y}
         resampling_method: mode
+    wofs_annual_summary:
+        time_type: timed
+        src_template: WOFS_3577_{x}_{y}_{time}_summary.nc
+        dest_template: WOFS_3577_{x}_{y}_{time}_summary
+        src_dir: /g/data/fk4/datacube/002/WOfS/WOfS_Stats_Ann_25_2_1/netcdf
+        src_dir_type: flat
+        aws_dir: WOfS/annual_summary/v2.1.5/combined
+        aws_dir_suffix: x_{x}/y_{y}/{year}
+        resampling_method: mode
+        bucket: s3://dea-public-data-dev
     ls5_fc_albers:
         time_type: timed
         src_template: LS5_TM_FC_3577_{x}_{y}_{time}_v{}.nc
@@ -297,17 +312,42 @@ class COGProductConfiguration:
         Given a prefix like 'LS_WATER_3577_9_-39_20180506102018000000' what is the AWS directory structure?
         """
 
-        if self.cfg['time_type'] == 'flat':
-            x, y = self._extract_x_y(item, self.cfg['dest_template'])
-            return os.path.join('x_' + x, 'y_' + y)
-        elif self.cfg['time_type'] == 'timed':
-            x, y, time_stamp = self._extract_x_y_time(item, self.cfg['dest_template'])
-            year = time_stamp[0:4]
-            month = time_stamp[4:6]
-            day = time_stamp[6:8]
-            return f'x_{x}/y_{y}/{year}/{month}/{day}'
-        else:
-            raise RuntimeError("Incorrect product time_type")
+        aws_file_param_values = parse(self.cfg['dest_template'], item).__dict__['named']
+        aws_dir_params = compile(self.cfg['aws_dir_suffix'])._named_fields
+
+        # parse time values
+        time_types = set(aws_dir_params).intersection(['time', 'year', 'month', 'day'])
+        time_param_values = {}
+        if len(time_types):
+            time_value =  aws_file_param_values.get('time')
+            if time_value:
+                year = time_value[0:4]
+                month = time_value[4:6]
+                day = time_value[6:8]
+            else:
+                year = aws_file_param_values.get('year')
+                month = aws_file_param_values.get('month')
+                day = aws_file_param_values.get('day')
+            time_param_values = {'time': time_value, 'year': year, 'month': month, 'day': day}
+
+        # All available parameter values
+        all_param_values = dict(time_param_values, **aws_file_param_values)
+
+        # Fill aws_dir_suffix
+        return self.cfg['aws_dir_suffix'].format(**all_param_values)
+
+
+        # if self.cfg['time_type'] == 'flat':
+        #     x, y = self._extract_x_y(item, self.cfg['dest_template'])
+        #     return os.path.join('x_' + x, 'y_' + y)
+        # elif self.cfg['time_type'] == 'timed':
+        #     x, y, time_stamp = self._extract_x_y_time(item, self.cfg['dest_template'])
+        #     year = time_stamp[0:4]
+        #     month = time_stamp[4:6]
+        #     day = time_stamp[6:8]
+        #     return f'x_{x}/y_{y}/{year}/{month}/{day}'
+        # else:
+        #     raise RuntimeError("Incorrect product time_type")
 
     @staticmethod
     def _extract_x_y(item, template):
@@ -456,7 +496,7 @@ def convert_cog(config, output_dir, product, num_procs, filenames):
 @cli.command()
 @click.option('--output-dir', '-o', help='Output directory', required=True)
 @click.option('--upload-destination', '-u', required=True, type=click.Path(),
-              help="Upload destination, typically including the bucket as well as prefix.\n""
+              help="Upload destination, typically including the bucket as well as prefix.\n"
                    "eg. s3://dea-public-data/my-favourite-product")
 @click.option('--retain-datasets', '-r', is_flag=True, help='Retain datasets rather than delete them after upload')
 def upload(output_dir, upload_destination, retain_datasets):
