@@ -1,18 +1,18 @@
 #!/bin/bash
 #PBS -P u46
-#PBS -l ncpus=4,mem=8GB,walltime=00:10:00,wd
+#PBS -l ncpus=32,mem=64GB,walltime=00:10:00,wd
 #PBS -q express
 
 module use /g/data/v10/public/modules/modulefiles
 module load dea
 
 # The directory that keeps COG converted datasets
-OUTPUTDIR=/g/data/u46/users/aj9439/aws/tmp2
+OUTPUTDIR=/g/data/u46/users/aj9439/aws/tmp
 
 INDEX=$OUTPUTDIR/$PBS_JOBID
 
 # Number of cpus requested
-NCPUS=4
+NCPUS=32
 
 # This will print the nodes allocated and count of this must be number of nodes (NNODES)
 echo --
@@ -23,7 +23,7 @@ echo --
 NNODES=$( cat $PBS_NODEFILE | uniq | wc -l )
 
 # CPUs per node
-CPUSPERNODE=4
+CPUSPERNODE=16
 # Number of worker processes per node
 WORKERS=$(( $CPUSPERNODE -1 ))
 
@@ -35,7 +35,7 @@ mkdir -p $INDEX
 
 # MAKE SURE TO REMOVE SED PIPE
 python /g/data/u46/users/aj9439/PycharmProjects/COG-Conversion/streamer/streamer.py \
-                   generate_work_list -p ls8_fc_albers -y 2018 -m 02 | sed -n '1,10p' > $PBS_JOBFS/file_list
+                   generate_work_list -p ls8_fc_albers -y 2018 -m 02 | sed -n '1,100p' > $PBS_JOBFS/file_list
 
 NFILES=$(cat $PBS_JOBFS/file_list | wc -l)
 NSPLIT=$(( ($NFILES + $NNODES - 1)/$NNODES ))

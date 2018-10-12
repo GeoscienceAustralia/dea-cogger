@@ -141,57 +141,6 @@ def run_command(command, work_dir=None):
         raise RuntimeError("command '{}' failed with error (code {}): {}".format(e.cmd, e.returncode, e.output))
 
 
-def upload_to_s3(product_config, input_file, src_dir, dest_url, job_file):
-    """
-    Uploads the .yaml and .tif files that correspond to the given NetCDF 'file' into the AWS
-    destination bucket indicated by 'dest'.
-
-    Once complete add the file name 'file' to the 'job_file'.
-
-    Each NetCDF file is assumed to be a stacked NetCDF file where 'unstacked' NetCDF file is viewed as
-    a stacked file with just one dataset. The directory structure in AWS is determined by the
-    'JobControl.aws_dir()' based on 'prefixes' extracted from the NetCDF file.
-
-    Each dataset within the NetCDF file is assumed to be in separate directory with the name indicated by its corresponding
-    prefix. The 'prefix' would have structure as in 'LS_WATER_3577_9_-39_20180506102018000000'.
-    """
-
-    prefix_names = product_config.get_unstacked_names(input_file)
-    success = True
-    for prefix in prefix_names:
-        src = os.path.join(src_dir, prefix)
-        item_dir = product_config.aws_dir(prefix)
-        import ipdb; ipdb.set_trace()
-        dest_path = f'{dest_url}/{item_dir}'
-
-        aws_copy = [
-            'aws',
-            's3',
-            'sync',
-            src,
-            dest_path
-        ]
-        try:
-            run_command(aws_copy)
-        except Exception as e:
-            success = False
-            logging.error("AWS upload error %s", prefix)
-            logging.exception("Exception", e)
-
-        # Remove the dir from the queue directory
-        try:
-            run('rm -fR -- ' + src, stderr=subprocess.STDOUT, check=True, shell=True)
-        except Exception as e:
-            success = False
-            logging.error("Failure in queue: removing dataset %s", prefix)
-            logging.exception("Exception", e)
-
-    # job control logs
-    if success:
-        with open(job_file, 'a') as f:
-            f.write(input_file + '\n')
-
-
 class COGNetCDF:
     """
     Convert NetCDF files to COG style GeoTIFFs
