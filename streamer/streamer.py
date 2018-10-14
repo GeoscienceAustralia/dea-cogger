@@ -105,7 +105,7 @@ WORKERS_POOL = 4
 DEFAULT_CONFIG = """
 products: 
     wofs_albers: 
-        time_taken_from: dataset
+        time_taken_from: filename
         src_template: LS_WATER_3577_{x}_{y}_{time}_v{}.nc 
         dest_template: LS_WATER_3577_{x}_{y}_{time}
         src_dir: /g/data/fk4/datacube/002/WOfS/WOfS_25_2_1/netcdf
@@ -113,7 +113,7 @@ products:
         aws_dir_suffix: x_{x}/y_{y}/{year}/{month}/{day}
         resampling_method: mode
     wofs_filtered_summary:
-        time_taken_from: dataset
+        time_taken_from: notime
         src_template: wofs_filtered_summary_{x}_{y}.nc
         dest_template: wofs_filtered_summary_{x}_{y}
         src_dir: /g/data2/fk4/datacube/002/WOfS/WOfS_Filt_Stats_25_2_1/netcdf
@@ -315,10 +315,10 @@ class COGProductConfiguration:
             year = time_value[0:4]
             month = time_value[4:6]
             day = time_value[6:8]
-            date_param_values = {'time': time_value, 'year': year, 'month': month, 'day': day}
+            date_param_values = {'year': year, 'month': month, 'day': day}
 
         # All available parameter values
-        all_param_values = dict(date_param_values, **aws_file_param_values)
+        all_param_values = dict(aws_file_param_values, **date_param_values)
 
         # Fill aws_dir_suffix
         return self.cfg['aws_dir_suffix'].format(**all_param_values)
@@ -329,16 +329,19 @@ class COGProductConfiguration:
         """
 
         src_file_param_values = parse(self.cfg['src_template'], basename(netcdf_file)).__dict__['named']
-
         names = []
-        if self.cfg['time_taken_from'] == 'filename':
+        if self.cfg['time_taken_from'] == 'notime':
+            names.append(self.cfg['dest_template'].format(**src_file_param_values))
+        elif self.cfg['time_taken_from'] == 'filename':
             date_param_values = {}
             time_value = src_file_param_values.get('time')
             if time_value:
-                year = time_value[0:4]
-                month = time_value[4:6]
+                # Do you want to get rid of nano seconds in this case
+                time_without_nanosec = time_value[0:14]
+                year_ = time_value[0:4]
+                month_ = time_value[4:6]
                 day = time_value[6:8]
-                date_param_values = {'year': year, 'month': month, 'day': day}
+                date_param_values = {'time': time_without_nanosec, 'year': year_, 'month': month_, 'day': day}
 
             # All available parameter values
             all_param_values = dict(src_file_param_values, **date_param_values)
@@ -352,10 +355,10 @@ class COGProductConfiguration:
                 dt_ = datetime.fromtimestamp(dt)
                 # With nanosecond -use '%Y%m%d%H%M%S%f'
                 time_stamp = to_datetime(dt_).strftime('%Y%m%d%H%M%S')
-                year = time_stamp[0:4]
-                month = time_stamp[4:6]
+                year_ = time_stamp[0:4]
+                month_ = time_stamp[4:6]
                 day = time_stamp[6:8]
-                time_param_values = {'time': time_stamp, 'year': year, 'month': month, 'day': day}
+                time_param_values = {'time': time_stamp, 'year': year_, 'month': month_, 'day': day}
 
                 # All available parameter values
                 all_param_values = dict(src_file_param_values, **time_param_values)
