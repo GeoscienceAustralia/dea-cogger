@@ -53,23 +53,20 @@ Once uploaded, directories can either be deleted or moved elsewhere for safe kee
 Configuration
 -------------
 
-The program uses a config, that in particular specify product descriptions such as whether it is timed/flat,
-source and destination filename templates, source file system organization such as tiled/flat, aws directory,
-and bucket. The destination template must only specify the prefix of the file excluding the band name details and
+The program uses a config, that in particular specify product descriptions such as whether time values are taken
+from filename or dateset or there no time associated with datasets, source and destination filename templates,
+aws directory, dataset specific aws directory suffix, resampling method for cog conversion.
+The destination template must only specify the prefix of the file excluding the band name details and
 extension. An example such config spec for a product is as follows:
 
     ls5_fc_albers:
-        time_type: timed
+        time_taken_from: dataset
         src_template: LS5_TM_FC_3577_{x}_{y}_{time}_v{}.nc
         dest_template: LS5_TM_FC_3577_{x}_{y}_{time}
         src_dir: /g/data/fk4/datacube/002/FC/LS5_TM_FC
-        src_dir_type: tiled
         aws_dir: fractional-cover/fc/v2.2.0/ls5
-        bucket: s3://dea-public-data-dev
-
-
-
-
+        aws_dir_suffix: x_{x}/y_{y}/{year}/{month}/{day}
+        resampling_method: average
 
 """
 import logging
