@@ -4,15 +4,14 @@
 #PBS -q express
 
 module use /g/data/v10/public/modules/modulefiles
-module load dea
+module load dea/20181015
 
-# The directory that keeps COG converted datasets - need to UPDATE this
-OUTPUTDIR=/g/data/u46/users/aj9439/aws/tmp2
-
+# The directory that keeps COG converted datasets
+OUTPUTDIR=/g/data/u46/users/aj9439/aws/tmp
 
 INDEX=$OUTPUTDIR/$PBS_JOBID
 
-# Number of cpus requested - UPDATE this
+# Number of cpus requested
 NCPUS=32
 
 # This will print the nodes allocated and count of this must be number of nodes (NNODES)
@@ -23,25 +22,24 @@ echo --
 # The number of nodes to be used
 NNODES=$( cat $PBS_NODEFILE | uniq | wc -l )
 
-# CPUs per node - UPDATE this
+# CPUs per node
 CPUSPERNODE=16
 # Number of worker processes per node
 WORKERS=$(( $CPUSPERNODE -1 ))
 
 JOBDIR=$PWD
-cp /g/data/u46/users/aj9439/wofs/tests/datacube.conf $JOBDIR
+cp /g/data/u46/users/aj9439/.datacube.conf $JOBDIR
 
 # Generate the file list, split and save for individual nodes to run
 mkdir -p $INDEX
 
 # MAKE SURE TO REMOVE SED PIPE
 python /g/data/u46/users/aj9439/PycharmProjects/COG-Conversion/streamer/streamer.py \
-                   generate_work_list -p ls8_fc_albers -y 2018 -m 02 | sed -n '1,20p' > $PBS_JOBFS/file_list
+                   generate-work-list -p ls8_fc_albers -y 2018 -m 02 | sed -n '1,100p' > $PBS_JOBFS/file_list
 
 NFILES=$(cat $PBS_JOBFS/file_list | wc -l)
 NSPLIT=$(( ($NFILES + $NNODES - 1)/$NNODES ))
 sort -r -n $PBS_JOBFS/file_list | split -l $NSPLIT - $INDEX/x
-
 
 # Distribute work
 
@@ -52,10 +50,10 @@ for i in $(seq 0 $(( NNODES - 1))); do
   pbsdsh -n $(( $CPUSPERNODE*$i )) -- \
   bash -l -c "\
         module use /g/data/v10/public/modules/modulefiles;\
-        module load dea; \
+        module load dea/20181015; \
         cat $FILENAME | \
         xargs python /g/data/u46/users/aj9439/PycharmProjects/COG-Conversion/streamer/streamer.py \
-        convert_cog --num-procs $WORKERS --output-dir $OUTPUTDIR --product ls8_fc_albers " &
+        convert-cog --num-procs $WORKERS --output-dir $OUTPUTDIR --product ls8_fc_albers " &
 done;
 wait
 
