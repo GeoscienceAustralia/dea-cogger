@@ -1,6 +1,6 @@
 #!/bin/bash
 #PBS -P u46
-#PBS -l ncpus=32,mem=64GB,jobfs=1GB,walltime=00:25:00,wd
+#PBS -l ncpus=32,mem=64GB,jobfs=1GB,walltime=00:30:00,wd
 #PBS -q express
 
 module use /g/data/v10/public/modules/modulefiles
