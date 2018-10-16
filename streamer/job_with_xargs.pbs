@@ -1,0 +1,62 @@
+#!/bin/bash
+#PBS -P u46
+#PBS -l ncpus=32,mem=64GB,jobfs=1GB,walltime=00:25:00,wd
+#PBS -q express
+
+module use /g/data/v10/public/modules/modulefiles
+module load dea/20181015
+
+# The directory that keeps COG converted datasets
+OUTPUTDIR=/g/data/u46/users/aj9439/aws/tmp
+
+INDEX=$OUTPUTDIR/$PBS_JOBID
+
+# Number of cpus requested
+NCPUS=32
+
+# This will print the nodes allocated and count of this must be number of nodes (NNODES)
+echo --
+cat $PBS_NODEFILE | uniq
+echo --
+
+# The number of nodes to be used
+NNODES=$( cat $PBS_NODEFILE | uniq | wc -l )
+
+# CPUs per node
+CPUSPERNODE=16
+# Number of worker processes is ONE since we use gnu parallel instead to parallelise within a node
+WORKERS=1
+
+JOBDIR=$PWD
+cp /g/data/u46/users/aj9439/.datacube.conf $JOBDIR
+
+# Generate the file list, split and save for individual nodes to run
+mkdir -p $INDEX
+
+# MAKE SURE TO REMOVE SED PIPE AND UPDATE WORK LIST
+python /g/data/u46/users/aj9439/PycharmProjects/COG-Conversion/streamer/streamer.py \
+                   generate-work-list -p ls8_fc_albers -y 2018 -m 02 | sed -n '1,32p' > $PBS_JOBFS/file_list
+
+# Split the work across the nodes
+NFILES=$(cat $PBS_JOBFS/file_list | wc -l)
+NSPLIT=$(( ($NFILES + $NNODES - 1)/$NNODES ))
+sort -r -n $PBS_JOBFS/file_list | split -l $NSPLIT - $INDEX/x
+
+# Distribute work
+
+FILES=($INDEX/x*)
+for i in $(seq 0 $(( NNODES - 1))); do
+  FILEINDEX=$i
+  FILENAME="${FILES[$FILEINDEX]}"
+  pbsdsh -n $(( $CPUSPERNODE*$i )) -- \
+  bash -l -c "\
+        module use /g/data/v10/public/modules/modulefiles;\
+        module load dea/20181015; \
+        xargs -P $CPUSPERNODE \
+        -a $FILENAME \
+        python /g/data/u46/users/aj9439/PycharmProjects/COG-Conversion/streamer/streamer.py \
+        convert-cog --num-procs $WORKERS --output-dir $OUTPUTDIR --product ls8_fc_albers " &
+done;
+wait
+
+rm -fr $INDEX
