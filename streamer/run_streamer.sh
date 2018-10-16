@@ -1,8 +1,15 @@
 #!/bin/bash
 module use /g/data/v10/public/modules/modulefiles
-module load dea
+module load dea/20181015
 
-python streamer.py generate-work-list -p ls8_fc_albers -y 2018 -m 02 | \
-xargs python streamer.py convert_cog --num-procs 3 --output-dir $TMPDIR/test1 --product ls8_nbar_albers
+# Submit qsub
+qsub /g/data/u46/users/aj9439/PycharmProjects/COG-Conversion/streamer/job_with_gnu_parallel.pbs
 
-python streamer.py upload --output-dir $TMPDIR/test1 -p  ls8_nbar_albers
+
+# The directory that keeps COG converted datasets
+OUTPUTDIR=/g/data/u46/users/aj9439/aws/tmp
+
+
+# Start the long running upload process
+python /g/data/u46/users/aj9439/PycharmProjects/COG-Conversion/streamer/streamer.py upload \
+    --output-dir $OUTPUTDIR --u s3://dea-public-data-dev/fractional-cover/fc/v2.2.0/ls8 &
