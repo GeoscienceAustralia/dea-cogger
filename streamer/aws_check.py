@@ -26,7 +26,7 @@ from yaml import CSafeLoader as Loader, CSafeDumper as Dumper
 from parse import *
 from parse import compile
 
-from .streamer import COGProductConfiguration, get_indexed_files
+from .streamer import COGProductConfiguration
 
 import boto3
 
@@ -166,7 +166,7 @@ def check_nci_to_s3(config, product_name, year, month, bucket, output_file):
         cfg = yaml.load(DEFAULT_CONFIG)
     product_config = COGProductConfiguration(cfg['products'][product_name])
 
-    items_all = get_indexed_files(product_name, year, month)
+    items_all = get_indexed_info(product_name, year, month)
 
     conn = boto3.client('s3')
     kwargs = {'Bucket': bucket}
