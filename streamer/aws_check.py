@@ -17,6 +17,7 @@ import xarray
 import yaml
 from datacube import Datacube
 from datacube.model import Range
+from datacube.utils import netcdf_extract_string
 from netCDF4 import Dataset
 from pandas import to_datetime
 from tqdm import tqdm
@@ -121,8 +122,27 @@ def valid_s3_keys(key_list, prefix, product_config):
     pass
 
 
-def get_prefix(uuid, filename, product_config):
-    pass
+def get_prefixes(uuid, netcdf_file, product_config):
+    netcdf_dataset = Dataset(basename(netcdf_file))
+    dts_dataset = netcdf_dataset.variables['dataset']
+    dts_time = netcdf_dataset.variables['time']
+    for index, dt_ in enumerate(dts_dataset):
+        dt = yaml.load(netcdf_extract_string(dt_.data), Loader)
+        if uuid == dt['id']:
+            # Construct prefix(es)
+            dt_time = datetime.fromtimestamp(dts_time[index])
+            time_stamp = to_datetime(dt_time).strftime('%Y%m%d%H%M%S%f')
+            year_ = time_stamp[0:4]
+            month_ = time_stamp[4:6]
+            day = time_stamp[6:8]
+            src_file_param_values = parse(product_config['src_template'], basename(netcdf_file)).__dict__['named']
+            time_param_values = {'time': time_stamp, 'year': year_, 'month': month_, 'day': day}
+
+            # All available parameter values
+            all_param_values = dict(src_file_param_values, **time_param_values)
+
+            # ToDo: dest_template of prior uploads
+            return [product_config['dest_template'].format(**all_param_values)]
 
 
 @click.group(help=__doc__)
@@ -152,7 +172,7 @@ def check_nci_to_s3(config, product_name, year, month, bucket, output_file):
     kwargs = {'Bucket': bucket}
 
     for uuid, filename in items_all:
-        prefix = get_prefix(uuid, filename, product_config)
+        prefix = get_prefixes(uuid, filename, product_config)[0]
         aws_dir = product_config.cfg['aws_dir']
         s3_object_prefix = f'{aws_dir}/{product_config.aws_dir_suffix(prefix)}/{prefix}'
 
