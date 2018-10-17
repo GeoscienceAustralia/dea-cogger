@@ -108,7 +108,7 @@ products:
         src_dir: /g/data/fk4/datacube/002/WOfS/WOfS_25_2_1/netcdf
         aws_dir: WOfS/WOFLs/v2.1.0/combined
         aws_dir_suffix: x_{x}/y_{y}/{year}/{month}/{day}
-        resampling_method: mode
+        default_resampling_method: mode
     wofs_filtered_summary:
         time_taken_from: notime
         src_template: wofs_filtered_summary_{x}_{y}.nc
@@ -116,7 +116,9 @@ products:
         src_dir: /g/data2/fk4/datacube/002/WOfS/WOfS_Filt_Stats_25_2_1/netcdf
         aws_dir: WOfS/filtered_summary/v2.1.0/combined
         aws_dir_suffix: x_{x}/y_{y}
-        resampling_method: mode
+        bands_to_cog_convert: [confidence]
+        default_resampling_method: mode
+        band_resampling_methods: {confidence: mode}
     wofs_annual_summary:
         time_taken_from: filename
         src_template: WOFS_3577_{x}_{y}_{time}_summary.nc
@@ -124,8 +126,8 @@ products:
         src_dir: /g/data/fk4/datacube/002/WOfS/WOfS_Stats_Ann_25_2_1/netcdf
         aws_dir: WOfS/annual_summary/v2.1.5/combined
         aws_dir_suffix: x_{x}/y_{y}/{year}
-        resampling_method: mode
         bucket: s3://dea-public-data-dev
+        default_resampling_method: mode
     ls5_fc_albers:
         time_taken_from: dataset
         src_template: LS5_TM_FC_3577_{x}_{y}_{time}_v{}.nc
@@ -133,7 +135,7 @@ products:
         src_dir: /g/data/fk4/datacube/002/FC/LS5_TM_FC
         aws_dir: fractional-cover/fc/v2.2.0/ls5
         aws_dir_suffix: x_{x}/y_{y}/{year}/{month}/{day}
-        resampling_method: average
+        default_resampling_method: average
     ls7_fc_albers:
         time_taken_from: dataset
         src_template: LS7_ETM_FC_3577_{x}_{y}_{time}_v{}.nc
@@ -141,7 +143,7 @@ products:
         src_dir: /g/data/fk4/datacube/002/FC/LS7_ETM_FC
         aws_dir: fractional-cover/fc/v2.2.0/ls7
         aws_dir_suffix: x_{x}/y_{y}/{year}/{month}/{day}
-        resampling_method: average
+        default_resampling_method: average
     ls8_fc_albers:
         time_taken_from: dataset
         src_template: LS8_OLI_FC_3577_{x}_{y}_{time}_v{}.nc
@@ -149,7 +151,7 @@ products:
         src_dir: /g/data/fk4/datacube/002/FC/LS8_OLI_FC
         aws_dir: fractional-cover/fc/v2.2.0/ls8
         aws_dir_suffix: x_{x}/y_{y}/{year}/{month}/{day}
-        resampling_method: average
+        default_resampling_method: average
 """
 
 
@@ -200,7 +202,7 @@ class COGNetCDF:
                                       subdatasets,
                                       index + 1,
                                       dest,
-                                      resampling_method=product_config.cfg.get('resampling_method', 'average'))
+                                      product_config)
 
             # Clean up XML files from GDAL
             # GDAL creates extra XML files which we don't want
@@ -232,7 +234,7 @@ class COGNetCDF:
             logging.info("Writing dataset Yaml to %s", yaml_fname.name)
 
     @staticmethod
-    def _dataset_to_cog(prefix, subdatasets, band_num, dest_dir, resampling_method):
+    def _dataset_to_cog(prefix, subdatasets, band_num, dest_dir, product_config):
         """
         Write the datasets to separate cog files
         """
@@ -240,9 +242,26 @@ class COGNetCDF:
         os.environ['GDAL_DISABLE_READDIR_ON_OPEN'] = 'YES'
         os.environ['CPL_VSIL_CURL_ALLOWED_EXTENSIONS'] = '.tif'
 
+        bands_to_cog = product_config.cfg.get('bands_to_cog_convert')
+        band_resampling_methods = product_config.cfg.get('band_resampling_methods')
+
         with tempfile.TemporaryDirectory() as tmpdir:
             for dts in subdatasets[:-1]:
                 band_name = dts[0].split(':')[-1]
+
+                # Only do specified bands if specified
+                if bands_to_cog:
+                    if band_name not in bands_to_cog:
+                        continue
+
+                # Resampling method of this band
+                resampling_method = band_resampling_methods.get(band_name) if band_resampling_methods else None
+                if not resampling_method:
+                    resampling_method = product_config.cfg.get('default_resampling_method')
+                # Default resampling method not specified in config
+                if not resampling_method:
+                    resampling_method = 'mode'
+
                 out_fname = prefix + '_' + band_name + '.tif'
                 try:
 
@@ -297,7 +316,7 @@ class COGProductConfiguration:
     def __init__(self, cfg):
         self.cfg = cfg
 
-    def aws_dir(self, item):
+    def aws_dir_suffix(self, item):
         """
         Given a prefix like 'LS_WATER_3577_9_-39_20180506102018000000' what is the AWS directory structure?
         """
@@ -449,7 +468,7 @@ def convert_cog(config, output_dir, product, num_procs, filenames):
             # Submit to completed Queue
             generated_cog_dict = future.result()
             for prefix, dataset_directory in generated_cog_dict.items():
-                destination_url = product_config.aws_dir(prefix)
+                destination_url = product_config.aws_dir_suffix(prefix)
 
                 (dataset_directory / 'upload-destination.txt').write_text(destination_url)
 
