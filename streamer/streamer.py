@@ -116,9 +116,10 @@ products:
         src_dir: /g/data2/fk4/datacube/002/WOfS/WOfS_Filt_Stats_25_2_1/netcdf
         aws_dir: WOfS/filtered_summary/v2.1.0/combined
         aws_dir_suffix: x_{x}/y_{y}
+        local_dir_suffix: x_{x}/y_{y}
         bands_to_cog_convert: [confidence]
         default_resampling_method: mode
-        band_resampling_methods: {confidence: mode}
+        band_resampling_methods: {confidence: average}
     wofs_annual_summary:
         time_taken_from: filename
         src_template: WOFS_3577_{x}_{y}_{time}_summary.nc
@@ -249,7 +250,7 @@ class COGNetCDF:
             for dts in subdatasets[:-1]:
                 band_name = dts[0].split(':')[-1]
 
-                # Only do specified bands if specified
+                # Only do specified bands if specified in config
                 if bands_to_cog:
                     if band_name not in bands_to_cog:
                         continue
@@ -316,13 +317,14 @@ class COGProductConfiguration:
     def __init__(self, cfg):
         self.cfg = cfg
 
-    def aws_dir_suffix(self, item):
+    @staticmethod
+    def _dir_suffix(item, item_template, dir_template):
         """
-        Given a prefix like 'LS_WATER_3577_9_-39_20180506102018000000' what is the AWS directory structure?
+        Given a prefix like 'LS_WATER_3577_9_-39_20180506102018000000' what is the directory structure?
         """
 
-        aws_file_param_values = parse(self.cfg['dest_template'], item).__dict__['named']
-        aws_dir_params = compile(self.cfg['aws_dir_suffix'])._named_fields
+        aws_file_param_values = parse(item_template, item).__dict__['named']
+        aws_dir_params = compile(dir_template)._named_fields
 
         # parse time values
         date_param_values = {}
@@ -337,7 +339,23 @@ class COGProductConfiguration:
         all_param_values = dict(aws_file_param_values, **date_param_values)
 
         # Fill aws_dir_suffix
-        return self.cfg['aws_dir_suffix'].format(**all_param_values)
+        return dir_template.format(**all_param_values)
+
+    def aws_dir_suffix(self, item):
+        """
+        Given a prefix like 'LS_WATER_3577_9_-39_20180506102018000000' what is the AWS directory structure?
+        """
+
+        return self._dir_suffix(item, self.cfg['dest_template'],
+                                self.cfg['aws_dir_suffix']) if self.cfg.get('aws_dir_suffix') else ''
+
+    def local_dir_suffix(self, item):
+        """
+        Given a prefix like 'LS_WATER_3577_9_-39_20180506102018000000' what is the local directory structure?
+        """
+
+        return self._dir_suffix(item, self.cfg['dest_template'],
+                                self.cfg['local_dir_suffix']) if self.cfg.get('local_dir_suffix') else ''
 
     def get_unstacked_names(self, netcdf_file, year=None, month=None):
         """
@@ -430,11 +448,12 @@ def generate_work_list(product_name, year, month):
 
 @cli.command()
 @click.option('--config', '-c', help='Config file')
-@click.option('--output-dir', help='Output directory', required=True)
-@click.option('--product', help='Product name', required=True)
-@click.option('--num-procs', type=int, default=1, help='Number of processes to parallelise across')
+@click.option('--output-dir', '-o', help='Output directory', required=True)
+@click.option('--product', '-p', help='Product name', required=True)
+@click.option('--num-procs', '-n', type=int, default=1, help='Number of processes to parallelise across')
+@click.option('--local-dest-dir', '-l', type=click.Path(), help='Directory when destination must be local')
 @click.argument('filenames', nargs=-1, type=click.Path())
-def convert_cog(config, output_dir, product, num_procs, filenames):
+def convert_cog(config, output_dir, product, num_procs, local_dest_dir, filenames):
     """
     Convert a list of NetCDF files into Cloud Optimise GeoTIFF format
 
@@ -448,6 +467,7 @@ def convert_cog(config, output_dir, product, num_procs, filenames):
         cfg = yaml.load(DEFAULT_CONFIG)
 
     output_dir = Path(output_dir)
+    local_dest_dir = Path(local_dest_dir) if local_dest_dir else None
 
     working_dir = output_dir / 'WORKING'
     ready_for_upload_dir = output_dir / 'TO_UPLOAD'
@@ -465,14 +485,17 @@ def convert_cog(config, output_dir, product, num_procs, filenames):
         )
 
         for future in tqdm(as_completed(futures), desc='Converting NetCDF Files', total=len(filenames)):
-            # Submit to completed Queue
+            # Submit to completed Queue or Local Destination
             generated_cog_dict = future.result()
             for prefix, dataset_directory in generated_cog_dict.items():
-                destination_url = product_config.aws_dir_suffix(prefix)
-
-                (dataset_directory / 'upload-destination.txt').write_text(destination_url)
-
-                dataset_directory.rename(ready_for_upload_dir / prefix)
+                if local_dest_dir:
+                    (local_dest_dir / product_config.local_dir_suffix(prefix)).mkdir(parents=True, exist_ok=True)
+                    for child in dataset_directory.iterdir():
+                        child.rename(Path(local_dest_dir) / product_config.local_dir_suffix(prefix) / child.name)
+                else:
+                    destination_url = product_config.aws_dir_suffix(prefix)
+                    (dataset_directory / 'upload-destination.txt').write_text(destination_url)
+                    dataset_directory.rename(ready_for_upload_dir / prefix)
 
 
 @cli.command()
