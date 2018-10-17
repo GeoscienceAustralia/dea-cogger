@@ -117,6 +117,14 @@ def get_indexed_info(product, year=None, month=None, datacube_env=None):
     return ((dt[0], filename_from_uri(dt[1])) for dt in dts)
 
 
+def valid_s3_keys(key_list, prefix, product_config):
+    pass
+
+
+def get_prefix(uuid, filename, product_config):
+    pass
+
+
 @click.group(help=__doc__)
 def cli():
     pass
@@ -128,7 +136,8 @@ def cli():
 @click.option('--year', '-y', type=int, help="The year")
 @click.option('--month', '-m', type=int, help="The month")
 @click.option('--bucket', '-b', required=True, type=click.Path(), help="AWS bucket")
-def check_nci_to_s3(config, product_name, year, month, bucket):
+@click.argument('--output_file', type=click.Path(), help="The failed dataset ckecks are written to this file")
+def check_nci_to_s3(config, product_name, year, month, bucket, output_file):
 
     if config:
         with open(config, 'r') as cfg_file:
@@ -140,26 +149,19 @@ def check_nci_to_s3(config, product_name, year, month, bucket):
     items_all = get_indexed_files(product_name, year, month)
 
     conn = boto3.client('s3')
-    keys = []
-    keys_short =[]
     kwargs = {'Bucket': bucket}
 
-    for item in items_all:
-        prefix_names = product_config.get_unstacked_names(item, year, month)
-        for prefix in prefix_names:
-            aws_dir = product_config.cfg['aws_dir']
-            s3_object_prefix = f'{aws_dir}/{product_config.aws_dir_suffix(prefix)}/{prefix}'
-            while True:
-                resp = conn.list_objects_v2(**kwargs, Prefix=s3_object_prefix)
-                for obj in resp['Contents']:
-                    key = obj['Key']
-                    if check_key(key, prefix):
-                        # ToDo
-                        pass
-                try:
-                    kwargs['ContinuationToken'] = resp['NextContinuationToken']
-                except KeyError:
-                    break
+    for uuid, filename in items_all:
+        prefix = get_prefix(uuid, filename, product_config)
+        aws_dir = product_config.cfg['aws_dir']
+        s3_object_prefix = f'{aws_dir}/{product_config.aws_dir_suffix(prefix)}/{prefix}'
+
+        # It is assumed that response does not have continuation response
+        resp = conn.list_objects_v2(**kwargs, Prefix=s3_object_prefix)
+        key_list = (obj['Key'] for obj in resp['Contents'])
+        if not valid_s3_keys(key_list, prefix, product_config):
+            with open(output_file, 'a') as output:
+                output.write(yaml.dump({'uuid': uuid, 'prefix': prefix, 'file': filename}))
 
 
 if __name__ == '__main__':
