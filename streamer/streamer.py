@@ -57,7 +57,7 @@ The program uses a config, that in particular specify product descriptions such 
 from filename or dateset or there no time associated with datasets, source and destination filename templates,
 aws directory, dataset specific aws directory suffix, resampling method for cog conversion.
 The destination template must only specify the prefix of the file excluding the band name details and
-extension. An example such config spec for a product is as follows:
+extension. Examples of such config spec for products are as follows:
 
     ls5_fc_albers:
         time_taken_from: dataset
@@ -67,7 +67,17 @@ extension. An example such config spec for a product is as follows:
         aws_dir: fractional-cover/fc/v2.2.0/ls5
         aws_dir_suffix: x_{x}/y_{y}/{year}/{month}/{day}
         resampling_method: average
-
+    wofs_filtered_summary:
+        time_taken_from: notime
+        src_template: wofs_filtered_summary_{x}_{y}.nc
+        dest_template: wofs_filtered_summary_{x}_{y}
+        src_dir: /g/data2/fk4/datacube/002/WOfS/WOfS_Filt_Stats_25_2_1/netcdf
+        aws_dir: WOfS/filtered_summary/v2.1.0/combined
+        aws_dir_suffix: x_{x}/y_{y}
+        local_dir_suffix: '{x}_{y}'
+        bands_to_cog_convert: [confidence]
+        default_resampling_method: mode
+        band_resampling_methods: {confidence: average}
 """
 import logging
 import os
@@ -116,7 +126,7 @@ products:
         src_dir: /g/data2/fk4/datacube/002/WOfS/WOfS_Filt_Stats_25_2_1/netcdf
         aws_dir: WOfS/filtered_summary/v2.1.0/combined
         aws_dir_suffix: x_{x}/y_{y}
-        local_dir_suffix: x_{x}/y_{y}
+        local_dir_suffix: '{x}_{y}'
         bands_to_cog_convert: [confidence]
         default_resampling_method: mode
         band_resampling_methods: {confidence: average}
@@ -491,7 +501,7 @@ def convert_cog(config, output_dir, product, num_procs, local_dest_dir, filename
                 if local_dest_dir:
                     (local_dest_dir / product_config.local_dir_suffix(prefix)).mkdir(parents=True, exist_ok=True)
                     for child in dataset_directory.iterdir():
-                        child.rename(Path(local_dest_dir) / product_config.local_dir_suffix(prefix) / child.name)
+                        child.rename(local_dest_dir / product_config.local_dir_suffix(prefix) / child.name)
                 else:
                     destination_url = product_config.aws_dir_suffix(prefix)
                     (dataset_directory / 'upload-destination.txt').write_text(destination_url)
