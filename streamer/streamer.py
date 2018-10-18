@@ -255,27 +255,14 @@ class COGNetCDF:
 
         bands_to_cog = product_config.cfg.get('bands_to_cog_convert')
         band_resampling_methods = product_config.cfg.get('band_resampling_methods')
+        resampling_method = product_config.cfg.get('default_resampling_method') or 'mode'
 
         with tempfile.TemporaryDirectory() as tmpdir:
             for dts in subdatasets[:-1]:
                 band_name = dts[0].split(':')[-1]
 
-                # Only do specified bands if specified in config
-                if bands_to_cog:
-                    if band_name not in bands_to_cog:
-                        continue
-
-                # Resampling method of this band
-                resampling_method = band_resampling_methods.get(band_name) if band_resampling_methods else None
-                if not resampling_method:
-                    resampling_method = product_config.cfg.get('default_resampling_method')
-                # Default resampling method not specified in config
-                if not resampling_method:
-                    resampling_method = 'mode'
-
                 out_fname = prefix + '_' + band_name + '.tif'
                 try:
-
                     # copy to a tempfolder
                     temp_fname = pjoin(tmpdir, basename(out_fname))
                     to_cogtif = [
@@ -285,6 +272,17 @@ class COGNetCDF:
                         dts[0],
                         temp_fname]
                     run_command(to_cogtif, tmpdir)
+
+                    # Only do overviews for specified bands if specified in config
+                    if bands_to_cog:
+                        if band_name not in bands_to_cog:
+                            # GeoTIFF without cog conversion
+                            run_command(['mv', temp_fname, dest_dir / basename(out_fname)])
+                            continue
+
+                    # Resampling method of this band
+                    if band_resampling_methods:
+                        resampling_method = band_resampling_methods.get(band_name) or resampling_method
 
                     # Add Overviews
                     # gdaladdo - Builds or rebuilds overview images.
