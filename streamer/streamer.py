@@ -23,7 +23,8 @@ Batch Converting NetCDF files
 -----------------------------
 ::
 
-    python streamer.py convert_cog [--max-procs <int>] --config <file> --product <product> --output-dir <dir> List of NetCDF files...
+    python streamer.py convert_cog [--max-procs <int>] --config <file> --product <product> --output-dir <dir> \
+    List of NetCDF files...
 
 Use the settings in a configuration file to:
 
@@ -79,33 +80,34 @@ extension. Examples of such config spec for products are as follows:
         default_resampling_method: mode
         band_resampling_methods: {confidence: average}
 """
+import io
 import logging
 import os
-import re
 import subprocess
+import sys
 import tempfile
-import time
 from concurrent.futures import ProcessPoolExecutor, as_completed
-from datetime import datetime, timedelta
+from datetime import datetime
 from os.path import join as pjoin, basename
 from pathlib import Path
-from subprocess import check_output, run
+from subprocess import run
 
 import click
 import gdal
 import xarray
 import yaml
-from datacube import Datacube
-from datacube.model import Range
 from netCDF4 import Dataset
 from pandas import to_datetime
+from parse import parse
 from tqdm import tqdm
-from yaml import CSafeLoader as Loader, CSafeDumper as Dumper
-
-from parse import *
-from parse import compile
 
 LOG = logging.getLogger(__name__)
+
+try:
+    from yaml import CSafeLoader as Loader, CSafeDumper as Dumper
+except ImportError:
+    LOG.warn('Unable to import the Optimised libyaml parser/dumper. YAML performance will be degraded.')
+    from yaml import SafeLoader as Loader, SafeDumper as Dumper
 
 WORKERS_POOL = 4
 
@@ -334,7 +336,6 @@ class COGProductConfiguration:
         """
 
         aws_file_param_values = parse(item_template, item).__dict__['named']
-        aws_dir_params = compile(dir_template)._named_fields
 
         # parse time values
         date_param_values = {}
@@ -418,58 +419,19 @@ class COGProductConfiguration:
         return names
 
 
-def get_indexed_files(product, year=None, month=None, datacube_env=None):
-    """
-    Extract the file list corresponding to a product for the given year and month using datacube API.
-    """
-    query = {'product': product}
-    if year and month:
-        query['time'] = Range(datetime(year=year, month=month, day=1), datetime(year=year, month=month + 1, day=1))
-    elif year:
-        query['time'] = Range(datetime(year=year, month=1, day=1), datetime(year=year + 1, month=1, day=1))
-    dc = Datacube(app='streamer', env=datacube_env)
-    files = dc.index.datasets.search_returning(field_names=('uri',), **query)
-
-    # TODO: For now, turn the URL into a file name by removing the schema and #part. Should be made more robust
-    def filename_from_uri(uri):
-        return uri[0].split(':')[1].split('#')[0]
-
-    return set(filename_from_uri(uri) for uri in files)
-
-
-@click.group(help=__doc__)
-def cli():
-    pass
-
-
-@cli.command()
-@click.option('--product-name', '-p', required=True, help="Product name")
-@click.option('--year', '-y', type=int, help="The year")
-@click.option('--month', '-m', type=int, help="The month")
-def generate_work_list(product_name, year, month):
-    """
-    Connect to an ODC database and list NetCDF files
-    """
-    items_all = get_indexed_files(product_name, year, month)
-
-    for item in sorted(items_all):
-        print(item)
-
-
-@cli.command()
+@click.command()
 @click.option('--config', '-c', help='Config file')
 @click.option('--output-dir', '-o', help='Output directory', required=True)
 @click.option('--product', '-p', help='Product name', required=True)
-@click.option('--num-procs', '-n', type=int, default=1, help='Number of processes to parallelise across')
-@click.option('--local-dest-dir', '-l', type=click.Path(), help='Directory when destination must be local')
-@click.argument('filenames', nargs=-1, type=click.Path())
-def convert_cog(config, output_dir, product, num_procs, local_dest_dir, filenames):
+@click.argument('filename', nargs=1, type=click.Path())
+def convert_cog(config, output_dir, product, filename):
     """
     Convert a list of NetCDF files into Cloud Optimise GeoTIFF format
 
     Uses a configuration file to define the file naming schema.
-
     """
+    logging.basicConfig(format='%(asctime)s [%(levelname)-8s] %(message)s')
+
     if config:
         with open(config, 'r') as cfg_file:
             cfg = yaml.load(cfg_file)
@@ -477,106 +439,18 @@ def convert_cog(config, output_dir, product, num_procs, local_dest_dir, filename
         cfg = yaml.load(DEFAULT_CONFIG)
 
     output_dir = Path(output_dir)
-    local_dest_dir = Path(local_dest_dir) if local_dest_dir else None
-
-    working_dir = output_dir / 'WORKING'
-    ready_for_upload_dir = output_dir / 'TO_UPLOAD'
-
-    working_dir.mkdir(parents=True, exist_ok=True)
-    ready_for_upload_dir.mkdir(parents=True, exist_ok=True)
 
     product_config = COGProductConfiguration(cfg['products'][product])
 
-    with ProcessPoolExecutor(max_workers=num_procs) as executor:
+    generated_datasets = COGNetCDF.netcdf_to_cog(filename, dest_dir=working_dir, product_config=product_config)
 
-        futures = (
-            executor.submit(COGNetCDF.netcdf_to_cog, filename, dest_dir=working_dir, product_config=product_config)
-            for filename in filenames
-        )
-
-        for future in tqdm(as_completed(futures), desc='Converting NetCDF Files', total=len(filenames)):
-            # Submit to completed Queue or Local Destination
-            generated_cog_dict = future.result()
-            for prefix, dataset_directory in generated_cog_dict.items():
-                if local_dest_dir:
-                    (local_dest_dir / product_config.local_dir_suffix(prefix)).mkdir(parents=True, exist_ok=True)
-                    for child in dataset_directory.iterdir():
-                        child.rename(local_dest_dir / product_config.local_dir_suffix(prefix) / child.name)
-                else:
-                    destination_url = product_config.aws_dir_suffix(prefix)
-                    (dataset_directory / 'upload-destination.txt').write_text(destination_url)
-                    dataset_directory.rename(ready_for_upload_dir / prefix)
-
-
-@cli.command()
-@click.option('--output-dir', '-o', help='Output directory', required=True)
-@click.option('--upload-destination', '-u', required=True, type=click.Path(),
-              help="Upload destination, typically including the bucket as well as prefix.\n"
-                   "eg. s3://dea-public-data/my-favourite-product")
-@click.option('--retain-datasets', '-r', is_flag=True, help='Retain datasets rather than delete them after upload')
-def upload(output_dir, upload_destination, retain_datasets):
-    """
-    Watch a Directory and upload new contents to Amazon S3
-    """
-
-    output_dir = Path(output_dir)
-
-    ready_for_upload_dir = output_dir / 'TO_UPLOAD'
-    failed_dir = output_dir / 'FAILED'
-    complete_dir = output_dir / 'COMPLETE'
-
-    max_wait_time_without_upload = timedelta(minutes=5)
-    time_last_upload = None
-    while True:
-        datasets_ready = check_output(['ls', ready_for_upload_dir]).decode('utf-8').splitlines()
-        for dataset in datasets_ready:
-            src_path = f'{ready_for_upload_dir}/{dataset}'
-            dest_file = f'{src_path}/upload-destination.txt'
-            if os.path.exists(dest_file):
-                with open(dest_file) as f:
-                    dest_path = f.read().splitlines()[0]
-
-                dest_path = f'{upload_destination}/{dest_path}'
-                aws_copy = [
-                    'aws',
-                    's3',
-                    'sync',
-                    src_path,
-                    dest_path,
-                    '--exclude',
-                    dest_file
-                ]
-                try:
-                    print(dest_path)
-                    run_command(aws_copy)
-                except Exception as e:
-                    logging.error("AWS upload error %s", dest_path)
-                    logging.exception("Exception", e)
-                    try:
-                        run_command(['mv', '-f', '--', src_path, failed_dir])
-                    except Exception as e:
-                        logging.error("Failure moving dataset %s to FAILED dir", src_path)
-                        logging.exception("Exception", e)
-                else:
-                    if retain_datasets:
-                        try:
-                            run_command(['mv', '-f', '--', src_path, complete_dir])
-                        except Exception as e:
-                            logging.error("Failure moving dataset %s to COMPLETE dir", src_path)
-                            logging.exception("Exception", e)
-                    else:
-                        try:
-                            run('rm -fR -- ' + src_path, stderr=subprocess.STDOUT, check=True, shell=True)
-                        except Exception as e:
-                            logging.error("Failure in queue: removing dataset %s", src_path)
-                            logging.exception("Exception", e)
-            time_last_upload = datetime.now()
-        time.sleep(1)
-        if time_last_upload:
-            elapsed_time = datetime.now() - time_last_upload
-            if elapsed_time > max_wait_time_without_upload:
-                break
+    for generated_cog_dict in generated_datasets:
+        # Submit to completed Queue
+        for prefix, dataset_directory in generated_cog_dict.items():
+            (output_dir / product_config.local_dir_suffix(prefix)).mkdir(parents=True, exist_ok=True)
+            for child in dataset_directory.iterdir():
+                child.rename(output_dir / product_config.local_dir_suffix(prefix) / child.name)
 
 
 if __name__ == '__main__':
-    cli()
+    convert_cog()
