@@ -118,8 +118,16 @@ def get_indexed_info(product, year=None, month=None, datacube_env=None):
     return ((dt[0], filename_from_uri(dt[1])) for dt in dts)
 
 
-def valid_s3_keys(key_list, prefix, product_config):
-    pass
+def subset_of_s3_keys(key_set, prefix, product):
+    dc = Datacube(app='aws_check')
+    product_ = dc.index.products.get_by_name(product)
+    file_names = set()
+    if product_:
+        # tif files
+        file_names = {prefix + '_' + band[0] + '.tif' for band in product_.measurements.items()}
+        # the yaml file
+        file_names.update([prefix + '.yaml'])
+    return file_names.issubset(key_set)
 
 
 def get_prefixes(uuid, netcdf_file, product_config):
@@ -178,8 +186,8 @@ def check_nci_to_s3(config, product_name, year, month, bucket, output_file):
 
         # It is assumed that response does not have continuation response
         resp = conn.list_objects_v2(**kwargs, Prefix=s3_object_prefix)
-        key_list = (obj['Key'] for obj in resp['Contents'])
-        if not valid_s3_keys(key_list, prefix, product_config):
+        key_set = {basename(obj['Key']) for obj in resp['Contents']}
+        if not subset_of_s3_keys(key_set, prefix, product_config):
             with open(output_file, 'a') as output:
                 output.write(yaml.dump({'uuid': uuid, 'prefix': prefix, 'file': filename}))
 
