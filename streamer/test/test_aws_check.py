@@ -42,7 +42,8 @@ def test_check_nci_to_s3():
     with tempfile.TemporaryDirectory() as tmpdir:
         _check_nci_to_s3(None, product, None, None, bucket, join(tmpdir, output_file))
         with open(join(tmpdir, output_file), 'r') as f:
-            print(f.readlines())
+            for line in f:
+                print(yaml.load(line))
     # runner = CliRunner()
     # with runner.isolated_filesystem():
     #     result = runner.invoke(cli, ['-p', product, '-b', bucket, output_file])

@@ -174,13 +174,13 @@ def _check_nci_to_s3(config, product_name, year, month, bucket, output_file):
         # It is assumed that response does not have continuation response
         resp = conn.list_objects_v2(**kwargs, Prefix=s3_object_prefix)
         if resp['KeyCount'] == 0:
-            key_set = set()
-        else:
-            key_set = {basename(obj['Key']) for obj in resp['Contents']}
-
-        if not subset_of_s3_keys(key_set, prefix, product_name):
             with open(output_file, 'a') as output:
                 output.write(yaml.dump({'uuid': uuid, 'prefix': prefix, 'file': filename}))
+        else:
+            key_set = {basename(obj['Key']) for obj in resp['Contents']}
+            if not subset_of_s3_keys(key_set, prefix, product_name):
+                with open(output_file, 'a') as output:
+                    output.write(yaml.dump({'uuid': uuid, 'prefix': prefix, 'file': filename}))
 
 
 @click.group(help=__doc__)
