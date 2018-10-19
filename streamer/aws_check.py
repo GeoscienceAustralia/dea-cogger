@@ -1,4 +1,3 @@
-
 import logging
 import os
 import re
@@ -112,7 +111,7 @@ def get_indexed_info(product, year=None, month=None, datacube_env=None):
 
     # TODO: For now, turn the URL into a file name by removing the schema and #part. Should be made more robust
     def filename_from_uri(uri):
-        return uri[0].split(':')[1].split('#')[0]
+        return uri.split(':')[1].split('#')[0]
 
     # TODO: uniqueness of (id, uri) combination
     return ((dt[0], filename_from_uri(dt[1])) for dt in dts)
@@ -131,12 +130,12 @@ def subset_of_s3_keys(key_set, prefix, product):
 
 
 def get_prefixes(uuid, netcdf_file, product_config):
-    netcdf_dataset = Dataset(basename(netcdf_file))
+    netcdf_dataset = Dataset(netcdf_file)
     dts_dataset = netcdf_dataset.variables['dataset']
     dts_time = netcdf_dataset.variables['time']
     for index, dt_ in enumerate(dts_dataset):
         dt = yaml.load(netcdf_extract_string(dt_.data), Loader)
-        if uuid == dt['id']:
+        if str(uuid) == dt['id']:
             # Construct prefix(es)
             dt_time = datetime.fromtimestamp(dts_time[index])
             time_stamp = to_datetime(dt_time).strftime('%Y%m%d%H%M%S%f')
@@ -164,7 +163,7 @@ def cli():
 @click.option('--year', '-y', type=int, help="The year")
 @click.option('--month', '-m', type=int, help="The month")
 @click.option('--bucket', '-b', required=True, type=click.Path(), help="AWS bucket")
-@click.argument('--output_file', type=click.Path(), help="The failed dataset ckecks are written to this file")
+@click.argument('--output_file', type=click.Path())
 def check_nci_to_s3(config, product_name, year, month, bucket, output_file):
 
     if config:
@@ -172,7 +171,7 @@ def check_nci_to_s3(config, product_name, year, month, bucket, output_file):
             cfg = yaml.load(cfg_file)
     else:
         cfg = yaml.load(DEFAULT_CONFIG)
-    product_config = COGProductConfiguration(cfg['products'][product_name])
+    product_config = cfg['products'][product_name]
 
     items_all = get_indexed_info(product_name, year, month)
 
