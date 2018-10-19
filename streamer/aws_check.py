@@ -180,7 +180,6 @@ def _check_nci_to_s3(config, product_name, year, month, bucket, output_file):
 
         if not subset_of_s3_keys(key_set, prefix, product_name):
             with open(output_file, 'a') as output:
-                print({'uuid': uuid, 'prefix': prefix, 'file': filename})
                 output.write(yaml.dump({'uuid': uuid, 'prefix': prefix, 'file': filename}))
 
 
