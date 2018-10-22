@@ -4,7 +4,7 @@ import re
 import subprocess
 import tempfile
 import time
-from concurrent.futures import ProcessPoolExecutor, as_completed
+from concurrent.futures import ProcessPoolExecutor, wait, as_completed
 from datetime import datetime, timedelta
 from os.path import join as pjoin, basename
 from pathlib import Path
@@ -25,66 +25,13 @@ from yaml import CSafeLoader as Loader, CSafeDumper as Dumper
 from parse import *
 from parse import compile
 
-from .streamer import COGProductConfiguration
+from streamer import COGProductConfiguration, DEFAULT_CONFIG
 
 import boto3
 
 LOG = logging.getLogger(__name__)
 
-WORKERS_POOL = 4
-
-DEFAULT_CONFIG = """
-products: 
-    wofs_albers: 
-        time_taken_from: filename
-        src_template: LS_WATER_3577_{x}_{y}_{time}_v{}.nc 
-        dest_template: LS_WATER_3577_{x}_{y}_{time}
-        src_dir: /g/data/fk4/datacube/002/WOfS/WOfS_25_2_1/netcdf
-        aws_dir: WOfS/WOFLs/v2.1.0/combined
-        aws_dir_suffix: x_{x}/y_{y}/{year}/{month}/{day}
-        resampling_method: mode
-    wofs_filtered_summary:
-        time_taken_from: notime
-        src_template: wofs_filtered_summary_{x}_{y}.nc
-        dest_template: wofs_filtered_summary_{x}_{y}
-        src_dir: /g/data2/fk4/datacube/002/WOfS/WOfS_Filt_Stats_25_2_1/netcdf
-        aws_dir: WOfS/filtered_summary/v2.1.0/combined
-        aws_dir_suffix: x_{x}/y_{y}
-        resampling_method: mode
-    wofs_annual_summary:
-        time_taken_from: filename
-        src_template: WOFS_3577_{x}_{y}_{time}_summary.nc
-        dest_template: WOFS_3577_{x}_{y}_{time}_summary
-        src_dir: /g/data/fk4/datacube/002/WOfS/WOfS_Stats_Ann_25_2_1/netcdf
-        aws_dir: WOfS/annual_summary/v2.1.5/combined
-        aws_dir_suffix: x_{x}/y_{y}/{year}
-        resampling_method: mode
-        bucket: s3://dea-public-data-dev
-    ls5_fc_albers:
-        time_taken_from: dataset
-        src_template: LS5_TM_FC_3577_{x}_{y}_{time}_v{}.nc
-        dest_template: LS5_TM_FC_3577_{x}_{y}_{time}
-        src_dir: /g/data/fk4/datacube/002/FC/LS5_TM_FC
-        aws_dir: fractional-cover/fc/v2.2.0/ls5
-        aws_dir_suffix: x_{x}/y_{y}/{year}/{month}/{day}
-        resampling_method: average
-    ls7_fc_albers:
-        time_taken_from: dataset
-        src_template: LS7_ETM_FC_3577_{x}_{y}_{time}_v{}.nc
-        dest_template: LS7_ETM_FC_3577_{x}_{y}_{time}
-        src_dir: /g/data/fk4/datacube/002/FC/LS7_ETM_FC
-        aws_dir: fractional-cover/fc/v2.2.0/ls7
-        aws_dir_suffix: x_{x}/y_{y}/{year}/{month}/{day}
-        resampling_method: average
-    ls8_fc_albers:
-        time_taken_from: dataset
-        src_template: LS8_OLI_FC_3577_{x}_{y}_{time}_v{}.nc
-        dest_template: LS8_OLI_FC_3577_{x}_{y}_{time}
-        src_dir: /g/data/fk4/datacube/002/FC/LS8_OLI_FC
-        aws_dir: fractional-cover/fc/v2.2.0/ls8
-        aws_dir_suffix: x_{x}/y_{y}/{year}/{month}/{day}
-        resampling_method: average
-"""
+WORKERS_POOL = 7
 
 
 def run_command(command, work_dir=None):
@@ -152,7 +99,27 @@ def get_prefixes(uuid, netcdf_file, product_config):
             return [product_config.cfg['dest_template'].format(**all_param_values)]
 
 
-def _check_nci_to_s3(config, product_name, year, month, bucket, output_file):
+def _check_item(uuid, filename, product_config, output_file, product_name, bucket):
+    conn = boto3.client('s3')
+    kwargs = {'Bucket': bucket}
+
+    prefix = get_prefixes(uuid, filename, product_config)[0]
+    aws_dir = product_config.cfg['aws_dir']
+    s3_object_prefix = f'{aws_dir}/{product_config.aws_dir_suffix(prefix)}/{prefix}'
+
+    # It is assumed that response does not have continuation response
+    resp = conn.list_objects_v2(**kwargs, Prefix=s3_object_prefix)
+    if resp['KeyCount'] == 0:
+        with open(output_file, 'a') as output:
+            output.write(yaml.dump({'uuid': uuid, 'prefix': prefix, 'file': filename}))
+    else:
+        key_set = {basename(obj['Key']) for obj in resp['Contents']}
+        if not subset_of_s3_keys(key_set, prefix, product_name):
+            with open(output_file, 'a') as output:
+                output.write(yaml.dump({'uuid': uuid, 'prefix': prefix, 'file': filename}))
+
+
+def check_nci_to_s3_(config, product_name, year, month, bucket, output_file):
 
     if config:
         with open(config, 'r') as cfg_file:
@@ -163,24 +130,13 @@ def _check_nci_to_s3(config, product_name, year, month, bucket, output_file):
 
     items_all = get_indexed_info(product_name, year, month)
 
-    conn = boto3.client('s3')
-    kwargs = {'Bucket': bucket}
+    with ProcessPoolExecutor(max_workers=WORKERS_POOL) as executor:
 
-    for uuid, filename in items_all:
-        prefix = get_prefixes(uuid, filename, product_config)[0]
-        aws_dir = product_config.cfg['aws_dir']
-        s3_object_prefix = f'{aws_dir}/{product_config.aws_dir_suffix(prefix)}/{prefix}'
-
-        # It is assumed that response does not have continuation response
-        resp = conn.list_objects_v2(**kwargs, Prefix=s3_object_prefix)
-        if resp['KeyCount'] == 0:
-            with open(output_file, 'a') as output:
-                output.write(yaml.dump({'uuid': uuid, 'prefix': prefix, 'file': filename}))
-        else:
-            key_set = {basename(obj['Key']) for obj in resp['Contents']}
-            if not subset_of_s3_keys(key_set, prefix, product_name):
-                with open(output_file, 'a') as output:
-                    output.write(yaml.dump({'uuid': uuid, 'prefix': prefix, 'file': filename}))
+        futures = [
+            executor.submit(_check_item, uuid, filename, product_config, output_file, product_name, bucket)
+            for uuid, filename in items_all
+        ]
+        wait(futures)
 
 
 @click.group(help=__doc__)
@@ -196,7 +152,7 @@ def cli():
 @click.option('--bucket', '-b', required=True, type=click.Path(), help="AWS bucket")
 @click.argument('--output_file', type=click.Path())
 def check_nci_to_s3(config, product_name, year, month, bucket, output_file):
-    _check_nci_to_s3(config, product_name, year, month, bucket, output_file)
+    check_nci_to_s3_(config, product_name, year, month, bucket, output_file)
 
 
 if __name__ == '__main__':

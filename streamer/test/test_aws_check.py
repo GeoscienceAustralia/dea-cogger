@@ -1,10 +1,11 @@
-from streamer.aws_check import get_indexed_info, get_prefixes, subset_of_s3_keys, _check_nci_to_s3, cli, DEFAULT_CONFIG
-from streamer.streamer import COGProductConfiguration
+from streamer import get_indexed_info, get_prefixes, subset_of_s3_keys, check_nci_to_s3_
+from streamer import DEFAULT_CONFIG, COGProductConfiguration
 from click.testing import CliRunner
 import uuid
 from os.path import exists, join
 import yaml
 import tempfile
+import cProfile
 
 cfg = yaml.load(DEFAULT_CONFIG)
 
@@ -40,7 +41,7 @@ def test_check_nci_to_s3():
     bucket = 'dea-public-data-dev'
     output_file = 'check_output.txt'
     with tempfile.TemporaryDirectory() as tmpdir:
-        _check_nci_to_s3(None, product, None, None, bucket, join(tmpdir, output_file))
+        check_nci_to_s3_(None, product, None, None, bucket, join(tmpdir, output_file))
         with open(join(tmpdir, output_file), 'r') as f:
             for line in f:
                 print(yaml.load(line))
@@ -50,9 +51,17 @@ def test_check_nci_to_s3():
     #     assert result.exit_code == 0
 
 
+def profile_check():
+    product = 'wofs_filtered_summary'
+    bucket = 'dea-public-data-dev'
+    output_file = 'check_output.txt'
+    with tempfile.TemporaryDirectory() as tmpdir:
+        check_nci_to_s3_(None, product, None, None, bucket, join(tmpdir, output_file))
+
+
 if __name__ == '__main__':
     test_get_indexed_info()
     test_get_prefixes()
     test_subset_of_s3_keys()
-    test_check_nci_to_s3()
-
+    # test_check_nci_to_s3()
+    cProfile.run('profile_check()')
