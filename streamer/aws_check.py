@@ -93,23 +93,18 @@ def get_prefixes(netcdf_file, dataset_time, config):
 
 
 def get_expected_list(product_config, product_name, year, month):
+
     items_all = list(get_indexed_info(product_name, year, month))
     with Datacube(app='aws_check') as dc:
         bands = dc.index.products.get_by_name(product_name).measurements.items()
     file_names = set()
-    with ProcessPoolExecutor(max_workers=WORKERS_POOL) as executor:
-        futures = (
-            executor.submit(get_prefixes, filename, dataset_time, product_config.cfg)
-            for _, filename, dataset_time in items_all
+    for uuid, filename, dataset_time in items_all:
+        prefixes = get_prefixes(filename, dataset_time, product_config.cfg)
+        aws_dir = product_config.cfg['aws_dir']
+        aws_object_prefix = f'{aws_dir}/{product_config.aws_dir_suffix(prefixes[0])}'
+        file_names.update(
+            {f'{aws_object_prefix}/{prefixes[0] + "_" + band[0] + ".tif"}' for band in bands}
         )
-
-        for future in as_completed(futures):
-            prefix = future.result()
-            aws_dir = product_config.cfg['aws_dir']
-            aws_object_prefix = f'{aws_dir}/{product_config.aws_dir_suffix(prefix[0])}'
-            file_names.update(
-                {f'{aws_object_prefix}/{prefix[0] + "_" + band[0] + ".tif"}' for band in bands}
-            )
 
     return file_names
 
@@ -182,41 +177,6 @@ def compare_nci_with_aws(cfg, product_name, year, month, bucket, output_file):
     return {'aws_but_not_nci': aws_set - expected_set, 'nci_but_not_aws': expected_set - aws_set}
 
 
-def _check_item(uuid, filename, product_config, output_file, product_name, bucket):
-    conn = boto3.client('s3')
-    kwargs = {'Bucket': bucket}
-
-    prefix = get_prefixes(uuid, filename, product_config)[0]
-    aws_dir = product_config.cfg['aws_dir']
-    s3_object_prefix = f'{aws_dir}/{product_config.aws_dir_suffix(prefix)}/{prefix}'
-
-    # It is assumed that response does not have continuation response
-    resp = conn.list_objects_v2(**kwargs, Prefix=s3_object_prefix)
-    if resp['KeyCount'] == 0:
-        with open(output_file, 'a') as output:
-            output.write(yaml.dump({'uuid': uuid, 'prefix': prefix, 'file': filename}))
-    else:
-        key_set = {basename(obj['Key']) for obj in resp['Contents']}
-        if not subset_of_s3_keys(key_set, prefix, product_name):
-            with open(output_file, 'a') as output:
-                output.write(yaml.dump({'uuid': uuid, 'prefix': prefix, 'file': filename}))
-
-
-def check_nci_to_s3_(cfg, product_name, year, month, bucket, output_file):
-
-    product_config = COGProductConfiguration(cfg['products'][product_name])
-
-    items_all = get_indexed_info(product_name, year, month)
-
-    with ProcessPoolExecutor(max_workers=WORKERS_POOL) as executor:
-
-        futures = [
-            executor.submit(_check_item, uuid, filename, product_config, output_file, product_name, bucket)
-            for uuid, filename in items_all
-        ]
-        wait(futures)
-
-
 @click.group(help=__doc__)
 def cli():
     pass
@@ -235,7 +195,7 @@ def check_nci_with_s3(config, product_name, year, month, bucket, output_file):
             cfg = yaml.load(cfg_file)
     else:
         cfg = yaml.load(DEFAULT_CONFIG)
-    compare_nci_with_aws(cfg, product_name, year, month, bucket, output_file)
+    print(compare_nci_with_aws(cfg, product_name, year, month, bucket, output_file))
 
 
 if __name__ == '__main__':
