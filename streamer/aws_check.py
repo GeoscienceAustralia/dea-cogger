@@ -31,7 +31,7 @@ import boto3
 
 LOG = logging.getLogger(__name__)
 
-WORKERS_POOL = 7
+WORKERS_POOL = 4
 
 
 def run_command(command, work_dir=None):
@@ -76,7 +76,8 @@ def subset_of_s3_keys(key_set, prefix, product):
     return file_names.issubset(key_set)
 
 
-def get_prefixes(uuid, netcdf_file, product_config):
+def get_prefixes(uuid, netcdf_file, config):
+    # This function is too slow needs speed up
     netcdf_dataset = Dataset(netcdf_file)
     dts_dataset = netcdf_dataset.variables['dataset']
     dts_time = netcdf_dataset.variables['time']
@@ -89,25 +90,35 @@ def get_prefixes(uuid, netcdf_file, product_config):
             year_ = time_stamp[0:4]
             month_ = time_stamp[4:6]
             day = time_stamp[6:8]
-            src_file_param_values = parse(product_config.cfg['src_template'], basename(netcdf_file)).__dict__['named']
+            src_file_param_values = parse(config['src_template'], basename(netcdf_file)).__dict__['named']
             time_param_values = {'time': time_stamp, 'year': year_, 'month': month_, 'day': day}
 
             # All available parameter values
             all_param_values = dict(src_file_param_values, **time_param_values)
 
             # ToDo: dest_template of prior uploads
-            return [product_config.cfg['dest_template'].format(**all_param_values)]
+            return [config['dest_template'].format(**all_param_values)]
 
 
-def get_expected_list(config, product_name, year, month):
-    items_all = get_indexed_info(product_name, year, month)
+def get_expected_list(product_config, product_name, year, month):
+    items_all = list(get_indexed_info(product_name, year, month))[0:200]
     with Datacube(app='aws_check') as dc:
         bands = dc.index.products.get_by_name(product_name).measurements.items()
     file_names = set()
-    for uuid, filename in items_all:
-        prefix = get_prefixes(uuid, filename, config)[0]
-        s3_object_prefix = f'{config.aws_dir_suffix(prefix)}/{prefix}'
-        file_names.update({prefix + '_' + band[0] + '.tif' for band in bands})
+    with ProcessPoolExecutor(max_workers=WORKERS_POOL) as executor:
+        futures = (
+            executor.submit(get_prefixes, uuid, filename, product_config.cfg)
+            for uuid, filename in items_all
+        )
+
+        for future in as_completed(futures):
+            prefix = future.result()
+            aws_dir = product_config.cfg['aws_dir']
+            aws_object_prefix = f'{aws_dir}/{product_config.aws_dir_suffix(prefix[0])}'
+            file_names.update(
+                {f'{aws_object_prefix}/{prefix[0] + "_" + band[0] + ".tif"}' for band in bands}
+            )
+
     return file_names
 
 
@@ -118,13 +129,16 @@ def has_x_y(config):
 
 
 def aws_search_template(config, year=None, month=None):
+    date_str = datetime(year=year, month=month, day=1).strftime('%Y%m')
+    year_ = date_str[0:4]
+    month_ = date_str[4:6]
     aws_dir_suffix_template = config.cfg['aws_dir_suffix']
     aws_dir_params = compile(aws_dir_suffix_template)._named_fields
     if 'x' in aws_dir_params and 'y' in aws_dir_params:
-        if month and month in aws_dir_params:
-            prefix_template = 'x_{x}/y_{y}/' + year + '/' + month + '/'
-        elif year and year in aws_dir_params:
-            prefix_template = 'x_{x}/y_{y}/' + year + '/'
+        if month and 'month' in aws_dir_params:
+            prefix_template = 'x_{x}/y_{y}/' + year_ + '/' + month_ + '/'
+        elif year and 'year' in aws_dir_params:
+            prefix_template = 'x_{x}/y_{y}/' + year_ + '/'
         else:
             prefix_template = ''
     else:
@@ -143,6 +157,7 @@ def get_aws_list(config, bucket, year=None, month=None):
         top_level_aws_dir += '/'
     aws_object_list = []
     search_prefix_template = aws_search_template(config, year, month)
+
     # ToDo: continuation of list_objects_v2
     if year:
         x_y_list = []
@@ -150,22 +165,22 @@ def get_aws_list(config, bucket, year=None, month=None):
             # get x list
             resp = conn.list_objects_v2(**kwargs, Prefix=top_level_aws_dir + 'x_', Delimiter='/')
             x_list = (parse(top_level_aws_dir + 'x_{x}/', item['Prefix']).__dict__['named']['x']
-                      for item in resp.get(['CommonPrefixes']))
+                      for item in resp.get('CommonPrefixes'))
             # get y list for given x
             for x in x_list:
                 resp = conn.list_objects_v2(**kwargs, Prefix=top_level_aws_dir + 'x_{}/y_'.format(x), Delimiter='/')
                 y_list = (parse(top_level_aws_dir + 'x_' + x + '/y_{y}/', item['Prefix']).__dict__['named']['y']
-                          for item in resp.get(['CommonPrefixes']))
+                          for item in resp.get('CommonPrefixes'))
                 x_y_list.extend(((x, y) for y in y_list))
 
         for x, y in x_y_list:
             resp = conn.list_objects_v2(**kwargs, Prefix=search_prefix_template.format(x=x, y=y))
             if not resp['KeyCount'] == 0:
-                aws_object_list.extend(resp['Contents'])
+                aws_object_list.extend((item['Key'] for item in resp['Contents']))
         return aws_object_list
     else:
         resp = conn.list_objects_v2(**kwargs, Prefix=search_prefix_template)
-        return resp['Contents']
+        return [item['Key'] for item in resp['Contents']]
 
 
 def compare_nci_with_aws(config, product_name, year, month, bucket, output_file):
@@ -202,22 +217,23 @@ def _check_item(uuid, filename, product_config, output_file, product_name, bucke
 
 def check_nci_to_s3_(config, product_name, year, month, bucket, output_file):
 
-    if config:
-        with open(config, 'r') as cfg_file:
-            cfg = yaml.load(cfg_file)
-    else:
-        cfg = yaml.load(DEFAULT_CONFIG)
-    product_config = COGProductConfiguration(cfg['products'][product_name])
-
-    items_all = get_indexed_info(product_name, year, month)
-
-    with ProcessPoolExecutor(max_workers=WORKERS_POOL) as executor:
-
-        futures = [
-            executor.submit(_check_item, uuid, filename, product_config, output_file, product_name, bucket)
-            for uuid, filename in items_all
-        ]
-        wait(futures)
+    # if config:
+    #     with open(config, 'r') as cfg_file:
+    #         cfg = yaml.load(cfg_file)
+    # else:
+    #     cfg = yaml.load(DEFAULT_CONFIG)
+    # product_config = COGProductConfiguration(cfg['products'][product_name])
+    #
+    # items_all = get_indexed_info(product_name, year, month)
+    #
+    # with ProcessPoolExecutor(max_workers=WORKERS_POOL) as executor:
+    #
+    #     futures = [
+    #         executor.submit(_check_item, uuid, filename, product_config, output_file, product_name, bucket)
+    #         for uuid, filename in items_all
+    #     ]
+    #     wait(futures)
+    pass
 
 
 @click.group(help=__doc__)
