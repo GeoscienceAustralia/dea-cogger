@@ -99,6 +99,87 @@ def get_prefixes(uuid, netcdf_file, product_config):
             return [product_config.cfg['dest_template'].format(**all_param_values)]
 
 
+def get_expected_list(config, product_name, year, month):
+    items_all = get_indexed_info(product_name, year, month)
+    with Datacube(app='aws_check') as dc:
+        bands = dc.index.products.get_by_name(product_name).measurements.items()
+    file_names = set()
+    for uuid, filename in items_all:
+        prefix = get_prefixes(uuid, filename, config)[0]
+        s3_object_prefix = f'{config.aws_dir_suffix(prefix)}/{prefix}'
+        file_names.update({prefix + '_' + band[0] + '.tif' for band in bands})
+    return file_names
+
+
+def has_x_y(config):
+    aws_dir_suffix_template = config.cfg['aws_dir_suffix']
+    aws_dir_params = compile(aws_dir_suffix_template)._named_fields
+    return 'x' in aws_dir_params and 'y' in aws_dir_params
+
+
+def aws_search_template(config, year=None, month=None):
+    aws_dir_suffix_template = config.cfg['aws_dir_suffix']
+    aws_dir_params = compile(aws_dir_suffix_template)._named_fields
+    if 'x' in aws_dir_params and 'y' in aws_dir_params:
+        if month and month in aws_dir_params:
+            prefix_template = 'x_{x}/y_{y}/' + year + '/' + month + '/'
+        elif year and year in aws_dir_params:
+            prefix_template = 'x_{x}/y_{y}/' + year + '/'
+        else:
+            prefix_template = ''
+    else:
+        prefix_template = ''
+    top_level_aws_dir = config.cfg['aws_dir']
+    if not top_level_aws_dir[-1] == '/':
+        top_level_aws_dir += '/'
+    return f'{top_level_aws_dir}{prefix_template}'
+
+
+def get_aws_list(config, bucket, year=None, month=None):
+    conn = boto3.client('s3')
+    kwargs = {'Bucket': bucket}
+    top_level_aws_dir = config.cfg['aws_dir']
+    if not top_level_aws_dir[-1] == '/':
+        top_level_aws_dir += '/'
+    aws_object_list = []
+    search_prefix_template = aws_search_template(config, year, month)
+    # ToDo: continuation of list_objects_v2
+    if year:
+        x_y_list = []
+        if has_x_y(config):
+            # get x list
+            resp = conn.list_objects_v2(**kwargs, Prefix=top_level_aws_dir + 'x_', Delimiter='/')
+            x_list = (parse(top_level_aws_dir + 'x_{x}/', item['Prefix']).__dict__['named']['x']
+                      for item in resp.get(['CommonPrefixes']))
+            # get y list for given x
+            for x in x_list:
+                resp = conn.list_objects_v2(**kwargs, Prefix=top_level_aws_dir + 'x_{}/y_'.format(x), Delimiter='/')
+                y_list = (parse(top_level_aws_dir + 'x_' + x + '/y_{y}/', item['Prefix']).__dict__['named']['y']
+                          for item in resp.get(['CommonPrefixes']))
+                x_y_list.extend(((x, y) for y in y_list))
+
+        for x, y in x_y_list:
+            resp = conn.list_objects_v2(**kwargs, Prefix=search_prefix_template.format(x=x, y=y))
+            if not resp['KeyCount'] == 0:
+                aws_object_list.extend(resp['Contents'])
+        return aws_object_list
+    else:
+        resp = conn.list_objects_v2(**kwargs, Prefix=search_prefix_template)
+        return resp['Contents']
+
+
+def compare_nci_with_aws(config, product_name, year, month, bucket, output_file):
+    if config:
+        with open(config, 'r') as cfg_file:
+            cfg = yaml.load(cfg_file)
+    else:
+        cfg = yaml.load(DEFAULT_CONFIG)
+    config = COGProductConfiguration(cfg['products'][product_name])
+    aws_set = set(get_aws_list(config, bucket, year, month))
+    expected_set = set(get_expected_list(config, product_name, year, month))
+    return {'aws_but_not_nci': aws_set - expected_set, 'nci_but_not_aws': expected_set - aws_set}
+
+
 def _check_item(uuid, filename, product_config, output_file, product_name, bucket):
     conn = boto3.client('s3')
     kwargs = {'Bucket': bucket}
