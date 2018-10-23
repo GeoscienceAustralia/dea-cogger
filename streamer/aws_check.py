@@ -86,7 +86,7 @@ def get_prefixes(uuid, netcdf_file, config):
         if str(uuid) == dt['id']:
             # Construct prefix(es)
             dt_time = datetime.fromtimestamp(dts_time[index])
-            time_stamp = to_datetime(dt_time).strftime('%Y%m%d%H%M%S%f')
+            time_stamp = to_datetime(dt_time).strftime('%Y%m%d%H%M%S')
             year_ = time_stamp[0:4]
             month_ = time_stamp[4:6]
             day = time_stamp[6:8]
@@ -183,12 +183,7 @@ def get_aws_list(config, bucket, year=None, month=None):
         return [item['Key'] for item in resp['Contents']]
 
 
-def compare_nci_with_aws(config, product_name, year, month, bucket, output_file):
-    if config:
-        with open(config, 'r') as cfg_file:
-            cfg = yaml.load(cfg_file)
-    else:
-        cfg = yaml.load(DEFAULT_CONFIG)
+def compare_nci_with_aws(cfg, product_name, year, month, bucket, output_file):
     config = COGProductConfiguration(cfg['products'][product_name])
     aws_set = set(get_aws_list(config, bucket, year, month))
     expected_set = set(get_expected_list(config, product_name, year, month))
@@ -215,25 +210,19 @@ def _check_item(uuid, filename, product_config, output_file, product_name, bucke
                 output.write(yaml.dump({'uuid': uuid, 'prefix': prefix, 'file': filename}))
 
 
-def check_nci_to_s3_(config, product_name, year, month, bucket, output_file):
+def check_nci_to_s3_(cfg, product_name, year, month, bucket, output_file):
 
-    # if config:
-    #     with open(config, 'r') as cfg_file:
-    #         cfg = yaml.load(cfg_file)
-    # else:
-    #     cfg = yaml.load(DEFAULT_CONFIG)
-    # product_config = COGProductConfiguration(cfg['products'][product_name])
-    #
-    # items_all = get_indexed_info(product_name, year, month)
-    #
-    # with ProcessPoolExecutor(max_workers=WORKERS_POOL) as executor:
-    #
-    #     futures = [
-    #         executor.submit(_check_item, uuid, filename, product_config, output_file, product_name, bucket)
-    #         for uuid, filename in items_all
-    #     ]
-    #     wait(futures)
-    pass
+    product_config = COGProductConfiguration(cfg['products'][product_name])
+
+    items_all = get_indexed_info(product_name, year, month)
+
+    with ProcessPoolExecutor(max_workers=WORKERS_POOL) as executor:
+
+        futures = [
+            executor.submit(_check_item, uuid, filename, product_config, output_file, product_name, bucket)
+            for uuid, filename in items_all
+        ]
+        wait(futures)
 
 
 @click.group(help=__doc__)
@@ -248,8 +237,13 @@ def cli():
 @click.option('--month', '-m', type=int, help="The month")
 @click.option('--bucket', '-b', required=True, type=click.Path(), help="AWS bucket")
 @click.argument('--output_file', type=click.Path())
-def check_nci_to_s3(config, product_name, year, month, bucket, output_file):
-    check_nci_to_s3_(config, product_name, year, month, bucket, output_file)
+def check_nci_with_s3(config, product_name, year, month, bucket, output_file):
+    if config:
+        with open(config, 'r') as cfg_file:
+            cfg = yaml.load(cfg_file)
+    else:
+        cfg = yaml.load(DEFAULT_CONFIG)
+    compare_nci_with_aws(cfg, product_name, year, month, bucket, output_file)
 
 
 if __name__ == '__main__':
