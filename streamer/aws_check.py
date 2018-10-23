@@ -54,14 +54,14 @@ def get_indexed_info(product, year=None, month=None, datacube_env=None):
     elif year:
         query['time'] = Range(datetime(year=year, month=1, day=1), datetime(year=year + 1, month=1, day=1))
     dc = Datacube(app='streamer', env=datacube_env)
-    dts = dc.index.datasets.search_returning(field_names=('id', 'uri'), **query)
+    dts = dc.index.datasets.search_returning(field_names=('id', 'uri', 'time'), **query)
 
     # TODO: For now, turn the URL into a file name by removing the schema and #part. Should be made more robust
     def filename_from_uri(uri):
         return uri.split(':')[1].split('#')[0]
 
     # TODO: uniqueness of (id, uri) combination
-    return ((dt[0], filename_from_uri(dt[1])) for dt in dts)
+    return ((dt[0], filename_from_uri(dt[1]), dt[2].lower) for dt in dts)
 
 
 def subset_of_s3_keys(key_set, prefix, product):
@@ -76,39 +76,31 @@ def subset_of_s3_keys(key_set, prefix, product):
     return file_names.issubset(key_set)
 
 
-def get_prefixes(uuid, netcdf_file, config):
-    # This function is too slow needs speed up
-    netcdf_dataset = Dataset(netcdf_file)
-    dts_dataset = netcdf_dataset.variables['dataset']
-    dts_time = netcdf_dataset.variables['time']
-    for index, dt_ in enumerate(dts_dataset):
-        dt = yaml.load(netcdf_extract_string(dt_.data), Loader)
-        if str(uuid) == dt['id']:
-            # Construct prefix(es)
-            dt_time = datetime.fromtimestamp(dts_time[index])
-            time_stamp = to_datetime(dt_time).strftime('%Y%m%d%H%M%S')
-            year_ = time_stamp[0:4]
-            month_ = time_stamp[4:6]
-            day = time_stamp[6:8]
-            src_file_param_values = parse(config['src_template'], basename(netcdf_file)).__dict__['named']
-            time_param_values = {'time': time_stamp, 'year': year_, 'month': month_, 'day': day}
+def get_prefixes(netcdf_file, dataset_time, config):
 
-            # All available parameter values
-            all_param_values = dict(src_file_param_values, **time_param_values)
+    time_stamp = dataset_time.strftime('%Y%m%d%H%M%S')
+    year_ = time_stamp[0:4]
+    month_ = time_stamp[4:6]
+    day = time_stamp[6:8]
+    src_file_param_values = parse(config['src_template'], basename(netcdf_file)).__dict__['named']
+    time_param_values = {'time': time_stamp, 'year': year_, 'month': month_, 'day': day}
 
-            # ToDo: dest_template of prior uploads
-            return [config['dest_template'].format(**all_param_values)]
+    # All available parameter values
+    all_param_values = dict(src_file_param_values, **time_param_values)
+
+    # ToDo: dest_template of prior uploads
+    return [config['dest_template'].format(**all_param_values)]
 
 
 def get_expected_list(product_config, product_name, year, month):
-    items_all = list(get_indexed_info(product_name, year, month))[0:200]
+    items_all = list(get_indexed_info(product_name, year, month))
     with Datacube(app='aws_check') as dc:
         bands = dc.index.products.get_by_name(product_name).measurements.items()
     file_names = set()
     with ProcessPoolExecutor(max_workers=WORKERS_POOL) as executor:
         futures = (
-            executor.submit(get_prefixes, uuid, filename, product_config.cfg)
-            for uuid, filename in items_all
+            executor.submit(get_prefixes, filename, dataset_time, product_config.cfg)
+            for _, filename, dataset_time in items_all
         )
 
         for future in as_completed(futures):
