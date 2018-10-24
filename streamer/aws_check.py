@@ -1,25 +1,16 @@
 import logging
-import os
-import re
 import subprocess
 import tempfile
-import time
 from concurrent.futures import ProcessPoolExecutor, wait, as_completed
 from datetime import datetime, timedelta
 from os.path import join as pjoin, basename
-from pathlib import Path
-from subprocess import check_output, run
+from subprocess import run
 
 import click
-import gdal
-import xarray
 import yaml
 from datacube import Datacube
 from datacube.model import Range
 from datacube.utils import netcdf_extract_string
-from netCDF4 import Dataset
-from pandas import to_datetime
-from tqdm import tqdm
 from yaml import CSafeLoader as Loader, CSafeDumper as Dumper
 
 from parse import *
@@ -60,20 +51,7 @@ def get_indexed_info(product, year=None, month=None, datacube_env=None):
     def filename_from_uri(uri):
         return uri.split(':')[1].split('#')[0]
 
-    # TODO: uniqueness of (id, uri) combination
     return ((dt[0], filename_from_uri(dt[1]), dt[2].lower) for dt in dts)
-
-
-def subset_of_s3_keys(key_set, prefix, product):
-    dc = Datacube(app='aws_check')
-    product_ = dc.index.products.get_by_name(product)
-    file_names = set()
-    if product_:
-        # tif files
-        file_names = {prefix + '_' + band[0] + '.tif' for band in product_.measurements.items()}
-        # the yaml file
-        file_names.update([prefix + '.yaml'])
-    return file_names.issubset(key_set)
 
 
 def get_prefixes(netcdf_file, dataset_time, config):
@@ -88,7 +66,6 @@ def get_prefixes(netcdf_file, dataset_time, config):
     # All available parameter values
     all_param_values = dict(src_file_param_values, **time_param_values)
 
-    # ToDo: dest_template of prior uploads
     return [config['dest_template'].format(**all_param_values)]
 
 
@@ -136,6 +113,20 @@ def aws_search_template(config, year=None, month=None):
     return f'{top_level_aws_dir}{prefix_template}'
 
 
+def get_all_s3_with_prefix(connection, kwargs, prefix):
+    kwargs_ = kwargs.copy()
+    aws_object_list = []
+    while True:
+        resp = connection.list_objects_v2(**kwargs_, Prefix=prefix)
+        if resp.get('KeyCount'):
+            aws_object_list.extend([item['Key'] for item in resp.get('Contents')])
+        try:
+            kwargs_['ContinuationToken'] = resp['NextContinuationToken']
+        except KeyError:
+            break
+    return aws_object_list
+
+
 def get_aws_list(config, bucket, year=None, month=None):
     conn = boto3.client('s3')
     kwargs = {'Bucket': bucket}
@@ -145,7 +136,6 @@ def get_aws_list(config, bucket, year=None, month=None):
     aws_object_list = []
     search_prefix_template = aws_search_template(config, year, month)
 
-    # ToDo: continuation of list_objects_v2
     if year:
         x_y_list = []
         if has_x_y(config):
@@ -161,13 +151,10 @@ def get_aws_list(config, bucket, year=None, month=None):
                 x_y_list.extend(((x, y) for y in y_list))
 
         for x, y in x_y_list:
-            resp = conn.list_objects_v2(**kwargs, Prefix=search_prefix_template.format(x=x, y=y))
-            if not resp['KeyCount'] == 0:
-                aws_object_list.extend((item['Key'] for item in resp['Contents']))
+            aws_object_list.extend(get_all_s3_with_prefix(conn, kwargs, search_prefix_template.format(x=x, y=y)))
         return aws_object_list
     else:
-        resp = conn.list_objects_v2(**kwargs, Prefix=search_prefix_template)
-        return [item['Key'] for item in resp['Contents']]
+        return get_all_s3_with_prefix(conn, kwargs, search_prefix_template)
 
 
 def compare_nci_with_aws(cfg, product_name, year, month, bucket, output_file):
