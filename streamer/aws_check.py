@@ -1,9 +1,26 @@
+"""
+This script compare expected AWS s3 objects with what is actually present in s3
+The lines that are printed to standard output has the following structure:
+
+'missing-in-aws:<uuid>:<expected_s3_object>
+OR
+'excess-aws-file:<s3_object>'
+
+E.g.
+'missing-in-aws:2f99b666-8079-4a62-84c7-ebf3db402933:WOfS/WOFLs/v2.1.0/combined/x_-8/y_-36/2018/07/12/'
+                                                               'LS_WATER_3577_-8_-36_20180712114018_water.tif'
+
+OR
+
+'excess-aws-file:WOfS/WOFLs/v2.1.0/combined/x_-8/y_-36/2018/07/12/LS_WATER_3577_-8_-36_20180712114018_water.tif'
+
+"""
+
 from os.path import basename
 import click
 import yaml
 from datacube import Datacube
 from datacube.model import Range
-from yaml import CSafeLoader as Loader, CSafeDumper as Dumper
 
 from parse import *
 from parse import compile
@@ -19,6 +36,7 @@ LOG = logging.getLogger(__name__)
 def get_indexed_info(product, year=None, month=None, datacube_env=None):
     """
     Extract the file list corresponding to a product for the given year and month using datacube API.
+    Returns a list of tuples (id, uri, time)
     """
     query = {'product': product}
     if year and month:
@@ -36,6 +54,10 @@ def get_indexed_info(product, year=None, month=None, datacube_env=None):
 
 
 def get_prefixes(netcdf_file, dataset_time, config):
+    """
+    Construct the prefix (i.e. excluding band name and extension) like 'LS_WATER_3577_9_-39_20180506102018'
+    Extract the grid index (cell index) from the given file
+    """
 
     time_stamp = dataset_time.strftime('%Y%m%d%H%M%S')
     year_ = time_stamp[0:4]
@@ -50,7 +72,10 @@ def get_prefixes(netcdf_file, dataset_time, config):
     return [config['dest_template'].format(**all_param_values)]
 
 
-def get_expected_list(product_config, product_name, year, month):
+def get_expected_list(product_config, product_name, year=None, month=None):
+    """
+    What is the expected list of files in AWS for a given product for given (optinal) year and time
+    """
 
     items_all = get_indexed_info(product_name, year, month)
     with Datacube(app='aws_check') as dc:
@@ -69,12 +94,19 @@ def get_expected_list(product_config, product_name, year, month):
 
 
 def has_x_y(config):
+    """
+    Does this product config has x, y params in AWS directory structure
+    """
     aws_dir_suffix_template = config.cfg['aws_dir_suffix']
     aws_dir_params = compile(aws_dir_suffix_template)._named_fields
     return 'x' in aws_dir_params and 'y' in aws_dir_params
 
 
 def aws_search_template(config, year=None, month=None):
+    """
+    What is the prefix template that can be used for a AWS s3 object for a given product
+    for given (optional) year and month
+    """
 
     aws_dir_suffix_template = config.cfg['aws_dir_suffix']
     aws_dir_params = compile(aws_dir_suffix_template)._named_fields
@@ -99,6 +131,9 @@ def aws_search_template(config, year=None, month=None):
 
 
 def get_all_s3_with_prefix(connection, kwargs, prefix):
+    """
+    Get all s3 objects for given prefix and kwargs and connection parameters
+    """
     kwargs_ = kwargs.copy()
     aws_object_list = set()
     while True:
@@ -113,6 +148,9 @@ def get_all_s3_with_prefix(connection, kwargs, prefix):
 
 
 def get_aws_list(config, bucket, year=None, month=None):
+    """
+    What is the list of s3 objects that is present in AWS for a given product for given (optional) year and time
+    """
     # session = boto3.Session(profile_name='prod')
     # conn = session.client('s3')
     conn = boto3.client('s3')
@@ -145,6 +183,9 @@ def get_aws_list(config, bucket, year=None, month=None):
 
 
 def compare_nci_with_aws(cfg, product_name, year, month, bucket):
+    """
+    Compare s3 objects present in AWS with what is expected
+    """
     config = COGProductConfiguration(cfg['products'][product_name])
     aws_set = get_aws_list(config, bucket, year, month)
     expected_set = get_expected_list(config, product_name, year, month)
