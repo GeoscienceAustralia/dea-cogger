@@ -1,38 +1,19 @@
-import logging
-import subprocess
-import tempfile
-from concurrent.futures import ProcessPoolExecutor, wait, as_completed
-from datetime import datetime, timedelta
-from os.path import join as pjoin, basename
-from subprocess import run
-
+from os.path import basename
 import click
 import yaml
 from datacube import Datacube
 from datacube.model import Range
-from datacube.utils import netcdf_extract_string
 from yaml import CSafeLoader as Loader, CSafeDumper as Dumper
 
 from parse import *
 from parse import compile
-
-from streamer import COGProductConfiguration, DEFAULT_CONFIG
-
 import boto3
 
+from streamer import COGProductConfiguration, DEFAULT_CONFIG
+from datetime import datetime
+
+import logging
 LOG = logging.getLogger(__name__)
-
-WORKERS_POOL = 4
-
-
-def run_command(command, work_dir=None):
-    """
-    A simple utility to execute a subprocess command.
-    """
-    try:
-        run(command, cwd=work_dir, check=True, stderr=subprocess.PIPE, stdout=subprocess.PIPE)
-    except subprocess.CalledProcessError as e:
-        raise RuntimeError("command '{}' failed with error (code {}): {}".format(e.cmd, e.returncode, e.output))
 
 
 def get_indexed_info(product, year=None, month=None, datacube_env=None):
@@ -71,7 +52,7 @@ def get_prefixes(netcdf_file, dataset_time, config):
 
 def get_expected_list(product_config, product_name, year, month):
 
-    items_all = list(get_indexed_info(product_name, year, month))
+    items_all = get_indexed_info(product_name, year, month)
     with Datacube(app='aws_check') as dc:
         bands = dc.index.products.get_by_name(product_name).measurements.items()
     file_names = set()
@@ -80,8 +61,9 @@ def get_expected_list(product_config, product_name, year, month):
         aws_dir = product_config.cfg['aws_dir']
         aws_object_prefix = f'{aws_dir}/{product_config.aws_dir_suffix(prefixes[0])}'
         file_names.update(
-            {f'{aws_object_prefix}/{prefixes[0] + "_" + band[0] + ".tif"}' for band in bands}
+            {(str(uuid), f'{aws_object_prefix}/{prefixes[0] + "_" + band[0] + ".tif"}') for band in bands}
         )
+        file_names.add((str(uuid), f'{aws_object_prefix}/{prefixes[0] + ".yaml"}'))
 
     return file_names
 
@@ -93,15 +75,18 @@ def has_x_y(config):
 
 
 def aws_search_template(config, year=None, month=None):
-    date_str = datetime(year=year, month=month, day=1).strftime('%Y%m')
-    year_ = date_str[0:4]
-    month_ = date_str[4:6]
+
     aws_dir_suffix_template = config.cfg['aws_dir_suffix']
     aws_dir_params = compile(aws_dir_suffix_template)._named_fields
     if 'x' in aws_dir_params and 'y' in aws_dir_params:
-        if month and 'month' in aws_dir_params:
+        if month and year and 'month' in aws_dir_params:
+            date_str = datetime(year=year, month=month, day=1).strftime('%Y%m')
+            year_ = date_str[0:4]
+            month_ = date_str[4:6]
             prefix_template = 'x_{x}/y_{y}/' + year_ + '/' + month_ + '/'
         elif year and 'year' in aws_dir_params:
+            date_str = datetime(year=year, month=1, day=1).strftime('%Y')
+            year_ = date_str[0:4]
             prefix_template = 'x_{x}/y_{y}/' + year_ + '/'
         else:
             prefix_template = ''
@@ -115,11 +100,11 @@ def aws_search_template(config, year=None, month=None):
 
 def get_all_s3_with_prefix(connection, kwargs, prefix):
     kwargs_ = kwargs.copy()
-    aws_object_list = []
+    aws_object_list = set()
     while True:
         resp = connection.list_objects_v2(**kwargs_, Prefix=prefix)
         if resp.get('KeyCount'):
-            aws_object_list.extend([item['Key'] for item in resp.get('Contents')])
+            aws_object_list.update({item['Key'] for item in resp.get('Contents')})
         try:
             kwargs_['ContinuationToken'] = resp['NextContinuationToken']
         except KeyError:
@@ -128,12 +113,14 @@ def get_all_s3_with_prefix(connection, kwargs, prefix):
 
 
 def get_aws_list(config, bucket, year=None, month=None):
+    # session = boto3.Session(profile_name='prod')
+    # conn = session.client('s3')
     conn = boto3.client('s3')
     kwargs = {'Bucket': bucket}
     top_level_aws_dir = config.cfg['aws_dir']
     if not top_level_aws_dir[-1] == '/':
         top_level_aws_dir += '/'
-    aws_object_list = []
+    aws_object_list = set()
     search_prefix_template = aws_search_template(config, year, month)
 
     if year:
@@ -151,17 +138,20 @@ def get_aws_list(config, bucket, year=None, month=None):
                 x_y_list.extend(((x, y) for y in y_list))
 
         for x, y in x_y_list:
-            aws_object_list.extend(get_all_s3_with_prefix(conn, kwargs, search_prefix_template.format(x=x, y=y)))
+            aws_object_list.update(get_all_s3_with_prefix(conn, kwargs, search_prefix_template.format(x=x, y=y)))
         return aws_object_list
     else:
         return get_all_s3_with_prefix(conn, kwargs, search_prefix_template)
 
 
-def compare_nci_with_aws(cfg, product_name, year, month, bucket, output_file):
+def compare_nci_with_aws(cfg, product_name, year, month, bucket):
     config = COGProductConfiguration(cfg['products'][product_name])
-    aws_set = set(get_aws_list(config, bucket, year, month))
-    expected_set = set(get_expected_list(config, product_name, year, month))
-    return {'aws_but_not_nci': aws_set - expected_set, 'nci_but_not_aws': expected_set - aws_set}
+    aws_set = get_aws_list(config, bucket, year, month)
+    expected_set = get_expected_list(config, product_name, year, month)
+    expected_set_no_uuid = {item for _, item in expected_set}
+    aws_not_nci = {item for item in aws_set if item not in expected_set_no_uuid}
+    nci_not_aws = {f'{uuid}:{item}' for uuid, item in expected_set if item not in aws_set}
+    return {'aws_but_not_nci': aws_not_nci, 'nci_but_not_aws': nci_not_aws}
 
 
 @click.group(help=__doc__)
@@ -175,14 +165,17 @@ def cli():
 @click.option('--year', '-y', type=int, help="The year")
 @click.option('--month', '-m', type=int, help="The month")
 @click.option('--bucket', '-b', required=True, type=click.Path(), help="AWS bucket")
-@click.argument('--output_file', type=click.Path())
-def check_nci_with_s3(config, product_name, year, month, bucket, output_file):
+def check_nci_with_s3(config, product_name, year, month, bucket):
     if config:
         with open(config, 'r') as cfg_file:
             cfg = yaml.load(cfg_file)
     else:
         cfg = yaml.load(DEFAULT_CONFIG)
-    print(compare_nci_with_aws(cfg, product_name, year, month, bucket, output_file))
+    result = compare_nci_with_aws(cfg, product_name, year, month, bucket)
+    for item in result['aws_but_not_nci']:
+        print(f'excess-aws-file:{item}')
+    for item in result['nci_but_not_aws']:
+        print(f'missing-in-aws:{item}')
 
 
 if __name__ == '__main__':
