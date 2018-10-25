@@ -96,6 +96,7 @@ from yaml import CSafeLoader as Loader, CSafeDumper as Dumper
 
 from parse import *
 from parse import compile
+from cogeo import *
 
 import re
 
@@ -306,82 +307,57 @@ class COGNetCDF:
         if self.nonpym_list is not None:
             re_nonpym = "|".join(self.nonpym_list)
 
-        with tempfile.TemporaryDirectory() as tmpdir:
-            for dts in subdatasets[:-1]:
-                rastercount = gdal.Open(dts[0]).RasterCount
-                for i in range(rastercount):
-                    band_name = dts[0].split(':')[-1]
+        for dts in subdatasets[:-1]:
+            rastercount = gdal.Open(dts[0]).RasterCount
+            for i in range(rastercount):
+                band_name = dts[0].split(':')[-1]
 
-                    # Only do specified bands if specified
-                    if self.black_list is not None:
-                        if re.search(re_black, band_name) is not None:
-                            continue
-
-                    if self.white_list is not None:
-                        if re.search(re_white, band_name) is None:
-                            continue
-
-                    if rastercount == 1:
-                        out_fname = prefix + '_' + band_name + '.tif'
-                    else:
-                        out_fname = prefix + '_' + band_name + '_' + str(i+1) + '.tif'
-
-                    # Check the done files might need a force option later
-                    if exists(out_fname):
+                # Only do specified bands if specified
+                if self.black_list is not None:
+                    if re.search(re_black, band_name) is not None:
                         continue
 
-                    # Resampling method of this band
-                    resampling_method = None
-                    if self.bands_rsp is not None:
-                        resampling_method = self.bands_rsp.get(band_name)
-                    if resampling_method is None:
-                        resampling_method = self.default_rsp
+                if self.white_list is not None:
+                    if re.search(re_white, band_name) is None:
+                        continue
 
-                    temp_fname = pjoin(tmpdir, basename(out_fname))
-                    try:
-                        # copy to a tempfolder
-                        to_cogtif = [
-                        'gdal_translate',
-                        '-of', 'GTIFF',
-                        '-b', str(i+1),
-                        dts[0],
-                        temp_fname]
-                        run_command(to_cogtif, tmpdir)
+                if rastercount == 1:
+                    out_fname = prefix + '_' + band_name + '.tif'
+                else:
+                    out_fname = prefix + '_' + band_name + '_' + str(i+1) + '.tif'
 
-                        # Add Overviews
-                        # gdaladdo - Builds or rebuilds overview images.
-                        # 2, 4, 8,16, 32 are levels which is a list of integral overview levels to build.
-                        if self.nonpym_list is None or (self.nonpym_list is not None and 
-                                re.search(re_nonpym, band_name) is None):
-                                add_ovr = [
-                                    'gdaladdo',
-                                    '-r', resampling_method,
-                                    '--config', 'GDAL_TIFF_OVR_BLOCKSIZE', '512',
-                                    temp_fname,
-                                    '2', '4', '8', '16', '32']
-                                run_command(add_ovr, tmpdir)
-                                LOG.debug("resampling %s with %s", temp_fname, resampling_method)
+                # Check the done files might need a force option later
+                if exists(out_fname):
+                    continue
 
-                        # Convert to COG
-                        cogtif = [
-                            'gdal_translate',
-                            '-co', 'TILED=YES',
-                            '-co', 'COPY_SRC_OVERVIEWS=YES',
-                            '-co', 'COMPRESS=DEFLATE',
-                            '-co', 'ZLEVEL=9',
-                            '--config', 'GDAL_TIFF_OVR_BLOCKSIZE', '512',
-                            '-co', 'BLOCKXSIZE=512',
-                            '-co', 'BLOCKYSIZE=512',
-                            '-co', 'PREDICTOR=2',
-                            '-co', 'PROFILE=GeoTIFF',
-                            temp_fname,
-                            out_fname]
-                        run_command(cogtif, dirname(out_fname))
-                        os.remove(out_fname + '.aux.xml')
-                        os.remove(temp_fname)
-                    except Exception as e:
-                        LOG.error("Failure during COG conversion: %s", out_fname)
-                        return rastercount
+                # Resampling method of this band
+                resampling_method = None
+                if self.bands_rsp is not None:
+                    resampling_method = self.bands_rsp.get(band_name)
+                if resampling_method is None:
+                    resampling_method = self.default_rsp
+                if self.nonpym_list is not None:
+                   if re.search(re_nonpym, band_name) is not None:
+                        resampling_method = None
+                LOG.debug("resampling method %s", resampling_method)
+
+                default_profile = {'driver': 'GTiff',
+                            'interleave': 'pixel',
+                            'tiled': True,
+                            'blockxsize': 512,
+                            'blockysize': 512,
+                            'compress': 'DEFLATE',
+                            'predictor': 2,
+                            'zlevel': 9}
+                default_config = {'NUM_THREADS': 1, 'GDAL_TIFF_OVR_BLOCKSIZE': 512}
+
+                cog_translate(dts[0], out_fname,
+                        default_profile,
+                        indexes=[i+1],
+                        overview_resampling=resampling_method,
+                        overview_level=5,
+                        config=default_config)
+
         return rastercount
 
 
