@@ -75,7 +75,7 @@ extension. Examples of such config spec for products are as follows:
         aws_dir: WOfS/filtered_summary/v2.1.0/combined
         aws_dir_suffix: x_{x}/y_{y}
         local_dir_suffix: '{x}_{y}'
-        bands_to_cog_convert: [confidence]
+        bands_to_skip_overviews: [confidence]
         default_resampling_method: mode
         band_resampling_methods: {confidence: average}
 """
@@ -127,7 +127,7 @@ products:
         aws_dir: WOfS/filtered_summary/v2.1.0/combined
         aws_dir_suffix: x_{x}/y_{y}
         local_dir_suffix: '{x}_{y}'
-        bands_to_cog_convert: [confidence]
+        bands_to_skip_overviews: [confidence]
         default_resampling_method: mode
         band_resampling_methods: {confidence: average}
     wofs_annual_summary:
@@ -174,6 +174,16 @@ def run_command(command, work_dir=None):
         run(command, cwd=work_dir, check=True, stderr=subprocess.PIPE, stdout=subprocess.PIPE)
     except subprocess.CalledProcessError as e:
         raise RuntimeError("command '{}' failed with error (code {}): {}".format(e.cmd, e.returncode, e.output))
+
+
+class COGGeoTIFF:
+    """
+    Convert GeoTIFF files to COG style GeoTIFFs
+    """
+
+    @staticmethod
+    def geotiff_to_cog(input_file, dest_dir, product_config):
+        pass
 
 
 class COGNetCDF:
@@ -253,7 +263,7 @@ class COGNetCDF:
         os.environ['GDAL_DISABLE_READDIR_ON_OPEN'] = 'YES'
         os.environ['CPL_VSIL_CURL_ALLOWED_EXTENSIONS'] = '.tif'
 
-        bands_to_cog = product_config.cfg.get('bands_to_cog_convert')
+        bands_to_skip_overviews = product_config.cfg.get('bands_to_skip_overviews')
         band_resampling_methods = product_config.cfg.get('band_resampling_methods')
         resampling_method = product_config.cfg.get('default_resampling_method') or 'mode'
 
@@ -273,33 +283,30 @@ class COGNetCDF:
                         temp_fname]
                     run_command(to_cogtif, tmpdir)
 
+                    copy_src_overviews = 'NO'
                     # Only do overviews for specified bands if specified in config
-                    if bands_to_cog:
-                        if band_name not in bands_to_cog:
-                            # GeoTIFF without cog conversion
-                            run_command(['mv', temp_fname, dest_dir / basename(out_fname)])
-                            continue
+                    if not bands_to_skip_overviews or band_name not in bands_to_skip_overviews:
+                        # Resampling method of this band
+                        if band_resampling_methods:
+                            resampling_method = band_resampling_methods.get(band_name) or resampling_method
 
-                    # Resampling method of this band
-                    if band_resampling_methods:
-                        resampling_method = band_resampling_methods.get(band_name) or resampling_method
-
-                    # Add Overviews
-                    # gdaladdo - Builds or rebuilds overview images.
-                    # 2, 4, 8,16, 32 are levels which is a list of integral overview levels to build.
-                    add_ovr = [
-                        'gdaladdo',
-                        '-r', resampling_method,
-                        '--config', 'GDAL_TIFF_OVR_BLOCKSIZE', '512',
-                        temp_fname,
-                        '2', '4', '8', '16', '32']
-                    run_command(add_ovr, tmpdir)
+                        # Add Overviews
+                        # gdaladdo - Builds or rebuilds overview images.
+                        # 2, 4, 8,16, 32 are levels which is a list of integral overview levels to build.
+                        add_ovr = [
+                            'gdaladdo',
+                            '-r', resampling_method,
+                            '--config', 'GDAL_TIFF_OVR_BLOCKSIZE', '512',
+                            temp_fname,
+                            '2', '4', '8', '16', '32']
+                        run_command(add_ovr, tmpdir)
+                        copy_src_overviews = 'YES'
 
                     # Convert to COG
                     cogtif = [
                         'gdal_translate',
                         '-co', 'TILED=YES',
-                        '-co', 'COPY_SRC_OVERVIEWS=YES',
+                        '-co', f'COPY_SRC_OVERVIEWS={copy_src_overviews}',
                         '-co', 'COMPRESS=DEFLATE',
                         '-co', 'ZLEVEL=9',
                         '--config', 'GDAL_TIFF_OVR_BLOCKSIZE', '512',
