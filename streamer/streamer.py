@@ -176,19 +176,9 @@ def run_command(command, work_dir=None):
         raise RuntimeError("command '{}' failed with error (code {}): {}".format(e.cmd, e.returncode, e.output))
 
 
-class COGGeoTIFF:
+class COG:
     """
-    Convert GeoTIFF files to COG style GeoTIFFs
-    """
-
-    @staticmethod
-    def geotiff_to_cog(input_file, dest_dir, product_config):
-        pass
-
-
-class COGNetCDF:
-    """
-    Convert NetCDF files to COG style GeoTIFFs
+    Convert NetCDF and Tiff files to COG style GeoTIFFs
     """
 
     @staticmethod
@@ -207,30 +197,61 @@ class COGNetCDF:
         dataset = gdal.Open(input_file, gdal.GA_ReadOnly)
         subdatasets = dataset.GetSubDatasets()
 
+        os.environ['GDAL_DISABLE_READDIR_ON_OPEN'] = 'YES'
+        os.environ['CPL_VSIL_CURL_ALLOWED_EXTENSIONS'] = '.tif'
+
         generated_datasets = {}
+        with tempfile.TemporaryDirectory() as tmpdir:
 
-        for index, prefix in enumerate(prefix_names):
-            prefix = prefix_names[index]
-            dest = dest_dir / prefix
-            dest.mkdir(exist_ok=True)
+            for index, prefix in enumerate(prefix_names):
+                prefix = prefix_names[index]
+                dest = dest_dir / prefix
+                dest.mkdir(exist_ok=True)
 
-            # Read the Dataset Metadata from the 'dataset' variable in the NetCDF file, and save as YAML
-            dataset_item = dataset_array.dataset.item(index)
-            COGNetCDF._dataset_to_yaml(prefix, dataset_item, dest)
+                # Read the Dataset Metadata from the 'dataset' variable in the NetCDF file, and save as YAML
+                dataset_item = dataset_array.dataset.item(index)
+                COG._dataset_to_yaml(prefix, dataset_item, dest)
 
-            # Extract each band from the NetCDF and write to individual GeoTIFF files
-            COGNetCDF._dataset_to_cog(prefix,
-                                      subdatasets,
-                                      index + 1,
-                                      dest,
-                                      product_config)
+                # Extract each band from the NetCDF and write to individual GeoTIFF files
+                bands_to_skip_overviews = product_config.cfg.get('bands_to_skip_overviews')
+                band_resampling_methods = product_config.cfg.get('band_resampling_methods')
+                resampling_method = product_config.cfg.get('default_resampling_method') or 'mode'
 
-            # Clean up XML files from GDAL
-            # GDAL creates extra XML files which we don't want
-            for xmlfile in dest.glob('*.xml'):
-                xmlfile.unlink()
+                for dts in subdatasets[:-1]:
+                    band_name = dts[0].split(':')[-1]
+                    out_fname = prefix + '_' + band_name + '.tif'
 
-            generated_datasets[prefix] = dest
+                    try:
+                        # Convert the band to Tiff
+                        temp_fname = pjoin(tmpdir, basename(out_fname))
+                        to_cogtif = [
+                            'gdal_translate',
+                            '-of', 'GTIFF',
+                            '-b', str(index + 1),
+                            dts[0],
+                            temp_fname]
+                        run_command(to_cogtif, tmpdir)
+
+                        # Only do overviews for specified bands
+                        add_overviews = False
+                        if not bands_to_skip_overviews or band_name not in bands_to_skip_overviews:
+                            add_overviews = True
+                            # Resampling method of this band
+                            if band_resampling_methods:
+                                resampling_method = band_resampling_methods.get(band_name) or resampling_method
+
+                        COG.tiff_to_cog(temp_fname, add_overviews, resampling_method, out_fname, dest)
+
+                    except Exception as e:
+                        logging.error("Failure during COG conversion: %s", out_fname)
+                        logging.exception("Exception", e)
+
+                # Clean up XML files from GDAL
+                # GDAL creates extra XML files which we don't want
+                for xmlfile in dest.glob('*.xml'):
+                    xmlfile.unlink()
+
+                generated_datasets[prefix] = dest
 
         return generated_datasets
 
@@ -255,71 +276,52 @@ class COGNetCDF:
             logging.info("Writing dataset Yaml to %s", yaml_fname.name)
 
     @staticmethod
-    def _dataset_to_cog(prefix, subdatasets, band_num, dest_dir, product_config):
+    def tiff_to_cog(input_tiff_file, add_overviews, resampling_method, output_tiff_file, dest_dir):
         """
-        Write the datasets to separate cog files
+        Write the input tiff file to a cog tiff file optionally adding overviews
         """
 
         os.environ['GDAL_DISABLE_READDIR_ON_OPEN'] = 'YES'
         os.environ['CPL_VSIL_CURL_ALLOWED_EXTENSIONS'] = '.tif'
 
-        bands_to_skip_overviews = product_config.cfg.get('bands_to_skip_overviews')
-        band_resampling_methods = product_config.cfg.get('band_resampling_methods')
-        resampling_method = product_config.cfg.get('default_resampling_method') or 'mode'
+        with tempfile.TemporaryDirectory() as tempdir:
+            try:
 
-        with tempfile.TemporaryDirectory() as tmpdir:
-            for dts in subdatasets[:-1]:
-                band_name = dts[0].split(':')[-1]
+                temp_fname = pjoin(tempdir, basename(input_tiff_file))
+                run_command(['cp', input_tiff_file, temp_fname], tempdir)
+                copy_src_overviews = 'NO'
 
-                out_fname = prefix + '_' + band_name + '.tif'
-                try:
-                    # copy to a tempfolder
-                    temp_fname = pjoin(tmpdir, basename(out_fname))
-                    to_cogtif = [
-                        'gdal_translate',
-                        '-of', 'GTIFF',
-                        '-b', str(band_num),
-                        dts[0],
-                        temp_fname]
-                    run_command(to_cogtif, tmpdir)
-
-                    copy_src_overviews = 'NO'
-                    # Only do overviews for specified bands if specified in config
-                    if not bands_to_skip_overviews or band_name not in bands_to_skip_overviews:
-                        # Resampling method of this band
-                        if band_resampling_methods:
-                            resampling_method = band_resampling_methods.get(band_name) or resampling_method
-
-                        # Add Overviews
-                        # gdaladdo - Builds or rebuilds overview images.
-                        # 2, 4, 8,16, 32 are levels which is a list of integral overview levels to build.
-                        add_ovr = [
-                            'gdaladdo',
-                            '-r', resampling_method,
-                            '--config', 'GDAL_TIFF_OVR_BLOCKSIZE', '512',
-                            temp_fname,
-                            '2', '4', '8', '16', '32']
-                        run_command(add_ovr, tmpdir)
-                        copy_src_overviews = 'YES'
-
-                    # Convert to COG
-                    cogtif = [
-                        'gdal_translate',
-                        '-co', 'TILED=YES',
-                        '-co', f'COPY_SRC_OVERVIEWS={copy_src_overviews}',
-                        '-co', 'COMPRESS=DEFLATE',
-                        '-co', 'ZLEVEL=9',
+                # Add Overviews
+                # gdaladdo - Builds or rebuilds overview images.
+                # 2, 4, 8,16, 32 are levels which is a list of integral overview levels to build.
+                if add_overviews:
+                    add_ovr = [
+                        'gdaladdo',
+                        '-r', resampling_method,
                         '--config', 'GDAL_TIFF_OVR_BLOCKSIZE', '512',
-                        '-co', 'BLOCKXSIZE=512',
-                        '-co', 'BLOCKYSIZE=512',
-                        '-co', 'PREDICTOR=2',
-                        '-co', 'PROFILE=GeoTIFF',
                         temp_fname,
-                        out_fname]
-                    run_command(cogtif, dest_dir)
-                except Exception as e:
-                    logging.error("Failure during COG conversion: %s", out_fname)
-                    logging.exception("Exception", e)
+                        '2', '4', '8', '16', '32']
+                    run_command(add_ovr, tempdir)
+                    copy_src_overviews = 'YES'
+
+                # Convert to COG
+                cogtif = [
+                    'gdal_translate',
+                    '-co', 'TILED=YES',
+                    '-co', f'COPY_SRC_OVERVIEWS={copy_src_overviews}',
+                    '-co', 'COMPRESS=DEFLATE',
+                    '-co', 'ZLEVEL=9',
+                    '--config', 'GDAL_TIFF_OVR_BLOCKSIZE', '512',
+                    '-co', 'BLOCKXSIZE=512',
+                    '-co', 'BLOCKYSIZE=512',
+                    '-co', 'PREDICTOR=2',
+                    '-co', 'PROFILE=GeoTIFF',
+                    temp_fname,
+                    output_tiff_file]
+                run_command(cogtif, dest_dir)
+            except Exception as e:
+                logging.error("Failure during COG conversion: %s", output_tiff_file)
+                logging.exception("Exception", e)
 
 
 class COGProductConfiguration:
@@ -495,7 +497,7 @@ def convert_cog(config, output_dir, product, num_procs, local_dest_dir, filename
     with ProcessPoolExecutor(max_workers=num_procs) as executor:
 
         futures = (
-            executor.submit(COGNetCDF.netcdf_to_cog, filename, dest_dir=working_dir, product_config=product_config)
+            executor.submit(COG.netcdf_to_cog, filename, dest_dir=working_dir, product_config=product_config)
             for filename in filenames
         )
 
