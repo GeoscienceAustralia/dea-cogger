@@ -48,7 +48,7 @@ def cli():
 
 
 @cli.command()
-@click.option('--config', '-c', help='Config file')
+@click.option('--config', '-c', help='Config file for the streamer application')
 @click.option('--product-name', '-p', required=True, help="Product name")
 @click.option('--year', '-y', type=int, help="The year")
 @click.option('--month', '-m', type=int, help="The month")
