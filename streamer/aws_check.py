@@ -14,6 +14,15 @@ OR
 
 'excess-aws-file:WOfS/WOFLs/v2.1.0/combined/x_-8/y_-36/2018/07/12/LS_WATER_3577_-8_-36_20180712114018_water.tif'
 
+
+An example run for the product wofs_albers would look like:
+
+python aws_check.py check-nci-with-s3 --product-name wofs_albers --bucket dea-public-data-dev
+        --year 2018 --month 5 > check_result.txt
+
+
+The program assumes your AWS credentials set-up appropriately in environment you are using, specifically will need
+AWS credentials for the s3 bucket you specify
 """
 
 from os.path import basename
@@ -33,6 +42,30 @@ import logging
 LOG = logging.getLogger(__name__)
 
 
+@click.group(help=__doc__)
+def cli():
+    pass
+
+
+@cli.command()
+@click.option('--config', '-c', help='Config file')
+@click.option('--product-name', '-p', required=True, help="Product name")
+@click.option('--year', '-y', type=int, help="The year")
+@click.option('--month', '-m', type=int, help="The month")
+@click.option('--bucket', '-b', required=True, type=click.Path(), help="AWS bucket")
+def check_nci_with_s3(config, product_name, year, month, bucket):
+    if config:
+        with open(config, 'r') as cfg_file:
+            cfg = yaml.load(cfg_file)
+    else:
+        cfg = yaml.load(DEFAULT_CONFIG)
+    result = compare_nci_with_aws(cfg, product_name, year, month, bucket)
+    for item in result['aws_but_not_nci']:
+        print(f'excess-aws-file:{item}')
+    for item in result['nci_but_not_aws']:
+        print(f'missing-in-aws:{item}')
+
+
 def get_indexed_info(product, year=None, month=None, datacube_env=None):
     """
     Extract the file list corresponding to a product for the given year and month using datacube API.
@@ -46,7 +79,6 @@ def get_indexed_info(product, year=None, month=None, datacube_env=None):
     dc = Datacube(app='streamer', env=datacube_env)
     dts = dc.index.datasets.search_returning(field_names=('id', 'uri', 'time'), **query)
 
-    # TODO: For now, turn the URL into a file name by removing the schema and #part. Should be made more robust
     def filename_from_uri(uri):
         return uri.split(':')[1].split('#')[0]
 
@@ -130,21 +162,41 @@ def aws_search_template(config, year=None, month=None):
     return f'{top_level_aws_dir}{prefix_template}'
 
 
-def get_all_s3_with_prefix(connection, kwargs, prefix):
+def get_all_s3_with_prefix(connection, connection_params, prefix):
     """
     Get all s3 objects for given prefix and kwargs and connection parameters
     """
-    kwargs_ = kwargs.copy()
+    kwargs_ = connection_params.copy()
     aws_object_list = set()
     while True:
         resp = connection.list_objects_v2(**kwargs_, Prefix=prefix)
-        if resp.get('KeyCount'):
-            aws_object_list.update({item['Key'] for item in resp.get('Contents')})
+        aws_object_list.update({item['Key'] for item in resp.get('Contents', [])})
         try:
             kwargs_['ContinuationToken'] = resp['NextContinuationToken']
         except KeyError:
             break
     return aws_object_list
+
+
+def get_aws_x_y_list(config, connection, connection_params):
+    """
+    Returns AWS x, y list corresponding to a given product config and for a given AWS s3 connection
+    """
+    top_level_dir = config.cfg['aws_dir']
+    x_y_list = []
+    if has_x_y(config):
+        # get x list
+        resp = connection.list_objects_v2(**connection_params, Prefix=top_level_dir + 'x_', Delimiter='/')
+        x_list = (parse(top_level_dir + 'x_{x}/', item['Prefix']).__dict__['named']['x']
+                  for item in resp.get('CommonPrefixes', []))
+        # get y list for given x
+        for x in x_list:
+            resp = connection.list_objects_v2(**connection_params, Prefix=top_level_dir + 'x_{}/y_'.format(x),
+                                              Delimiter='/')
+            y_list = (parse(top_level_dir + 'x_' + x + '/y_{y}/', item['Prefix']).__dict__['named']['y']
+                      for item in resp.get('CommonPrefixes', []))
+            x_y_list.extend(((x, y) for y in y_list))
+    return x_y_list
 
 
 def get_aws_list(config, bucket, year=None, month=None):
@@ -162,19 +214,7 @@ def get_aws_list(config, bucket, year=None, month=None):
     search_prefix_template = aws_search_template(config, year, month)
 
     if year:
-        x_y_list = []
-        if has_x_y(config):
-            # get x list
-            resp = conn.list_objects_v2(**kwargs, Prefix=top_level_aws_dir + 'x_', Delimiter='/')
-            x_list = (parse(top_level_aws_dir + 'x_{x}/', item['Prefix']).__dict__['named']['x']
-                      for item in resp.get('CommonPrefixes'))
-            # get y list for given x
-            for x in x_list:
-                resp = conn.list_objects_v2(**kwargs, Prefix=top_level_aws_dir + 'x_{}/y_'.format(x), Delimiter='/')
-                y_list = (parse(top_level_aws_dir + 'x_' + x + '/y_{y}/', item['Prefix']).__dict__['named']['y']
-                          for item in resp.get('CommonPrefixes'))
-                x_y_list.extend(((x, y) for y in y_list))
-
+        x_y_list = get_aws_x_y_list(config, conn, kwargs)
         for x, y in x_y_list:
             aws_object_list.update(get_all_s3_with_prefix(conn, kwargs, search_prefix_template.format(x=x, y=y)))
         return aws_object_list
@@ -193,30 +233,6 @@ def compare_nci_with_aws(cfg, product_name, year, month, bucket):
     aws_not_nci = {item for item in aws_set if item not in expected_set_no_uuid}
     nci_not_aws = {f'{uuid}:{item}' for uuid, item in expected_set if item not in aws_set}
     return {'aws_but_not_nci': aws_not_nci, 'nci_but_not_aws': nci_not_aws}
-
-
-@click.group(help=__doc__)
-def cli():
-    pass
-
-
-@cli.command()
-@click.option('--config', '-c', help='Config file')
-@click.option('--product-name', '-p', required=True, help="Product name")
-@click.option('--year', '-y', type=int, help="The year")
-@click.option('--month', '-m', type=int, help="The month")
-@click.option('--bucket', '-b', required=True, type=click.Path(), help="AWS bucket")
-def check_nci_with_s3(config, product_name, year, month, bucket):
-    if config:
-        with open(config, 'r') as cfg_file:
-            cfg = yaml.load(cfg_file)
-    else:
-        cfg = yaml.load(DEFAULT_CONFIG)
-    result = compare_nci_with_aws(cfg, product_name, year, month, bucket)
-    for item in result['aws_but_not_nci']:
-        print(f'excess-aws-file:{item}')
-    for item in result['nci_but_not_aws']:
-        print(f'missing-in-aws:{item}')
 
 
 if __name__ == '__main__':
