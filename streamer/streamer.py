@@ -230,11 +230,7 @@ class COGNetCDF:
             time_dict['time'] = time.group(0)
 
         out_dir = pjoin(dest_dir,  self.dest_template.format(x=x_index, y=y_index, **time_dict))
-        if not exists(out_dir):
-            try:
-                os.makedirs(out_dir)
-            except:
-                LOG.info("Dir exsits")
+        os.makedirs(out_dir, exist_ok=True)
 
         prefix_name = re.search(r"[\wd-]*(?<=.)", abs_fname).group(0)
         return pjoin(out_dir, prefix_name)
@@ -438,28 +434,23 @@ def convert_cog(config, output_dir, product, flist, filenames):
 
     cog_convert = COGNetCDF(**product_config)
 
+    if flist is not None:
+        LOG.debug("Open list file %s", flist)
+        with open(flist, 'r') as fb:
+            file_list =  np.genfromtxt(fb, dtype='str')
+    else:
+        file_list = list(filenames)
+
     comm = MPI.Comm.Get_parent()
     try:
         size = comm.Get_size()
         rank = comm.Get_rank()
     except:
         LOG.info("Run with single process")
-        if flist is not None:
-            LOG.debug("Open list file %s", flist)
-            with open(flist, 'r') as fb:
-                file_list =  np.genfromtxt(fb, dtype='str')
-        else:
-            file_list = list(filenames)
         for filename in file_list:
             cog_convert(filename, output_dir)
     else:
         comm.Merge(True)
-        if flist is not None:
-            LOG.debug("Open list file %s", flist)
-            with open(flist, 'r') as fb:
-                file_list =  np.genfromtxt(fb, dtype='str')
-        else:
-            file_list = list(filenames)
         batch_size = int(len(file_list)/size)
         for filename in file_list[rank*batch_size:(rank+1)*batch_size]:
             cog_convert(filename, output_dir)
