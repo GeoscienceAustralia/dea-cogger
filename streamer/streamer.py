@@ -245,7 +245,15 @@ class COGNetCDF:
         The directory names will look like 'LS_WATER_3577_9_-39_20180506102018'
         """
         
-        dataset = gdal.Open(input_file, gdal.GA_ReadOnly)
+        try:
+            dataset = gdal.Open(input_file, gdal.GA_ReadOnly)
+        except:
+            LOG.info("netcdf error: %s", input_file)
+            return
+
+        if dataset is None:
+            return
+
         subdatasets = dataset.GetSubDatasets()
 
         # Extract each band from the NetCDF and write to individual GeoTIFF files
@@ -291,7 +299,6 @@ class COGNetCDF:
             dataset['lineage'] = {'source_datasets': {}}
             with open(yaml_fname, 'w') as fp:
                 yaml.dump(dataset, fp, default_flow_style=False, Dumper=Dumper)
-                LOG.info("Writing dataset Yaml to %s", yaml_fname)
 
 
     def _dataset_to_cog(self, prefix, subdatasets):
@@ -308,6 +315,7 @@ class COGNetCDF:
         if self.nonpym_list is not None:
             re_nonpym = "|".join(self.nonpym_list)
 
+        rastercount = 0
         for dts in subdatasets[:-1]:
             rastercount = gdal.Open(dts[0]).RasterCount
             for i in range(rastercount):
@@ -329,7 +337,8 @@ class COGNetCDF:
 
                 # Check the done files might need a force option later
                 if exists(out_fname):
-                    continue
+                    if self._check_tif(out_fname):
+                        continue
 
                 # Resampling method of this band
                 resampling_method = None
@@ -357,8 +366,22 @@ class COGNetCDF:
                         overview_resampling=resampling_method,
                         overview_level=5,
                         config=default_config)
+                os.remove(out_fname + '.aux.xml')
 
         return rastercount
+
+
+    def _check_tif(self, fname):
+        cog_tif = gdal.Open(fname)
+        srcband = cog_tif.GetRasterBand(1)
+        if srcband is None:
+            return False
+        t_stats = srcband.GetStatistics(True, True)
+        if t_stats > [0.]*4:
+            return True
+        else:
+            return False
+
 
 
 class COGProductConfiguration:
@@ -435,7 +458,6 @@ def convert_cog(config, output_dir, product, flist, filenames):
     cog_convert = COGNetCDF(**product_config)
 
     if flist is not None:
-        LOG.debug("Open list file %s", flist)
         with open(flist, 'r') as fb:
             file_list =  np.genfromtxt(fb, dtype='str')
     else:
@@ -455,7 +477,6 @@ def convert_cog(config, output_dir, product, flist, filenames):
         for filename in file_list[rank*batch_size:(rank+1)*batch_size]:
             cog_convert(filename, output_dir)
         comm.Disconnect()
-        LOG.debug("Finish rank is %d, size is %d, batch_size %d", rank, size, batch_size)
 
 
 from time import sleep
@@ -471,6 +492,7 @@ def mpi_convert_cog(config, output_dir, product, numprocs, cog_path, filelist):
     args = comdLine
     with open(filelist, 'r') as fb:
         file_list =  np.genfromtxt(fb, dtype='str')
+    LOG.debug("Process file %s", filelist)
     file_odd = len(file_list) % numprocs
     LOG.debug("file_odd %d", file_odd)
     margs = args + ['-l', filelist] 

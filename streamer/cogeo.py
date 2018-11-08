@@ -65,27 +65,23 @@ def cog_translate(
             with MemoryFile() as memfile:
                 with memfile.open(**meta) as mem:
                     wind = list(mem.block_windows(1))
-                    with click.progressbar(
-                        wind, length=len(wind), file=sys.stderr, show_percent=True
-                    ) as windows:
-                        for ij, w in windows:
-                            matrix = src.read(window=w, indexes=indexes)
-                            mem.write(matrix, window=w)
+                    for ij, w in wind:
+                        matrix = src.read(window=w, indexes=indexes)
+                        mem.write(matrix, window=w)
 
-                            if nodata is not None:
-                                mask_value = (
-                                    numpy.all(matrix != nodata, axis=0).astype(
-                                        numpy.uint8
-                                    )
-                                    * 255
+                        if nodata is not None:
+                            mask_value = (
+                                numpy.all(matrix != nodata, axis=0).astype(
+                                    numpy.uint8
                                 )
-                            elif alpha is not None:
-                                mask_value = src.read(alpha, window=w)
-                            else:
-                                mask_value = None
-                                #mask_value = src.dataset_mask(window=w)
-                            if mask_value is not None:
-                                mem.write_mask(mask_value, window=w)
+                                * 255
+                            )
+                        elif alpha is not None:
+                            mask_value = src.read(alpha, window=w)
+                        else:
+                            mask_value = None
+                        if mask_value is not None:
+                            mem.write_mask(mask_value, window=w)
 
                     if overview_resampling is not None:
                         overviews = [2 ** j for j in range(1, overview_level + 1)]
