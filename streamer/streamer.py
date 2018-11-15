@@ -366,17 +366,20 @@ class COGNetCDF:
                         overview_resampling=resampling_method,
                         overview_level=5,
                         config=default_config)
-                os.remove(out_fname + '.aux.xml')
 
         return rastercount
 
 
     def _check_tif(self, fname):
-        cog_tif = gdal.Open(fname)
-        srcband = cog_tif.GetRasterBand(1)
-        if srcband is None:
+        try:
+            cog_tif = gdal.Open(fname, gdal.GA_ReadOnly)
+            srcband = cog_tif.GetRasterBand(1)
+            t_stats = srcband.GetStatistics(True, True)
+        except:
+            cog_tif = None
             return False
-        t_stats = srcband.GetStatistics(True, True)
+
+        cog_tif = None
         if t_stats > [0.]*4:
             return True
         else:
