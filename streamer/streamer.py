@@ -178,10 +178,14 @@ class COGNetCDF:
     Convert NetCDF files to COG style GeoTIFFs
     """
     def __init__(self, black_list=None, white_list=None, nonpym_list=None, default_rsp=None, 
-            bands_rsp=None, dest_template=None, src_template=None):
+            bands_rsp=None, dest_template=None, src_template=None, predictor=None):
         self.nonpym_list = nonpym_list 
         self.black_list = black_list
         self.white_list = white_list
+        if predictor is None:
+            self.predictor = 2
+        else:
+            self.predictor = predictor
         if default_rsp is None:
             self.default_rsp = 'average'
         else:
@@ -356,7 +360,7 @@ class COGNetCDF:
                             'blockxsize': 512,
                             'blockysize': 512,
                             'compress': 'DEFLATE',
-                            'predictor': 2,
+                            'predictor': self.predictor,
                             'zlevel': 9}
                 default_config = {'NUM_THREADS': 1, 'GDAL_TIFF_OVR_BLOCKSIZE': 512}
 
@@ -435,8 +439,11 @@ def generate_work_list(product_name, year, month):
     for item in sorted(items_all):
         print(item)
 
+try:
+    from mpi4py import MPI
+except:
+    LOG.warning("mpi4py is not available")
 
-from mpi4py import MPI
 @cli.command()
 @click.option('--config', '-c', help='Config file')
 @click.option('--output-dir', help='Output directory', required=True)
@@ -466,8 +473,8 @@ def convert_cog(config, output_dir, product, flist, filenames):
     else:
         file_list = list(filenames)
 
-    comm = MPI.Comm.Get_parent()
     try:
+        comm = MPI.Comm.Get_parent()
         size = comm.Get_size()
         rank = comm.Get_rank()
     except:
