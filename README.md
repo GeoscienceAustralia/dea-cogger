@@ -77,7 +77,9 @@ Commands:
 
 ```
 ## convert-cog
-To Convert the netcdfs to COG 
+
+To Convert the netcdfs to COG
+```
 > $python3 streamer/streamer.py convert-cog  --help 
 Usage: streamer.py convert-cog [OPTIONS] [FILENAMES]...
 
@@ -91,7 +93,8 @@ Options:
   --product TEXT     Product name  [required]
   -l, --flist TEXT   List of file names
   --help             Show this message and exit.
-  
+```
+
 Description:
 
 	--config | -c ``$config_yaml_file``: load configurations from *YAML* file
@@ -100,6 +103,7 @@ Description:
 	--flist | -f ``$file_list``: load the file names in ``$file_list``, not used together with``$file``
     
 Example of a Yaml file:
+
 ```
 	products:
 		fcp_seasonal:
@@ -123,14 +127,14 @@ Config formatting to include:
 
 ```
  products:
-        :$product_name:     #a unique user defined string
-            :dest_template:     #define the cogs folder structure and name (required)
-            :src_template:      #define how to decipher the input file names (required)
-            :default_rsp:       #define the resampling method of pyramid view (optional default: average)
-            :predictor:         #define the predictor in COG convert (optional default: 2)
-            :nonpym_list:       #a list of keywords of bands which don't require resampling(optional)
-            :white_list:        #a list of keywords of bands to be converted (optional)
-            :black_list:        #a list of keywords of bands excluded in cog convert (optional)
+        $product_name:     #a unique user defined string
+            dest_template:     #define the cogs folder structure and name (required)
+            src_template:      #define how to decipher the input file names (required)
+            default_rsp:       #define the resampling method of pyramid view (optional default: average)
+            predictor:         #define the predictor in COG convert (optional default: 2)
+            nonpym_list:       #a list of keywords of bands which don't require resampling(optional)
+            white_list:        #a list of keywords of bands to be converted (optional)
+            black_list:        #a list of keywords of bands excluded in cog convert (optional)
 ```
 What to set for predictor and resampling:
 
@@ -163,11 +167,11 @@ Example of converting COGS:
 
   Convert To COG using parallelization by MPI tool
 
-Requirements:
--------------
+####Requirements:
+
 * openmpi >= 3.0.0 (module load openmpi/3.0.0)
 * mpi4py (pip install mpi4py)
-
+```
 >  python3 streamer/streamer.py mpi-convert-cog  --help 
 Usage: streamer.py mpi-convert-cog [OPTIONS] FILELIST
 
@@ -180,6 +184,7 @@ Options:
   --numprocs INTEGER  Number of processes  [required]
   --cog-path TEXT     cog convert script path  [required]
   --help              Show this message and exit.
+```
 
 Description:
 ```	--config | -c `$config_yaml_file`: load configurations from *YAML* file
@@ -192,6 +197,7 @@ Description:
 ```
 
 Command to run:
+
 ```    mpirun --oversubscribe -n 1 python $path_to_script/streamer.py mpi_convert_cog -c cog.yaml --output-dir $ouput_dir --product $product_name --numprocs 63 --cog-path $path_to_script/streamer.py $file_list
 ```
 Note: the total number of CPUS is 64 over 4 nodes.
@@ -203,7 +209,7 @@ The simple way to get the file list is to do
 
 `find $path_to_netcdfs -name "*.nc" > path_to_file.list`
 or run `generate-work-list`. You need to set `datacube.conf` to run the following command 
-
+```
 > $python3 streamer/streamer.py generate-work-list --help 
 Usage: streamer.py generate-work-list [OPTIONS]
 
@@ -214,15 +220,15 @@ Options:
   -y, --year INTEGER       The year
   -m, --month INTEGER      The month
   --help                   Show this message and exit.
-
+```
 
 # Geotiff- COG conversion
  geotiff to cog conversion from NCI file system  
  Checkout `old-style` branch from the repo and use `geotiff-cog.py`
 - Convert the Geotiff that are on NCI g/data file system and save them to the output path provided 
 - To use python script to convert Geotiffs to COG data:
-```
 
+```
 > $ python geotiff-cog.py --help
 
   Usage: geotiff-cog.py [OPTIONS]
