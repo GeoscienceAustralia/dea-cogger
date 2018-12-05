@@ -187,14 +187,14 @@ Options:
 ```
 
 Description:
-```	--config | -c `$config_yaml_file`: load configurations from *YAML* file
+	--config | -c `$config_yaml_file`: load configurations from *YAML* file
 	--output-dir `$output_dir`: specify the path where the *COGS* will be written
 	--product `$product_name`: product name defined in `$config_yaml_file`
 	--flist | -f `$file_list`: load the file names in `$file_list`, not used together with `$file`
 	--numprocs `$int`: number of processes when parallelized with *MPI*, usually the number should be `$int = $number_of_cpus - 1`
 	--cog-path `$script_to_run`: the script to run for each *MPI* process, now it should be the same as `$path_to_script/streamer.py`
 	as everything is in the sample python script
-```
+
 
 Command to run:
 
