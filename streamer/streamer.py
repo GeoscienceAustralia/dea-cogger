@@ -391,6 +391,10 @@ from time import sleep
 @click.option('--cog-path', help='cog convert script path', required=True, default='../COG-Conversion/streamer/streamer.py')
 @click.argument('filelist', nargs=1, required=True)
 def mpi_convert_cog(config, output_dir, product, numprocs, cog_path, filelist):
+    """
+    parallelize the COG convert with MPI.
+
+    """
     comdLine = [cog_path] + ['convert_cog', '-c'] + [config] + ['--output-dir'] + [output_dir] + ['--product' ] + [product]
     args = comdLine
     with open(filelist, 'r') as fb:
