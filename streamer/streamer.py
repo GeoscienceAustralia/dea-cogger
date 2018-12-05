@@ -1,74 +1,4 @@
 #!/usr/bin/env python
-"""
-Batch Convert NetCDF files to Cloud-Optimised-GeoTIFF and upload to S3
-
-This tool is broken into 3 pieces:
-
- 1) Work out the difference between NetCDF files stored locally, and GeoTIFF files in S3
- 2) Batch convert NetCDF files into Cloud Optimised GeoTIFFs
- 3) Watch a directory and upload files to S3
-
-
-Finding files to process
-------------------------
-This can either be done manually with a command like `find <dir> --name '*.nc'`, or
-by searching an ODC Index using::
-
-    python streamer.py generate_work_list --product-name <name> [--year <year>] [--month <month>]
-
-This will print a list of NetCDF files which can be piped to `convert_cog`.
-
-
-Batch Converting NetCDF files
------------------------------
-::
-
-    python streamer.py convert_cog [--max-procs <int>] --config <file> --product <product> --output-dir <dir> List of NetCDF files...
-
-Use the settings in a configuration file to:
-
-- Parse variables from the NetCDF filename/directory
-- Generate output directory structure and filenames
-- Configure COG Overview resampling method
-
-When run, each `ODC Dataset` in each NetCDF file will be converted into an output directory containing a COG
-for each `band`, as well as a `.yaml` dataset definition, and a `upload-destination.txt` file containing
-the full destination directory.
-
-During processing, `<output-directory/WORKING/` will contain in-progress Datasets.
-Once a Dataset is complete, it will be moved into the `<output-directory>/TO_UPLOAD/`
-
-
-
-Uploading to S3
----------------
-
-Watch `<output-directory>/TO_UPLOAD/` for new COG Dataset Directories, and upload them to the `<upload-destination>`.
-
-Once uploaded, directories can either be deleted or moved elsewhere for safe keeping.
-
-
-
-
-Configuration
--------------
-
-The program uses a config, that in particular specify product descriptions such as whether time values are taken
-from filename or dateset or there no time associated with datasets, source and destination filename templates,
-aws directory, dataset specific aws directory suffix, resampling method for cog conversion.
-The destination template must only specify the prefix of the file excluding the band name details and
-extension. An example such config spec for a product is as follows:
-
-    ls5_fc_albers:
-        time_taken_from: dataset
-        src_template: LS5_TM_FC_3577_{x}_{y}_{time}_v{}.nc
-        dest_template: LS5_TM_FC_3577_{x}_{y}_{time}
-        src_dir: /g/data/fk4/datacube/002/FC/LS5_TM_FC
-        aws_dir: fractional-cover/fc/v2.2.0/ls5
-        aws_dir_suffix: x_{x}/y_{y}/{year}/{month}/{day}
-        resampling_method: average
-
-"""
 import logging
 import os
 import re
@@ -105,60 +35,12 @@ WORKERS_POOL = 4
 
 DEFAULT_CONFIG = """
 products: 
-    wofs_albers: 
-        time_taken_from: filename
-        src_template: LS_WATER_3577_{x}_{y}_{time}_v{}.nc 
-        dest_template: LS_WATER_3577_{x}_{y}_{time}
-        src_dir: /g/data/fk4/datacube/002/WOfS/WOfS_25_2_1/netcdf
-        aws_dir: WOfS/WOFLs/v2.1.0/combined
-        aws_dir_suffix: x_{x}/y_{y}/{year}/{month}/{day}
-        default_resampling_method: mode
-    wofs_filtered_summary:
-        time_taken_from: notime
-        src_template: wofs_filtered_summary_{x}_{y}.nc
-        dest_template: wofs_filtered_summary_{x}_{y}
-        src_dir: /g/data2/fk4/datacube/002/WOfS/WOfS_Filt_Stats_25_2_1/netcdf
-        aws_dir: WOfS/filtered_summary/v2.1.0/combined
-        aws_dir_suffix: x_{x}/y_{y}
-        bands_to_cog_convert: [confidence]
-        default_resampling_method: mode
-        band_resampling_methods: {confidence: mode}
-    wofs_annual_summary:
-        time_taken_from: filename
-        src_template: WOFS_3577_{x}_{y}_{time}_summary.nc
-        dest_template: WOFS_3577_{x}_{y}_{time}_summary
-        src_dir: /g/data/fk4/datacube/002/WOfS/WOfS_Stats_Ann_25_2_1/netcdf
-        aws_dir: WOfS/annual_summary/v2.1.5/combined
-        aws_dir_suffix: x_{x}/y_{y}/{year}
-        bucket: s3://dea-public-data-dev
-        default_resampling_method: mode
-    ls5_fc_albers:
-        time_taken_from: dataset
-        src_template: LS5_TM_FC_3577_{x}_{y}_{time}_v{}.nc
-        dest_template: LS5_TM_FC_3577_{x}_{y}_{time}
-        src_dir: /g/data/fk4/datacube/002/FC/LS5_TM_FC
-        aws_dir: fractional-cover/fc/v2.2.0/ls5
-        aws_dir_suffix: x_{x}/y_{y}/{year}/{month}/{day}
-        default_resampling_method: average
-    ls7_fc_albers:
-        time_taken_from: dataset
-        src_template: LS7_ETM_FC_3577_{x}_{y}_{time}_v{}.nc
-        dest_template: LS7_ETM_FC_3577_{x}_{y}_{time}
-        src_dir: /g/data/fk4/datacube/002/FC/LS7_ETM_FC
-        aws_dir: fractional-cover/fc/v2.2.0/ls7
-        aws_dir_suffix: x_{x}/y_{y}/{year}/{month}/{day}
-        default_resampling_method: average
-    ls8_fc_albers:
-        time_taken_from: dataset
-        src_template: LS8_OLI_FC_3577_{x}_{y}_{time}_v{}.nc
-        dest_template: LS8_OLI_FC_3577_{x}_{y}_{time}
-        src_dir: /g/data/fk4/datacube/002/FC/LS8_OLI_FC
-        aws_dir: fractional-cover/fc/v2.2.0/ls8
-        aws_dir_suffix: x_{x}/y_{y}/{year}/{month}/{day}
-        default_resampling_method: average
     fcp_cog:
+        src_template: whatever_{x}_{y}_{time}
         dest_template: x_{x}/y_{y}/{year}
         nonpym_list: ["source", "observed"]
+        predictor: 2
+        default_rsp: average
 """
 
 
@@ -213,8 +95,9 @@ class COGNetCDF:
         prefix_name = re.search(r"[-\w\d\.]*(?=\.\w)", abs_fname).group(0)
         r = re.compile(r"(?<=_)[-\d.]+")
         indices = r.findall(prefix_name)
-        r = re.compile(r"\{\w+\}")
+        r = re.compile(r"(?<=\{)\w+")
         key_indices = r.findall(self.src_template)
+        keys = r.findall(self.dest_template) 
         if len(indices) > len(key_indices):
             indices = indices[-len(key_indices):]
 
@@ -223,26 +106,28 @@ class COGNetCDF:
         else:
             indices += [None] * (3 - len(indices))
             x_index, y_index, datetime = indices
-
+        
+        dest_dict = {}
+        dest_dict[keys[0]] = x_index
+        dest_dict[keys[1]] = y_index
         if datetime is not None:
             time_dict = {}
             year = re.search(r"\d{4}", datetime)
             month = re.search(r'(?<=\d{4})\d{2}', datetime)
             day = re.search(r'(?<=\d{6})\d{2}', datetime)
             time = re.search(r'(?<=\d{8})\d+', datetime)
-            if year is not None:
-                time_dict['year'] = year.group(0) 
-            if month is not None:
-                time_dict['month'] = month.group(0)
-            if day is not None:
-                time_dict['day'] = day.group(0)        
-            if time is not None:
-                time_dict['time'] = time.group(0)
+            if year is not None and len(keys) >= 3:
+                dest_dict[keys[2]] = year.group(0) 
+            if month is not None and len(keys) >= 4:
+                dest_dict[keys[3]] = month.group(0)
+            if day is not None and len(keys) >= 5:
+                dest_dict[keys[4]] = day.group(0)        
+            if time is not None and len(keys) >= 6:
+                dest_dict[keys[5]] = time.group(0)
         else:
-            time_dict = {} 
             self.dest_template = '/'.join(self.dest_template.split('/')[0:2])
 
-        out_dir = pjoin(dest_dir,  self.dest_template.format(x=x_index, y=y_index, **time_dict))
+        out_dir = pjoin(dest_dir,  self.dest_template.format(**dest_dict))
         os.makedirs(out_dir, exist_ok=True)
 
         return pjoin(out_dir, prefix_name)
