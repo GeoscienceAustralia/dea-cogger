@@ -167,7 +167,7 @@ Example of converting COGS:
 
   Convert To COG using parallelization by MPI tool
 
-####Requirements:
+#### Requirements:
 
 * openmpi >= 3.0.0 (module load openmpi/3.0.0)
 * mpi4py (pip install mpi4py)
@@ -187,18 +187,21 @@ Options:
 ```
 
 Description:
+```
 	--config | -c `$config_yaml_file`: load configurations from *YAML* file
 	--output-dir `$output_dir`: specify the path where the *COGS* will be written
 	--product `$product_name`: product name defined in `$config_yaml_file`
 	--flist | -f `$file_list`: load the file names in `$file_list`, not used together with `$file`
 	--numprocs `$int`: number of processes when parallelized with *MPI*, usually the number should be `$int = $number_of_cpus - 1`
-	--cog-path `$script_to_run`: the script to run for each *MPI* process, now it should be the same as `$path_to_script/streamer.py`
+	--cog-path `$script_to_run`: the script to run for each *MPI* process, now it should be the same as                          `$path_to_script/streamer.py`
 	as everything is in the sample python script
+```
 
 
 Command to run:
 
-```    mpirun --oversubscribe -n 1 python $path_to_script/streamer.py mpi_convert_cog -c cog.yaml --output-dir $ouput_dir --product $product_name --numprocs 63 --cog-path $path_to_script/streamer.py $file_list
+```    
+mpirun --oversubscribe -n 1 python $path_to_script/streamer.py mpi_convert_cog -c cog.yaml --output-dir $ouput_dir --product $product_name --numprocs 63 --cog-path $path_to_script/streamer.py $file_list
 ```
 Note: the total number of CPUS is 64 over 4 nodes.
 
