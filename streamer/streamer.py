@@ -210,33 +210,41 @@ class COGNetCDF:
 
     def make_out_prefix(self, input_fname, dest_dir):
         abs_fname = basename(input_fname) 
-        r = re.compile(r"(?<=_)[-\d]+")
-        indices = r.findall(abs_fname)
+        prefix_name = re.search(r"[-\w\d\.]*(?=\.\w)", abs_fname).group(0)
+        r = re.compile(r"(?<=_)[-\d.]+")
+        indices = r.findall(prefix_name)
         r = re.compile(r"\{\w+\}")
         key_indices = r.findall(self.src_template)
-        if len(key_indices) > 3:
-            x_index, y_index, datetime = indices[-len(key_indices):-(len(key_indices) - 3)]
-        else:
-            x_index, y_index, datetime = indices[-len(key_indices):]
+        if len(indices) > len(key_indices):
+            indices = indices[-len(key_indices):]
 
-        time_dict = {}
-        year = re.search(r"\d{4}", datetime)
-        month = re.search(r'(?<=\d{4})\d{2}', datetime)
-        day = re.search(r'(?<=\d{6})\d{2}', datetime)
-        time = re.search(r'(?<=\d{8})\d+', datetime)
-        if year is not None:
-            time_dict['year'] = year.group(0) 
-        if month is not None:
-            time_dict['month'] = month.group(0)
-        if day is not None:
-            time_dict['day'] = day.group(0)        
-        if time is not None:
-            time_dict['time'] = time.group(0)
+        if len(key_indices) > 3:
+            indices = indices[-len(key_indices): -(len(key_indices)-3)]
+        else:
+            indices += [None] * (3 - len(indices))
+            x_index, y_index, datetime = indices
+
+        if datetime is not None:
+            time_dict = {}
+            year = re.search(r"\d{4}", datetime)
+            month = re.search(r'(?<=\d{4})\d{2}', datetime)
+            day = re.search(r'(?<=\d{6})\d{2}', datetime)
+            time = re.search(r'(?<=\d{8})\d+', datetime)
+            if year is not None:
+                time_dict['year'] = year.group(0) 
+            if month is not None:
+                time_dict['month'] = month.group(0)
+            if day is not None:
+                time_dict['day'] = day.group(0)        
+            if time is not None:
+                time_dict['time'] = time.group(0)
+        else:
+            time_dict = {} 
+            self.dest_template = '/'.join(self.dest_template.split('/')[0:2])
 
         out_dir = pjoin(dest_dir,  self.dest_template.format(x=x_index, y=y_index, **time_dict))
         os.makedirs(out_dir, exist_ok=True)
 
-        prefix_name = re.search(r"[\wd-]*(?<=.)", abs_fname).group(0)
         return pjoin(out_dir, prefix_name)
 
 
