@@ -3,36 +3,27 @@ import logging
 import os
 import re
 import subprocess
-import tempfile
-import time
 import sys
-import numpy as np
-from concurrent.futures import ProcessPoolExecutor, as_completed
-from datetime import datetime, timedelta
-from os.path import join as pjoin, basename, dirname, exists
-from pathlib import Path
-from subprocess import check_output, run, check_call
+from datetime import datetime
+from os.path import join as pjoin, basename, exists
+from subprocess import check_call
+from time import sleep
 
 import click
 import gdal
+import numpy as np
 import xarray
 import yaml
-from datacube import Datacube
-from datacube.model import Range
-from netCDF4 import Dataset
-from pandas import to_datetime
-from tqdm import tqdm
 from yaml import CSafeLoader as Loader, CSafeDumper as Dumper
 
-from parse import *
-from parse import compile
-from cogeo import *
+from datacube import Datacube
+from datacube.model import Range
+from .cogeo import cog_translate
 
-import re
-
-
+LOG = logging.getLogger('cog-converter')
 WORKERS_POOL = 4
 
+DEFAULT_GDAL_CONFIG = {'NUM_THREADS': 1, 'GDAL_TIFF_OVR_BLOCKSIZE': 512}
 DEFAULT_CONFIG = """
 products: 
     fcp_cog:
@@ -44,13 +35,13 @@ products:
 """
 
 
-def run_command(command, work_dir=None):
+def run_command(command):
     """
     A simple utility to execute a subprocess command.
     """
     try:
         check_call(command, stderr=subprocess.STDOUT, cwd=None, env=os.environ)
-        #run(command, cwd=work_dir, check=True, stderr=subprocess.PIPE, stdout=subprocess.PIPE)
+        # run(command, cwd=work_dir, check=True, stderr=subprocess.PIPE, stdout=subprocess.PIPE)
     except subprocess.CalledProcessError as e:
         raise RuntimeError("command '{}' failed with error (code {}): {}".format(e.cmd, e.returncode, e.output))
 
@@ -59,9 +50,10 @@ class COGNetCDF:
     """
     Convert NetCDF files to COG style GeoTIFFs
     """
-    def __init__(self, black_list=None, white_list=None, nonpym_list=None, default_rsp=None, 
-            bands_rsp=None, dest_template=None, src_template=None, predictor=None):
-        self.nonpym_list = nonpym_list 
+
+    def __init__(self, black_list=None, white_list=None, nonpym_list=None, default_rsp=None,
+                 bands_rsp=None, dest_template=None, src_template=None, predictor=None):
+        self.nonpym_list = nonpym_list
         self.black_list = black_list
         self.white_list = white_list
         if predictor is None:
@@ -72,7 +64,7 @@ class COGNetCDF:
             self.default_rsp = 'average'
         else:
             self.default_rsp = default_rsp
-        self.bands_rsp = bands_rsp 
+        self.bands_rsp = bands_rsp
         if dest_template is None:
             self.dest_template = "x_{x}/y_{y}/{year}"
         else:
@@ -82,56 +74,48 @@ class COGNetCDF:
         else:
             self.src_template = src_template
 
-    """
-    call to convert 
-    """
     def __call__(self, input_fname, dest_dir):
-
         prefix_name = self.make_out_prefix(input_fname, dest_dir)
         self.netcdf_to_cog(input_fname, prefix_name)
 
     def make_out_prefix(self, input_fname, dest_dir):
-        abs_fname = basename(input_fname) 
-        prefix_name = re.search(r"[-\w\d\.]*(?=\.\w)", abs_fname).group(0)
+        abs_fname = basename(input_fname)
+        prefix_name = re.search(r"[-\w\d.]*(?=\.\w)", abs_fname).group(0)
         r = re.compile(r"(?<=_)[-\d.]+")
         indices = r.findall(prefix_name)
-        r = re.compile(r"(?<=\{)\w+")
+        r = re.compile(r"(?<={)\w+")
         key_indices = r.findall(self.src_template)
-        keys = r.findall(self.dest_template) 
+        keys = r.findall(self.dest_template)
         if len(indices) > len(key_indices):
             indices = indices[-len(key_indices):]
 
         if len(key_indices) > 3:
-            indices = indices[-len(key_indices): -(len(key_indices)-3)]
+            indices = indices[-len(key_indices): -(len(key_indices) - 3)]
         else:
             indices += [None] * (3 - len(indices))
-            x_index, y_index, datetime = indices
-        
-        dest_dict = {}
-        dest_dict[keys[0]] = x_index
-        dest_dict[keys[1]] = y_index
-        if datetime is not None:
-            time_dict = {}
-            year = re.search(r"\d{4}", datetime)
-            month = re.search(r'(?<=\d{4})\d{2}', datetime)
-            day = re.search(r'(?<=\d{6})\d{2}', datetime)
-            time = re.search(r'(?<=\d{8})\d+', datetime)
+            x_index, y_index, date_time = indices
+
+        dest_dict = {keys[0]: x_index, keys[1]: y_index}
+        if date_time is not None:
+            year = re.search(r"\d{4}", date_time)
+            month = re.search(r'(?<=\d{4})\d{2}', date_time)
+            day = re.search(r'(?<=\d{6})\d{2}', date_time)
+            time = re.search(r'(?<=\d{8})\d+', date_time)
             if year is not None and len(keys) >= 3:
-                dest_dict[keys[2]] = year.group(0) 
+                dest_dict[keys[2]] = year.group(0)
             if month is not None and len(keys) >= 4:
                 dest_dict[keys[3]] = month.group(0)
             if day is not None and len(keys) >= 5:
-                dest_dict[keys[4]] = day.group(0)        
+                dest_dict[keys[4]] = day.group(0)
             if time is not None and len(keys) >= 6:
                 dest_dict[keys[5]] = time.group(0)
         else:
             self.dest_template = '/'.join(self.dest_template.split('/')[0:2])
 
-        out_dir = pjoin(dest_dir,  self.dest_template.format(**dest_dict))
+        out_dir = pjoin(dest_dir, self.dest_template.format(**dest_dict))
         os.makedirs(out_dir, exist_ok=True)
 
         return pjoin(out_dir, prefix_name)
-
 
     def netcdf_to_cog(self, input_file, prefix):
         """
@@ -141,7 +125,6 @@ class COGNetCDF:
 
         The directory names will look like 'LS_WATER_3577_9_-39_20180506102018'
         """
-        
         try:
             dataset = gdal.Open(input_file, gdal.GA_ReadOnly)
         except:
@@ -161,8 +144,7 @@ class COGNetCDF:
         # Clean up XML files from GDAL
         # GDAL creates extra XML files which we don't want
 
-
-    def _dataset_to_yaml(self, prefix, dataset_array: xarray.DataArray, rastercount):
+    def _dataset_to_yaml(self, prefix, dataset_array: xarray.Dataset, rastercount):
         """
         Write the datasets to separate yaml files
         """
@@ -171,7 +153,7 @@ class COGNetCDF:
                 yaml_fname = prefix + '.yaml'
                 dataset_object = (dataset_array.dataset.item()).decode('utf-8')
             else:
-                yaml_fname = prefix + '_' + str(i+1) + '.yaml'
+                yaml_fname = prefix + '_' + str(i + 1) + '.yaml'
                 dataset_object = (dataset_array.dataset.item(i)).decode('utf-8')
 
             if exists(yaml_fname):
@@ -187,16 +169,15 @@ class COGNetCDF:
                 if rastercount == 1:
                     tif_path = basename(prefix + '_' + key + '.tif')
                 else:
-                    tif_path = basename(prefix  + '_' + key + '_' + str(i+1) + '.tif')
+                    tif_path = basename(prefix + '_' + key + '_' + str(i + 1) + '.tif')
 
-                value['layer'] = str(i+1)
+                value['layer'] = str(i + 1)
                 value['path'] = tif_path
 
             dataset['format'] = {'name': 'GeoTIFF'}
             dataset['lineage'] = {'source_datasets': {}}
             with open(yaml_fname, 'w') as fp:
                 yaml.dump(dataset, fp, default_flow_style=False, Dumper=Dumper)
-
 
     def _dataset_to_cog(self, prefix, subdatasets):
         """
@@ -230,7 +211,7 @@ class COGNetCDF:
                 if rastercount == 1:
                     out_fname = prefix + '_' + band_name + '.tif'
                 else:
-                    out_fname = prefix + '_' + band_name + '_' + str(i+1) + '.tif'
+                    out_fname = prefix + '_' + band_name + '_' + str(i + 1) + '.tif'
 
                 # Check the done files might need a force option later
                 if exists(out_fname):
@@ -244,44 +225,40 @@ class COGNetCDF:
                 if resampling_method is None:
                     resampling_method = self.default_rsp
                 if self.nonpym_list is not None:
-                   if re.search(re_nonpym, band_name) is not None:
+                    if re.search(re_nonpym, band_name) is not None:
                         resampling_method = None
 
                 default_profile = {'driver': 'GTiff',
-                            'interleave': 'pixel',
-                            'tiled': True,
-                            'blockxsize': 512,
-                            'blockysize': 512,
-                            'compress': 'DEFLATE',
-                            'predictor': self.predictor,
-                            'zlevel': 9}
-                default_config = {'NUM_THREADS': 1, 'GDAL_TIFF_OVR_BLOCKSIZE': 512}
+                                   'interleave': 'pixel',
+                                   'tiled': True,
+                                   'blockxsize': 512,
+                                   'blockysize': 512,
+                                   'compress': 'DEFLATE',
+                                   'predictor': self.predictor,
+                                   'zlevel': 9}
 
                 cog_translate(dts[0], out_fname,
-                        default_profile,
-                        indexes=[i+1],
-                        overview_resampling=resampling_method,
-                        overview_level=5,
-                        config=default_config)
+                              default_profile,
+                              indexes=[i + 1],
+                              overview_resampling=resampling_method,
+                              overview_level=5,
+                              config=DEFAULT_GDAL_CONFIG)
 
         return rastercount
 
-
-    def _check_tif(self, fname):
+    @staticmethod
+    def _check_tif(fname):
         try:
             cog_tif = gdal.Open(fname, gdal.GA_ReadOnly)
             srcband = cog_tif.GetRasterBand(1)
             t_stats = srcband.GetStatistics(True, True)
         except:
-            cog_tif = None
             return False
 
-        cog_tif = None
-        if t_stats > [0.]*4:
+        if t_stats > [0.] * 4:
             return True
         else:
             return False
-
 
 
 class COGProductConfiguration:
@@ -332,10 +309,12 @@ def generate_work_list(product_name, year, month):
     for item in sorted(items_all):
         print(item)
 
+
 try:
     from mpi4py import MPI
 except:
     LOG.warning("mpi4py is not available")
+
 
 @cli.command()
 @click.option('--config', '-c', help='Config file')
@@ -362,7 +341,7 @@ def convert_cog(config, output_dir, product, flist, filenames):
 
     if flist is not None:
         with open(flist, 'r') as fb:
-            file_list =  np.genfromtxt(fb, dtype='str')
+            file_list = np.genfromtxt(fb, dtype='str')
     else:
         file_list = list(filenames)
 
@@ -376,38 +355,39 @@ def convert_cog(config, output_dir, product, flist, filenames):
             cog_convert(filename, output_dir)
     else:
         comm.Merge(True)
-        batch_size = int(len(file_list)/size)
-        for filename in file_list[rank*batch_size:(rank+1)*batch_size]:
+        batch_size = int(len(file_list) / size)
+        for filename in file_list[rank * batch_size:(rank + 1) * batch_size]:
             cog_convert(filename, output_dir)
         comm.Disconnect()
 
 
-from time import sleep
 @cli.command()
 @click.option('--config', '-c', help='Config file')
 @click.option('--output-dir', help='Output directory', required=True)
 @click.option('--product', help='Product name', required=True)
 @click.option('--numprocs', type=int, help='Number of processes', required=True, default=1)
-@click.option('--cog-path', help='cog convert script path', required=True, default='../COG-Conversion/streamer/streamer.py')
+@click.option('--cog-path', help='cog convert script path', required=True,
+              default='../COG-Conversion/streamer/streamer.py')
 @click.argument('filelist', nargs=1, required=True)
 def mpi_convert_cog(config, output_dir, product, numprocs, cog_path, filelist):
     """
     parallelize the COG convert with MPI.
 
     """
-    comdLine = [cog_path] + ['convert_cog', '-c'] + [config] + ['--output-dir'] + [output_dir] + ['--product' ] + [product]
-    args = comdLine
+    cmd_line = [cog_path] + ['convert_cog', '-c'] + [config] + ['--output-dir'] + [output_dir] + ['--product'] + [
+        product]
+    args = cmd_line
     with open(filelist, 'r') as fb:
-        file_list =  np.genfromtxt(fb, dtype='str')
+        file_list = np.genfromtxt(fb, dtype='str')
     LOG.debug("Process file %s", filelist)
     file_odd = len(file_list) % numprocs
     LOG.debug("file_odd %d", file_odd)
-    margs = args + ['-l', filelist] 
+    margs = args + ['-l', filelist]
     while True:
         try:
             comm = MPI.COMM_SELF.Spawn(sys.executable,
-                                args=margs,
-                                maxprocs=numprocs)
+                                       args=margs,
+                                       maxprocs=numprocs)
 
         except:
             sleep(1)
@@ -422,15 +402,16 @@ def mpi_convert_cog(config, output_dir, product, numprocs, cog_path, filelist):
         while True:
             try:
                 comm = MPI.COMM_SELF.Spawn(sys.executable,
-                                        args=margs,
-                                        maxprocs=numprocs)
+                                           args=margs,
+                                           maxprocs=numprocs)
             except:
                 sleep(1)
             else:
                 comm.Merge()
                 break
         comm.Disconnect()
-    LOG.debug("Job done") 
+    LOG.debug("Job done")
+
 
 if __name__ == '__main__':
     LOG = logging.getLogger(__name__)
