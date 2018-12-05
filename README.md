@@ -61,30 +61,168 @@
  NetCDF to COG conversion from NCI file system
 
 - Convert the netcdfs that are on NCI g/data file system and save them to the output path provided
-- To use python script to convert to COG:
+- Use `streamer.py to convert to COG:
 
 ```
-> $ python netcdf-cog.py --help
-
-Usage: netcdf-cog.py [OPTIONS]
-
-  Convert netcdf to Geotiff and then to Cloud Optimized Geotiff using
-  gdal. Mandatory Requirement: GDAL version should be >=2.2
+> $python3 streamer/streamer.py  --help 
+Usage: streamer.py [OPTIONS] COMMAND [ARGS]...
 
 Options:
-  -p, --path PATH       Read the netcdfs from this folder  [required]
-  -o, --output PATH     Write COG's into this folder  [required]
-  -s, --subfolder TEXT  Subfolder for this task
-  --help                Show this message and exit.
+  --help  Show this message and exit.
+
+Commands:
+  convert-cog         Convert a list of NetCDF files into Cloud Optimise...
+  generate-work-list  Connect to an ODC database and list NetCDF files
+  mpi-convert-cog     parallelize the COG convert with MPI.
 
 ```
+## convert-cog
+To Convert the netcdfs to COG 
+> $python3 streamer/streamer.py convert-cog  --help 
+Usage: streamer.py convert-cog [OPTIONS] [FILENAMES]...
+
+  Convert a list of NetCDF files into Cloud Optimise GeoTIFF format
+
+  Uses a configuration file to define the file naming schema.
+
+Options:
+  -c, --config TEXT  Config file
+  --output-dir TEXT  Output directory  [required]
+  --product TEXT     Product name  [required]
+  -l, --flist TEXT   List of file names
+  --help             Show this message and exit.
+  
+Description:
+
+	--config | -c ``$config_yaml_file``: load configurations from *YAML* file
+	--output-dir ``$output_dir``: specify the path where the *COGS* will be written
+	--product ``$product_name``: specify a product name declared in config yaml file ``$product_name``
+	--flist | -f ``$file_list``: load the file names in ``$file_list``, not used together with``$file``
+    
+Example of a Yaml file:
+```
+	products:
+		fcp_seasonal:
+			dest_template: x_{x}/y_{y}/{year}{month}
+			src_template: whatever_{x}_{y}_{start}_{end}
+			default_rsp: average
+			nonpym_list: ["source", "observed"]
+		fcp_annual:
+			dest_template: x_{x}/y_{y}/{year}
+			src_template: whatever_{x}_{y}_{start}
+			default_rsp: average
+			nonpym_list: ["source", "observed"]
+		wofls:
+			dest_template: x_{x}/y_{y}/{year}/{month}/{day}
+			src_template: whatever_{x}_{y}_{time}
+			default_rsp: nearest
+			predictor: 2
+```
+
+Config formatting to include:
+
+```
+ products:
+        :$product_name:     #a unique user defined string
+            :dest_template:     #define the cogs folder structure and name (required)
+            :src_template:      #define how to decipher the input file names (required)
+            :default_rsp:       #define the resampling method of pyramid view (optional default: average)
+            :predictor:         #define the predictor in COG convert (optional default: 2)
+            :nonpym_list:       #a list of keywords of bands which don't require resampling(optional)
+            :white_list:        #a list of keywords of bands to be converted (optional)
+            :black_list:        #a list of keywords of bands excluded in cog convert (optional)
+```
+What to set for predictor and resampling:
+
+```
+Predictor
+<int> (1=default, 2=Horizontal differencing, 3 =floating point prediction)
+**Horizontal differencing** is particularly useful for 16-bit data when the high-order and low-order bytes are
+changing at different frequencies.Predictor=2 option should improve compression on any files greater than 8 bits/resel.
+The **floating point** predictor PREDICTOR=3 results in significantly better compression ratios for floating point data.
+There doesn't seem to be a performance penalty either for writing data with the floating point predictor, so it's a pretty safe bet for any Float32 data.
+
+Raster Resampling
+*default_rsp* <resampling method> (average, nearest, mode)
+**nearest**: Nearest neighbor has a tendency to leave artifacts such as stair-stepping and periodic striping in the data which m
+ay not be apparent when viewing the elevation data but might affect derivative products. They are not suitable for continuous data
+**average**: average computes the average of all non-NODATA contributing pixels
+**mode**: selects the value which appears most often of all the sampled points
+
+```
+
+Example of converting COGS:
+
+- Run as a single process:
+
+
+```
+    python $path_to_script/streamer.py convert_cog -c cog.yaml --output-dir $output_dir --product $product_name -l $file-list
+```
+## mpi-convert-cog
+
+  Convert To COG using parallelization by MPI tool
+
+Requirements:
+-------------
+* openmpi >= 3.0.0 (module load openmpi/3.0.0)
+* mpi4py (pip install mpi4py)
+
+>  python3 streamer/streamer.py mpi-convert-cog  --help 
+Usage: streamer.py mpi-convert-cog [OPTIONS] FILELIST
+
+  parallelize the COG convert with MPI.
+
+Options:
+  -c, --config TEXT   Config file
+  --output-dir TEXT   Output directory  [required]
+  --product TEXT      Product name  [required]
+  --numprocs INTEGER  Number of processes  [required]
+  --cog-path TEXT     cog convert script path  [required]
+  --help              Show this message and exit.
+
+Description:
+```	--config | -c `$config_yaml_file`: load configurations from *YAML* file
+	--output-dir `$output_dir`: specify the path where the *COGS* will be written
+	--product `$product_name`: product name defined in `$config_yaml_file`
+	--flist | -f `$file_list`: load the file names in `$file_list`, not used together with `$file`
+	--numprocs `$int`: number of processes when parallelized with *MPI*, usually the number should be `$int = $number_of_cpus - 1`
+	--cog-path `$script_to_run`: the script to run for each *MPI* process, now it should be the same as `$path_to_script/streamer.py`
+	as everything is in the sample python script
+```
+
+Command to run:
+```    mpirun --oversubscribe -n 1 python $path_to_script/streamer.py mpi_convert_cog -c cog.yaml --output-dir $ouput_dir --product $product_name --numprocs 63 --cog-path $path_to_script/streamer.py $file_list
+```
+Note: the total number of CPUS is 64 over 4 nodes.
+
+
+## generate-work-list
+
+The simple way to get the file list is to do
+
+`find $path_to_netcdfs -name "*.nc" > path_to_file.list`
+or run `generate-work-list`. You need to set `datacube.conf` to run the following command 
+
+> $python3 streamer/streamer.py generate-work-list --help 
+Usage: streamer.py generate-work-list [OPTIONS]
+
+  Connect to an ODC database and list NetCDF files
+
+Options:
+  -p, --product-name TEXT  Product name  [required]
+  -y, --year INTEGER       The year
+  -m, --month INTEGER      The month
+  --help                   Show this message and exit.
+
 
 # Geotiff- COG conversion
  geotiff to cog conversion from NCI file system  
- 
+ Checkout `old-style` branch from the repo and use `geotiff-cog.py`
 - Convert the Geotiff that are on NCI g/data file system and save them to the output path provided 
 - To use python script to convert Geotiffs to COG data:
 ```
+
 > $ python geotiff-cog.py --help
 
   Usage: geotiff-cog.py [OPTIONS]
@@ -120,18 +258,3 @@ Options:
   --help           Show this message and exit.
 ```
 
-# Upload data to AWS S3 Bucket
-
-- Run the compute_sync.sh BASH script under the compute-sync folder as a PBS job and update more profile use case
-
-- To run the script/ submit job - qsub compute-sync.sh
-
-- Usage:
-  ``` aws s3 sync {from_folder} {to_folder} --includes {include_specific_files} --excludes {exclude_specific_extension_files}
-      {from_folder} : Will sync all the folders, subfolders and files in the given path excluding the path to foldername
-      {to_folder} : Provide S3 URL as in s3://{bucket_name}/{object_path}. If the object path is not present the path specified
-                    in {from_folder} is duplicated in S3 bucket
-       --include (string) Don't exclude files or objects in the command that match the specified pattern.
-       --exclude (string) Exclude all files or objects from the command that matches the specified pattern.
-
-  ```
