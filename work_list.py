@@ -3,6 +3,7 @@ from datacube import Datacube
 from datacube.model import Range
 from datetime import datetime
 from pandas import Timestamp
+from pathlib import Path
 
 
 def check_date(context, param, value):
@@ -25,15 +26,19 @@ def cli():
 @click.option('--year', '-y', type=int, help="The year")
 @click.option('--month', '-m', type=int, help="The month")
 @click.option('--from-date', callback=check_date, help="The date from which the dataset time")
-@click.option('--save-to-file', '-s', help='The list will be saved to this file')
-def generate_work_list(product_name, year, month, from_date, save_to_file):
+@click.option('--output_dir', '-o', help='The list will be saved to this directory')
+def generate_work_list(product_name, year, month, from_date, output_dir):
     """
     Connect to an ODC database and list NetCDF files
     """
+
+    # get file list
     items_all = get_indexed_files(product_name, year, month, from_date, 'dea-prod')
 
-    for item in sorted(items_all):
-        print(item)
+    out_file = Path(output_dir) / 'file_list'
+    with open(out_file, 'w') as fp:
+        for item in sorted(items_all):
+            fp.write(item + '\n')
 
 
 def get_indexed_files(product, year=None, month=None, from_date=None, datacube_env=None):
