@@ -2,6 +2,17 @@ import click
 from datacube import Datacube
 from datacube.model import Range
 from datetime import datetime
+from pandas import Timestamp
+
+
+def check_date(context, param, value):
+    """
+    Click callback to validate a date string
+    """
+    try:
+        return Timestamp(value)
+    except ValueError as error:
+        raise ValueError('Date must be valid string for pandas Timestamp') from error
 
 
 @click.group(help=__doc__)
@@ -13,22 +24,27 @@ def cli():
 @click.option('--product-name', '-p', required=True, help="Product name")
 @click.option('--year', '-y', type=int, help="The year")
 @click.option('--month', '-m', type=int, help="The month")
-def generate_work_list(product_name, year, month):
+@click.option('--from-date', callback=check_date, help="The date from which the dataset time")
+@click.option('--save-to-file', '-s', help='The list will be saved to this file')
+def generate_work_list(product_name, year, month, from_date, save_to_file):
     """
     Connect to an ODC database and list NetCDF files
     """
-    items_all = get_indexed_files(product_name, year, month, 'dea-prod')
+    items_all = get_indexed_files(product_name, year, month, from_date, 'dea-prod')
 
     for item in sorted(items_all):
         print(item)
 
 
-def get_indexed_files(product, year=None, month=None, datacube_env=None):
+def get_indexed_files(product, year=None, month=None, from_date=None, datacube_env=None):
     """
     Extract the file list corresponding to a product for the given year and month using datacube API.
     """
     query = {'product': product}
-    if year and month:
+    if from_date:
+        query['time'] = Range(datetime(year=from_date.year, month=from_date.month, day=from_date.day),
+                              datetime.now())
+    elif year and month:
         query['time'] = Range(datetime(year=year, month=month, day=1), datetime(year=year, month=month + 1, day=1))
     elif year:
         query['time'] = Range(datetime(year=year, month=1, day=1), datetime(year=year + 1, month=1, day=1))
