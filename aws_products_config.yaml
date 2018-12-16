@@ -1,0 +1,98 @@
+products:
+  wofs_filtered_summary:
+    prefix: WOfS/filtered_summary/v2.1.0/combined/x_{x}/y_{y}
+    product_suite: WOfS
+    description: 'Water Observations from Space Statistics confidence filtered.'
+
+  wofs_albers:
+    prefix: WOfS/WOFLs/v2.1.5/combined/x_{x}/y_{y}
+    product_suite: WOfS
+    description: 'Historic Flood Mapping Water Observations from Space'
+
+  wofs_statistical_summary:
+    prefix: WOfS/summary/v2.1.0/combined/x_{x}/y_{y}
+    product_suite: WOfS
+    description: 'Water Observations from Space Statistics'
+
+  wofs_annual_summary:
+    prefix: WOfS/annual_summary/v2.1.5/combined/x_{x}/y_{y}
+    product_suite: WOfS
+    description: 'Water Observations from Space Annual Statistics'
+
+  ls5_fc_albers:
+    prefix: fractional-cover/fc/v2.2.0/ls5/x_{x}/y_{y}
+    product_suite: fractional-cover
+    description: 'Landsat 5 Fractional Cover 25 metre, 100km tile, Australian Albers Equal Area projection (EPSG:3577)'
+
+  ls7_fc_albers:
+    prefix: fractional-cover/fc/v2.2.0/ls7/x_{x}/y_{y}
+    product_suite: fractional-cover
+    description: 'Landsat 7 Fractional Cover 25 metre, 100km tile, Australian Albers Equal Area projection (EPSG:3577)'
+
+  ls8_fc_albers:
+    prefix: fractional-cover/fc/v2.2.0/ls8/x_{x}/y_{y}
+    product_suite: fractional-cover
+    description: 'Landsat 8 Fractional Cover 25 metre, 100km tile, Australian Albers Equal Area projection (EPSG:3577)'
+
+  fc_percentile_annual:
+    prefix: fractional-cover/fc-percentile/annual/v2.1.0/combined/x_{x}/y_{y}
+    product_suite: fractional-cover
+    description: 'Landsat Fractional Cover percentile 25 metre, 100km tile, Australian Albers Equal Area projection
+    (EPSG:3577)'
+
+  fc_percentile_seasonal:
+    prefix: fractional-cover/fc-percentile/seasonal/v2.1.0/combined/x_{x}/y_{y}
+    product_suite: fractional-cover
+    description: 'Landsat Fractional Cover percentile 25 metre, 100km tile, Australian Albers Equal Area projection
+    (EPSG:3577)'}
+
+  ls8_barest_earth_mosaic:
+    prefix: bare-earth/summary/v2.1.1/L8/x_{x}/y_{y}
+    description: 'Landsat-8 Barest Earth pixel composite mosaic 25 metre, 25km tile,
+    Australian Albers Equal Area projection (EPSG:3577)'
+
+  ls5_nbart_geomedian_annual:
+    prefix: geomedian-australia/v2.1.0/L5/x_{x}/y_{y}
+    product_suite: geomedian-australia
+    description: 'Landsat-5 Surface Reflectance Geometric Median 25 metre, 100km tile,
+    Australian Albers Equal Area projection (EPSG:3577)'
+
+  ls7_nbart_geomedian_annual:
+    prefix: geomedian-australia/v2.1.0/L7/x_{x}/y_{y}
+    product_suite: geomedian-australia
+    description: 'Landsat-7 Surface Reflectance Geometric Median 25 metre, 100km tile,
+    Australian Albers Equal Area projection (EPSG:3577)'
+
+  ls8_nbart_geomedian_annual:
+    prefix: geomedian-australia/v2.1.0/L8/x_{x}/y_{y}
+    product_suite: geomedian-australia
+    description: 'Landsat-8 Surface Reflectance Geometric Median 25 metre, 100km tile,
+    Australian Albers Equal Area projection (EPSG:3577)'
+
+  item_v2:
+    prefix: item_v2/v2.0.1/relative/lon_{lon}/lat_{lat}
+    description: 'Intertidal Extents Model'
+
+  item_v2_conf:
+    prefix: item_v2/v2.0.1/confidence/lon_{lon}/lat_{lat}
+    description: 'Average ndwi Standard Deviation'
+
+  multi-scale-topographic-position:
+    prefix: multi-scale-topographic-position/v1.0.1/lon_{lon}/lat_{lat}
+    description: 'Multi scale topographic position'
+
+  nidem:
+    prefix: nidem/v1.0.0/lon_{lon}/lat_{lat}
+    description: 'nidem'
+
+  weathering-intensity:
+    prefix: weathering-intensity/v1.0.1/lon_{lon}/lat_{lat}
+    description: 'weathering-intensity'
+
+  mangrove_cover:
+    prefix: mangrove_cover/{x}_{y}
+    description: 'mangrove_cover'
+
+  sentinel-2-nrt:
+    prefix: L2/sentinel-2-nrt/S2MSIARD/{year:4}-{month:2}-{day:2}
+    description: 's2-nbar-nrt'
