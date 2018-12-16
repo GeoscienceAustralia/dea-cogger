@@ -4,6 +4,12 @@ from datacube.model import Range
 from datetime import datetime
 from pandas import Timestamp
 from pathlib import Path
+from parse import parse
+import yaml
+from parse import compile
+
+with open('aws_products_cinfig.yaml', 'r') as fd:
+    CFG = yaml.load(fd)
 
 
 def check_date(context, param, value):
@@ -54,13 +60,31 @@ def get_indexed_files(product, year=None, month=None, from_date=None, datacube_e
     elif year:
         query['time'] = Range(datetime(year=year, month=1, day=1), datetime(year=year + 1, month=1, day=1))
     dc = Datacube(app='streamer', env=datacube_env)
-    files = dc.index.datasets.search_returning(field_names=('uri',), **query)
 
+    params = compile(CFG['products'][product]['prefix'])._named_fields
+    field_names = ['uri']
+    if 'x' in params or 'y' in params:
+        field_names.append('metadata_doc')
+    if 'year' in params or 'month' in params or 'day' in params:
+        field_names.append('time')
+    if 'lat' in params:
+        field_names.append('lat')
+    if 'lon' in params:
+        field_names.append('lon')
+    files = dc.index.datasets.search_returning(field_names=tuple(field_names), **query)
+
+    import ipdb; ipdb.set_trace()
     # Extract file name from search_result
     def filename_from_uri(uri):
-        return uri[0].split('//')[1]
+        return uri.split('//')[1]
 
-    return set(filename_from_uri(uri) for uri in files)
+    for result in files:
+
+        # Get geo x and y values
+        metadata = result[2]
+        geo_ref = metadata['grid_spatial']['projection']['geo_ref_points']['ll']
+        ref_x, ref_y = int(geo_ref['x']/100000), int(geo_ref['y']/100000)
+        yield filename_from_uri(result[0])
 
 
 if __name__ == '__main__':
