@@ -2,6 +2,7 @@
 import logging
 import os
 import re
+import sys
 import subprocess
 from datetime import datetime
 from os.path import join as pjoin, basename, exists
@@ -14,19 +15,20 @@ import numpy as np
 import xarray
 import yaml
 from yaml import CSafeLoader as Loader, CSafeDumper as Dumper
+from enum import IntEnum
 
 from datacube import Datacube
 from datacube.model import Range
+from mpi4py import MPI
 from cogeo import cog_translate
 
 LOG = logging.getLogger('cog-converter')
-
-try:
-    from mpi4py import MPI
-except ImportError:
-    LOG.warning("mpi4py is not available")
-
-WORKERS_POOL = 4
+stdout_hdlr = logging.StreamHandler(sys.stdout)
+formatter = logging.Formatter(
+        '[%(asctime)s.%(msecs)03d - %(levelname)s] %(message)s')
+stdout_hdlr.setFormatter(formatter)
+LOG.addHandler(stdout_hdlr)
+LOG.setLevel(logging.DEBUG)
 
 DEFAULT_GDAL_CONFIG = {'NUM_THREADS': 1, 'GDAL_TIFF_OVR_BLOCKSIZE': 512}
 DEFAULT_CONFIG = """
@@ -38,8 +40,20 @@ products:
         predictor: 2
         default_rsp: average
 """
-MPI_JOB_SIZE = 0
-MPI_JOB_RANK = 0
+MPI_COMM = MPI.COMM_WORLD      # Get MPI communicator object
+MPI_JOB_SIZE = MPI_COMM.size   # Total number of processes
+MPI_JOB_RANK = MPI_COMM.rank   # Rank of this process
+MPI_JOB_STATUS = MPI.Status()  # Get MPI status object
+
+
+class TagStatus(IntEnum):
+    """
+        MPI message tag status
+    """
+    READY = 1
+    START = 2
+    DONE = 3
+    EXIT = 4
 
 
 def run_command(command):
@@ -48,7 +62,6 @@ def run_command(command):
     """
     try:
         check_call(command, stderr=subprocess.STDOUT, cwd=None, env=os.environ)
-        # run(command, cwd=work_dir, check=True, stderr=subprocess.PIPE, stdout=subprocess.PIPE)
     except subprocess.CalledProcessError as e:
         raise RuntimeError("command '{}' failed with error (code {}): {}".format(e.cmd, e.returncode, e.output))
 
@@ -82,10 +95,10 @@ class COGNetCDF:
             self.src_template = src_template
 
     def __call__(self, input_fname, dest_dir):
-        prefix_name = self.make_out_prefix(input_fname, dest_dir)
+        prefix_name = self._make_out_prefix(input_fname, dest_dir)
         self.netcdf_to_cog(input_fname, prefix_name)
 
-    def make_out_prefix(self, input_fname, dest_dir):
+    def _make_out_prefix(self, input_fname, dest_dir):
         abs_fname = basename(input_fname)
         prefix_name = re.search(r"[-\w\d.]*(?=\.\w)", abs_fname).group(0)
         r = re.compile(r"(?<=_)[-\d.]+")
@@ -151,7 +164,8 @@ class COGNetCDF:
         # Clean up XML files from GDAL
         # GDAL creates extra XML files which we don't want
 
-    def _dataset_to_yaml(self, prefix, dataset_array: xarray.Dataset, rastercount):
+    @staticmethod
+    def _dataset_to_yaml(prefix, dataset_array: xarray.Dataset, rastercount):
         """
         Write the datasets to separate yaml files
         """
@@ -292,10 +306,10 @@ def get_indexed_files(product, year=None, month=None, datacube_env=None):
     files = dc.index.datasets.search_returning(field_names=('uri',), **query)
 
     # TODO: For now, turn the URL into a file name by removing the schema and #part. Should be made more robust
-    def filename_from_uri(uri):
+    def _filename_from_uri(uri):
         return uri[0].split(':')[1].split('#')[0]
 
-    return set(filename_from_uri(uri) for uri in files)
+    return set(_filename_from_uri(uri) for uri in files)
 
 
 def check_date(context, param, value):
@@ -335,16 +349,7 @@ def netcdf_cog_worker(wargs=None):
     Convert a list of NetCDF files into Cloud Optimise GeoTIFF format using MPI
     Uses a configuration file to define the file naming schema.
     """
-    LOG.debug(f"MPI Worker {MPI_JOB_RANK}")
-    LOG.error(f"TESTING...WORKER {MPI_JOB_RANK}...Size...{MPI_JOB_SIZE}")
-
-    LOG.error(f"TESTING...WORKER {MPI_JOB_RANK}...product_config...........{list(wargs)[0]}")
     netcdf_cog_fp = COGNetCDF(**list(wargs)[0])
-
-    LOG.info(f"Rank {MPI_JOB_RANK}")
-    LOG.info(f"Size {MPI_JOB_SIZE}")
-    LOG.error(f"TESTING...WORKER {MPI_JOB_RANK}...Filename...{list(wargs)[1]}.......outputdir...{list(wargs)[2]}")
-
     netcdf_cog_fp(list(wargs)[1], list(wargs)[2])
 
 
@@ -384,12 +389,7 @@ def mpi_convert_cog(config, output_dir, product, numprocs, filelist):
     Parallelise COG convert using MPI
     Iterate over filename and output dir as job argument
     """
-    global MPI_JOB_SIZE, MPI_JOB_RANK
-    LOG.debug("Process file (MPI Master) %s", filelist)
-    comm = MPI.COMM_WORLD
-
-    MPI_JOB_SIZE = comm.Get_size()
-    MPI_JOB_RANK = comm.Get_rank()
+    global MPI_COMM, MPI_JOB_SIZE, MPI_JOB_RANK
 
     if config:
         with open(config) as cfg_file:
@@ -400,37 +400,64 @@ def mpi_convert_cog(config, output_dir, product, numprocs, filelist):
     product_config = cfg['products'][product]
 
     if MPI_JOB_RANK == 0:
-        # Consider this as a master core. Update the jobs_args list for each filename
-        # in the file list that will be scheduled among all the available cores.
+        LOG.debug("Process file (MPI Master) %s", filelist)
+
         with open(filelist) as fb:
             file_list = np.genfromtxt(fb, dtype='str')
 
-        flist_len = file_list.size
-
+        name = MPI.Get_processor_name()
+        task_index = 0
+        num_workers = numprocs
+        closed_workers = 0
+        tasks = file_list.size
         job_args = []
-        if flist_len == 1:
+        LOG.debug(f"MPI Master with rank {MPI_JOB_RANK} on {name}, starting with {num_workers} workers")
+
+        # Append the jobs_args list for each filename to be scheduled among all the available workers
+        if tasks == 1:
             job_args = [(product_config, str(file_list), output_dir)]
-            LOG.debug(f"WORKER..{MPI_JOB_RANK}..SIZE..{MPI_JOB_SIZE}..Filelen..{flist_len}..JOB_ARGS..{job_args}")
-        elif flist_len > 1:
+        elif tasks > 1:
             for filename in file_list:
                 job_args.extend([(product_config, str(filename), output_dir)])
-            LOG.debug(f"WORKER..{MPI_JOB_RANK}..SIZE..{MPI_JOB_SIZE}..Filelen..{flist_len}..JOB_ARGS..{job_args}")
-    else:
-        job_args = None
-        LOG.debug(f"WORKER..{MPI_JOB_RANK}..SIZE..{MPI_JOB_SIZE}..JOB_ARGS..{job_args}")
 
-    try:
-        worker_job_arg = comm.scatter(job_args, root=0)
-    except ValueError:
-        raise ValueError("Attempting to scatter job with scatter element size is less than number of processors")
-    netcdf_cog_worker(wargs=worker_job_arg)
+        while closed_workers < num_workers:
+            MPI_COMM.recv(source=MPI.ANY_SOURCE, tag=MPI.ANY_TAG, status=MPI_JOB_STATUS)
+            source = MPI_JOB_STATUS.Get_source()
+            tag = MPI_JOB_STATUS.Get_tag()
+
+            if tag == TagStatus.READY:
+                # Worker is ready, so assign a task
+                if task_index < tasks:
+                    MPI_COMM.send(job_args[task_index], dest=source, tag=TagStatus.START)
+                    LOG.debug("Assigning task %r to worker %d" % (job_args[task_index], source))
+                    task_index += 1
+                else:
+                    MPI_COMM.send(None, dest=source, tag=TagStatus.EXIT)
+            elif tag == TagStatus.DONE:
+                LOG.debug(f"MPI Worker ({source}) on {name} completed the assigned task")
+            elif tag == TagStatus.EXIT:
+                LOG.debug(f"MPI Worker ({source}) exited")
+                closed_workers += 1
+
+        LOG.debug("Master finishing")
+    else:
+        name = MPI.Get_processor_name()
+
+        while True:
+            MPI_COMM.send(None, dest=0, tag=TagStatus.READY)
+            task = MPI_COMM.recv(source=0, tag=MPI.ANY_TAG, status=MPI_JOB_STATUS)
+            tag = MPI_JOB_STATUS.Get_tag()
+
+            if tag == TagStatus.START:
+                LOG.debug(f"MPI Worker ({MPI_JOB_RANK}) on {name} started COG conversion")
+                netcdf_cog_worker(wargs=task)
+                MPI_COMM.send(None, dest=0, tag=TagStatus.DONE)
+            elif tag == TagStatus.EXIT:
+                break
+
+        LOG.debug(f"MPI Worker ({MPI_JOB_RANK}) did not receive any task, hence sending exit status to the master")
+        MPI_COMM.send(None, dest=0, tag=TagStatus.EXIT)
 
 
 if __name__ == '__main__':
-    LOG = logging.getLogger(__name__)
-    LOG.setLevel(logging.DEBUG)
-    ch = logging.StreamHandler()
-    ch.setLevel(logging.DEBUG)
-    LOG.addHandler(ch)
-
     cli()
