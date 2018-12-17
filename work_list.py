@@ -1,6 +1,9 @@
 import click
 from datacube import Datacube
 from datacube.model import Range
+from dea.aws import make_s3_client
+from dea.aws.inventory import list_inventory
+
 from datetime import datetime
 from pandas import Timestamp
 from pathlib import Path
@@ -33,21 +36,29 @@ def cli():
 @click.option('--month', '-m', type=int, help="The month")
 @click.option('--from-date', callback=check_date, help="The date from which the dataset time")
 @click.option('--output_dir', '-o', help='The list will be saved to this directory')
-def generate_work_list(product_name, year, month, from_date, output_dir):
+@click.option('--inventory-manifest', '-i',
+              default='s3://dea-public-data-inventory/dea-public-data/dea-public-data-csv-inventory/',
+              help="The manifest of AWS inventory list")
+def generate_work_list(product_name, year, month, from_date, output_dir, inventory_manifest):
     """
     Connect to an ODC database and list NetCDF files
     """
 
-    # get file list
-    items_all = get_indexed_files(product_name, year, month, from_date, 'dea-prod')
+    # Filter the inventory list to obtain yaml files corresponding to the product
+    s3_client = make_s3_client()
+    s3_yaml_keys = list(yaml_files_for_product(list_inventory(inventory_manifest, s3=s3_client), product_name))
+
+    # We only want to process datasets that are not in AWS bucket
+    uris = [uri for uri, prefix in get_dataset_values(product_name, year, month, from_date, 'dea-prod')
+            if prefix + '.yaml' not in s3_yaml_keys]
 
     out_file = Path(output_dir) / 'file_list'
     with open(out_file, 'w') as fp:
-        for item in sorted(items_all):
+        for item in sorted(uris):
             fp.write(item + '\n')
 
 
-def get_indexed_files(product, year=None, month=None, from_date=None, datacube_env=None):
+def get_dataset_values(product, year=None, month=None, from_date=None, datacube_env=None):
     """
     Extract the file list corresponding to a product for the given year and month using datacube API.
     """
@@ -71,7 +82,17 @@ def get_indexed_files(product, year=None, month=None, from_date=None, datacube_e
 
     for result in files:
         prefix = compute_prefix_from_query_result(result, product)
-        yield filename_from_uri(result.uri)
+        yield filename_from_uri(result.uri), prefix
+
+
+def yaml_files_for_product(s3_keys, product):
+    """
+    Filter the given list of s3_keys to yield '.yaml' files corresponding to a product
+    """
+
+    for s3_key in s3_keys:
+        if parse(CFG['products'][product]['prefix'] + '.yaml', s3_key):
+            yield s3_key
 
 
 def get_field_names(product):
