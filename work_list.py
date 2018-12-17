@@ -11,7 +11,7 @@ from parse import parse
 import yaml
 from parse import compile
 
-with open('aws_products_cinfig.yaml', 'r') as fd:
+with open('aws_products_config.yaml', 'r') as fd:
     CFG = yaml.load(fd)
 
 
@@ -48,6 +48,7 @@ def generate_work_list(product_name, year, month, from_date, output_dir, invento
     s3_client = make_s3_client()
     s3_yaml_keys = list(yaml_files_for_product(list_inventory(inventory_manifest, s3=s3_client), product_name))
 
+    import ipdb; ipdb.set_trace()
     # We only want to process datasets that are not in AWS bucket
     uris = [uri for uri, prefix in get_dataset_values(product_name, year, month, from_date, 'dea-prod')
             if prefix + '.yaml' not in s3_yaml_keys]
@@ -81,18 +82,17 @@ def get_dataset_values(product, year=None, month=None, from_date=None, datacube_
         return uri.split('//')[1]
 
     for result in files:
-        prefix = compute_prefix_from_query_result(result, product)
-        yield filename_from_uri(result.uri), prefix
+        yield filename_from_uri(result.uri), compute_prefix_from_query_result(result, product)
 
 
-def yaml_files_for_product(s3_keys, product):
+def yaml_files_for_product(inventory_list, product):
     """
     Filter the given list of s3_keys to yield '.yaml' files corresponding to a product
     """
 
-    for s3_key in s3_keys:
-        if parse(CFG['products'][product]['prefix'] + '.yaml', s3_key):
-            yield s3_key
+    for item in inventory_list:
+        if parse(CFG['products'][product]['prefix'] + '/{}.yaml', item.Key):
+            yield item.Key
 
 
 def get_field_names(product):

@@ -44,7 +44,7 @@ products:
     prefix: fractional-cover/fc-percentile/seasonal/v2.1.0/combined/x_{x}/y_{y}
     product_suite: fractional-cover
     description: 'Landsat Fractional Cover percentile 25 metre, 100km tile, Australian Albers Equal Area projection
-    (EPSG:3577)'}
+    (EPSG:3577)'
 
   ls8_barest_earth_mosaic:
     prefix: bare-earth/summary/v2.1.1/L8/x_{x}/y_{y}
