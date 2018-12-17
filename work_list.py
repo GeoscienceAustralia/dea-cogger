@@ -51,7 +51,7 @@ def get_indexed_files(product, year=None, month=None, from_date=None, datacube_e
     """
     Extract the file list corresponding to a product for the given year and month using datacube API.
     """
-    
+
     query = {'product': product}
     if from_date:
         query['time'] = Range(datetime(year=from_date.year, month=from_date.month, day=from_date.day),
