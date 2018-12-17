@@ -48,7 +48,6 @@ def generate_work_list(product_name, year, month, from_date, output_dir, invento
     s3_client = make_s3_client()
     s3_yaml_keys = list(yaml_files_for_product(list_inventory(inventory_manifest, s3=s3_client), product_name))
 
-    import ipdb; ipdb.set_trace()
     # We only want to process datasets that are not in AWS bucket
     uris = [uri for uri, prefix in get_dataset_values(product_name, year, month, from_date, 'dea-prod')
             if prefix + '.yaml' not in s3_yaml_keys]

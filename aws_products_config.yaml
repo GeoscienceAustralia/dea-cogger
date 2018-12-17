@@ -1,41 +1,41 @@
 products:
   wofs_filtered_summary:
-    prefix: WOfS/filtered_summary/v2.1.0/combined/x_{x}/y_{y}
+    prefix: WOfS/filtered_summary/v2.1.0/combined/x_{x}/y_{y}/wofs_filtered_summary_{x}_{y}
     product_suite: WOfS
     description: 'Water Observations from Space Statistics confidence filtered.'
 
   wofs_albers:
-    prefix: WOfS/WOFLs/v2.1.5/combined/x_{x}/y_{y}
+    prefix: WOfS/WOFLs/v2.1.5/combined/x_{x}/y_{y}/LS_WATER_3577_{x}_{y}_{time:%Y-%m-%d}
     product_suite: WOfS
     description: 'Historic Flood Mapping Water Observations from Space'
 
   wofs_statistical_summary:
-    prefix: WOfS/summary/v2.1.0/combined/x_{x}/y_{y}
+    prefix: WOfS/summary/v2.1.0/combined/x_{x}/y_{y}/WOFS_3577_{x}_{y}_summary
     product_suite: WOfS
     description: 'Water Observations from Space Statistics'
 
   wofs_annual_summary:
-    prefix: WOfS/annual_summary/v2.1.5/combined/x_{x}/y_{y}
+    prefix: WOfS/annual_summary/v2.1.5/combined/x_{x}/y_{y}/WOFS_3577_{x}_{y}_{time:%Y}_summary
     product_suite: WOfS
     description: 'Water Observations from Space Annual Statistics'
 
   ls5_fc_albers:
-    prefix: fractional-cover/fc/v2.2.0/ls5/x_{x}/y_{y}
+    prefix: fractional-cover/fc/v2.2.0/ls5/x_{x}/y_{y}/LS5_TM_FC_3577_{x}_{y}_{time:%Y-%m-%d}
     product_suite: fractional-cover
     description: 'Landsat 5 Fractional Cover 25 metre, 100km tile, Australian Albers Equal Area projection (EPSG:3577)'
 
   ls7_fc_albers:
-    prefix: fractional-cover/fc/v2.2.0/ls7/x_{x}/y_{y}
+    prefix: fractional-cover/fc/v2.2.0/ls7/x_{x}/y_{y}/LS7_ETM_FC_3577_{x}_{y}_{time:%Y-%m-%d}
     product_suite: fractional-cover
     description: 'Landsat 7 Fractional Cover 25 metre, 100km tile, Australian Albers Equal Area projection (EPSG:3577)'
 
   ls8_fc_albers:
-    prefix: fractional-cover/fc/v2.2.0/ls8/x_{x}/y_{y}
+    prefix: fractional-cover/fc/v2.2.0/ls8/x_{x}/y_{y}/LS8_OLI_FC_3577_{x}_{y}_{time:%Y-%m-%d}
     product_suite: fractional-cover
     description: 'Landsat 8 Fractional Cover 25 metre, 100km tile, Australian Albers Equal Area projection (EPSG:3577)'
 
   fc_percentile_annual:
-    prefix: fractional-cover/fc-percentile/annual/v2.1.0/combined/x_{x}/y_{y}
+    prefix: fractional-cover/fc-percentile/annual/v2.1.0/combined/x_{x}/y_{y}/LS_FC_PC_3577_{x}_{y}_{time:%Y}
     product_suite: fractional-cover
     description: 'Landsat Fractional Cover percentile 25 metre, 100km tile, Australian Albers Equal Area projection
     (EPSG:3577)'
