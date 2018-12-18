@@ -353,6 +353,10 @@ def netcdf_cog_worker(wargs=None):
     netcdf_cog_fp(list(wargs)[1], list(wargs)[2])
 
 
+def _raise_value_err(exp):
+    raise ValueError(exp)
+
+
 @click.group(help=__doc__)
 def cli():
     pass
@@ -397,21 +401,29 @@ def mpi_convert_cog(config, output_dir, product, numprocs, filelist):
     else:
         cfg = yaml.load(DEFAULT_CONFIG)
 
-    product_config = cfg['products'][product]
-
-    if MPI_JOB_RANK == 0:
-        LOG.debug("Process file (MPI Master) %s", filelist)
-
+    try:
         with open(filelist) as fb:
             file_list = np.genfromtxt(fb, dtype='str')
+        tasks = file_list.size
+    except FileNotFoundError:
+        LOG.error(f'MPI Worker ({MPI_JOB_RANK}): No netCDF file/s found in the input path')
+        raise
+    else:
+        if tasks == 0:
+            _raise_value_err(f'MPI Worker ({MPI_JOB_RANK}): No netCDF file/s found in the input path')
 
+    product_config = cfg['products'][product]
+    num_workers = numprocs if numprocs > 0 else _raise_value_err(
+        f"MPI Worker ({MPI_JOB_RANK}): Number of processes cannot be zero")
+
+    # Ensure all errors/exceptions are handled before this, else master-worker processes
+    # will enter a dead-lock situation
+    if MPI_JOB_RANK == 0:
         name = MPI.Get_processor_name()
         task_index = 0
-        num_workers = numprocs
         closed_workers = 0
-        tasks = file_list.size
         job_args = []
-        LOG.debug(f"MPI Master with rank {MPI_JOB_RANK} on {name}, starting with {num_workers} workers")
+        LOG.debug(f"MPI Master ({MPI_JOB_RANK}) on {name} node, starting with {num_workers} workers")
 
         # Append the jobs_args list for each filename to be scheduled among all the available workers
         if tasks == 1:
@@ -429,7 +441,9 @@ def mpi_convert_cog(config, output_dir, product, numprocs, filelist):
                 # Worker is ready, so assign a task
                 if task_index < tasks:
                     MPI_COMM.send(job_args[task_index], dest=source, tag=TagStatus.START)
-                    LOG.debug("Assigning task %r to worker %d" % (job_args[task_index], source))
+                    LOG.debug("MPI Master (%d) assigning task to worker (%d): Process %r file" % (MPI_JOB_RANK,
+                                                                                                  source,
+                                                                                                  job_args[task_index]))
                     task_index += 1
                 else:
                     MPI_COMM.send(None, dest=source, tag=TagStatus.EXIT)
@@ -439,9 +453,9 @@ def mpi_convert_cog(config, output_dir, product, numprocs, filelist):
                 LOG.debug(f"MPI Worker ({source}) exited")
                 closed_workers += 1
 
-        LOG.debug("Master finishing")
+        LOG.debug("Batch processing completed")
     else:
-        name = MPI.Get_processor_name()
+        proc_name = MPI.Get_processor_name()
 
         while True:
             MPI_COMM.send(None, dest=0, tag=TagStatus.READY)
@@ -449,7 +463,7 @@ def mpi_convert_cog(config, output_dir, product, numprocs, filelist):
             tag = MPI_JOB_STATUS.Get_tag()
 
             if tag == TagStatus.START:
-                LOG.debug(f"MPI Worker ({MPI_JOB_RANK}) on {name} started COG conversion")
+                LOG.debug(f"MPI Worker ({MPI_JOB_RANK}) on {proc_name} started COG conversion")
                 netcdf_cog_worker(wargs=task)
                 MPI_COMM.send(None, dest=0, tag=TagStatus.DONE)
             elif tag == TagStatus.EXIT:
