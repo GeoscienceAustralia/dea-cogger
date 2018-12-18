@@ -10,6 +10,7 @@ from pathlib import Path
 from parse import parse
 import yaml
 from parse import compile
+import re
 
 with open('aws_products_config.yaml', 'r') as fd:
     CFG = yaml.load(fd)
@@ -90,7 +91,7 @@ def yaml_files_for_product(inventory_list, product):
     """
 
     for item in inventory_list:
-        if parse(CFG['products'][product]['prefix'] + '/{}.yaml', item.Key):
+        if CFG['products'][product]['prefix'] in item.Key and Path(item.Key).suffix == '.yaml':
             yield item.Key
 
 
@@ -98,7 +99,17 @@ def get_field_names(product):
     """
     Get field names for a datacube query for a given product
     """
-    param_names = compile(CFG['products'][product]['prefix'])._named_fields
+
+    # Reg for the time parameter
+    reg_time = r'\{time[:Ymd\-%]*\}'
+
+    # Substitute {time} for {time: *}
+    prod_tem = re.sub(reg_time, '{time}', CFG['products'][product]['prefix'])
+
+    # Get parameter names
+    param_names = compile(prod_tem)._named_fields
+
+    # Populate field names
     field_names = ['uri']
     if 'x' in param_names or 'y' in param_names:
         field_names.append('metadata_doc')
@@ -116,7 +127,7 @@ def compute_prefix_from_query_result(result, product):
     Compute the AWS prefix corresponding to a dataset from datacube search result
     """
 
-    param_names = compile(CFG['products'][product]['prefix'])._named_fields
+    param_names = compile(CFG['products'][product]['name_template'])._named_fields
 
     params = {}
 
@@ -142,7 +153,7 @@ def compute_prefix_from_query_result(result, product):
         if 'day' in param_names:
             params['day'] = mid_time.day
 
-    return CFG['products'][product]['prefix'].format(**params)
+    return CFG['products'][product]['prefix'] + CFG['products'][product]['name_template'].format(**params)
 
 
 if __name__ == '__main__':
