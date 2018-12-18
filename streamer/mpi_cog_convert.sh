@@ -42,11 +42,13 @@ JOBFS=32GB
 
 i=1
 j=1
+echo "" > "$FILEN"
+echo "" > "$FILEL$j"
 find "$SRCDIR" -name "*.nc" | \
     while read -r file
     do
         SIZE=$(stat -c%s "$file")
-    if [ $((SIZE)) -eq 0 ]
+        if [ $((SIZE)) -eq 0 ]
         then
             echo "$file" >> "$FILEN"
         else
@@ -57,6 +59,7 @@ find "$SRCDIR" -name "*.nc" | \
         then
             i=1
             j=$((j+1))
+            echo "" > "$FILEL$j"
         fi
     done
 
