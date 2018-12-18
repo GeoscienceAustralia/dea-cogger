@@ -100,20 +100,14 @@ def get_field_names(product):
     Get field names for a datacube query for a given product
     """
 
-    # Reg for the time parameter
-    reg_time = r'\{time[:Ymd\-%]*\}'
-
-    # Substitute {time} for {time: *}
-    prod_tem = re.sub(reg_time, '{time}', CFG['products'][product]['prefix'])
-
     # Get parameter names
-    param_names = compile(prod_tem)._named_fields
+    param_names = get_param_names(product)
 
     # Populate field names
     field_names = ['uri']
     if 'x' in param_names or 'y' in param_names:
         field_names.append('metadata_doc')
-    if 'year' in param_names or 'month' in param_names or 'day' in param_names:
+    if 'time' in param_names or 'start_time' in param_names or 'end_time' in param_names:
         field_names.append('time')
     if 'lat' in param_names:
         field_names.append('lat')
@@ -122,12 +116,28 @@ def get_field_names(product):
     return field_names
 
 
+def get_param_names(product):
+    """
+    Return the list of parameter names for a product in config
+    """
+
+    # Reg for the time parameter
+    reg_time = r'\{time[:Ymd\-%]*\}'
+
+    # Substitute {time} for {time: *}
+    prod_tem = re.sub(reg_time, '{time}', CFG['products'][product]['name_template'])
+
+    # Get parameter names
+    return compile(prod_tem)._named_fields
+
+
 def compute_prefix_from_query_result(result, product):
     """
     Compute the AWS prefix corresponding to a dataset from datacube search result
     """
 
-    param_names = compile(CFG['products'][product]['name_template'])._named_fields
+    # Get parameter names
+    param_names = get_param_names(product)
 
     params = {}
 
@@ -146,12 +156,12 @@ def compute_prefix_from_query_result(result, product):
     # Compute time values
     if hasattr(result, 'time'):
         mid_time = result.time.lower + (result.time.upper - result.time.lower) / 2
-        if 'year' in param_names:
-            params['year'] = mid_time.year
-        if 'month' in param_names:
-            params['month'] = mid_time.month
-        if 'day' in param_names:
-            params['day'] = mid_time.day
+        if 'time' in param_names:
+            params['time'] = mid_time
+        if 'start_time' in param_names:
+            params['start_time'] = result.time.lower
+        if 'end_time' in param_names:
+            params['end_time'] = result.time.upper
 
     return CFG['products'][product]['prefix'] + CFG['products'][product]['name_template'].format(**params)
 

@@ -73,4 +73,4 @@ products:
 
   mangrove_cover:
     prefix: mangrove_cover
-    name_template: {x}_{y}/MANGROVE_COVER_3577_{x}_{y}_{time:%Y%m%d}
+    name_template: "{x}_{y}/MANGROVE_COVER_3577_{x}_{y}_{time:%Y%m%d}"
