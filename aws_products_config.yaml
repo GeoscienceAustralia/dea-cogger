@@ -33,49 +33,44 @@ products:
 
   fc_percentile_seasonal:
     prefix: fractional-cover/fc-percentile/seasonal/v2.1.0/combined
-    name_template: x_{x}/y_{y}/LS_FC_PC_3577_{x}_{y}_{epoch_start:%Y%m%d}_{epoch_end:%Y%m%d}'
+    name_template: x_{x}/y_{y}/LS_FC_PC_3577_{x}_{y}_{start_time:%Y%m%d}_{end_time:%Y%m%d}
 
   ls8_barest_earth_mosaic:
     prefix: bare-earth/summary/v2.1.1/L8
-    name_template: x_{x}/y_{y}
+    name_template: x_{x}/y_{y}/be-l8_{x}_{y}
 
   ls5_nbart_geomedian_annual:
     prefix: geomedian-australia/v2.1.0/L5
-    name_template: x_{x}/y_{y}
+    name_template: x_{x}/y_{y}/{time:%Y/%m/%d}/ls5_gm_nbart_{x}_{y}_{time:%Y%m%d}
 
   ls7_nbart_geomedian_annual:
     prefix: geomedian-australia/v2.1.0/L7
-    name_template: x_{x}/y_{y}
+    name_template: x_{x}/y_{y}/{time:%Y/%m/%d}/ls7_gm_nbart_{x}_{y}_{time:%Y%m%d}
 
   ls8_nbart_geomedian_annual:
     prefix: geomedian-australia/v2.1.0/L8
-    name_template: x_{x}/y_{y}
+    name_template: x_{x}/y_{y}/{time:%Y/%m/%d}/ls8_gm_nbart_{x}_{y}_{time:%Y%m%d}
 
   item_v2:
     prefix: item_v2/v2.0.1/relative
-    name_template: lon_{lon}/lat_{lat}
+    name_template: lon_{lon}/lat_{lat}/ITEM_REL_{lon}_{lat}
 
   item_v2_conf:
     prefix: item_v2/v2.0.1/confidence
-    name_template: lon_{lon}/lat_{lat}
+    name_template: lon_{lon}/lat_{lat}/ITEM_STD_{lon}_{lat}
 
   multi-scale-topographic-position:
     prefix: multi-scale-topographic-position/v1.0.1
-    name_template: lon_{lon}/lat_{lat}
+    name_template: lon_{lon}/lat_{lat}/MSTP_{lon}_{lat}
 
   nidem:
     prefix: nidem/v1.0.0
-    name_template: lon_{lon}/lat_{lat}
+    name_template: lon_{lon}/lat_{lat}/NIDEM_{lon}_{lat}
 
   weathering-intensity:
     prefix: weathering-intensity/v1.0.1
-    name_template: lon_{lon}/lat_{lat}
+    name_template: lon_{lon}/lat_{lat}/WEATHER_INTENSITY_{lon}_{lat}
 
   mangrove_cover:
     prefix: mangrove_cover
-    name_template: {x}_{y}
-
-  sentinel-2-nrt:
-    prefix: L2/sentinel-2-nrt/S2MSIARD/
-    name_template: {time:%Y-%m-%d}
-
+    name_template: {x}_{y}/MANGROVE_COVER_3577_{x}_{y}_{time:%Y%m%d}
