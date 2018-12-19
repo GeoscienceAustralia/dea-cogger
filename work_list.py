@@ -1,16 +1,15 @@
+import re
+from datetime import datetime
+from pathlib import Path
+
 import click
-from datacube import Datacube
-from datacube.model import Range
+import yaml
 from dea.aws import make_s3_client
 from dea.aws.inventory import list_inventory
-
-from datetime import datetime
 from pandas import Timestamp
-from pathlib import Path
-from parse import parse
-import yaml
-from parse import compile
-import re
+
+from datacube import Datacube
+from datacube.model import Range
 
 with open('aws_products_config.yaml', 'r') as fd:
     CFG = yaml.load(fd)
@@ -26,12 +25,7 @@ def check_date(context, param, value):
         raise ValueError('Date must be valid string for pandas Timestamp') from error
 
 
-@click.group(help=__doc__)
-def cli():
-    pass
-
-
-@cli.command()
+@click.command(help=__doc__)
 @click.option('--product-name', '-p', required=True, help="Product name")
 @click.option('--year', '-y', type=int, help="The year")
 @click.option('--month', '-m', type=int, help="The month")
@@ -42,15 +36,16 @@ def cli():
               help="The manifest of AWS inventory list")
 def generate_work_list(product_name, year, month, from_date, output_dir, inventory_manifest):
     """
-    Connect to an ODC database and list NetCDF files
+    Connect to an ODC database and list datasets
     """
 
     # Filter the inventory list to obtain yaml files corresponding to the product
     s3_client = make_s3_client()
-    s3_yaml_keys = list(yaml_files_for_product(list_inventory(inventory_manifest, s3=s3_client), product_name))
+    s3_yaml_keys = set(yaml_files_for_product(list_inventory(inventory_manifest, s3=s3_client), product_name))
 
     # We only want to process datasets that are not in AWS bucket
-    uris = [uri for uri, prefix in get_dataset_values(product_name, year, month, from_date, 'dea-prod')
+    uris = [uri
+            for uri, prefix in get_dataset_values(product_name, year, month, from_date, 'dea-prod')
             if prefix + '.yaml' not in s3_yaml_keys]
 
     out_file = Path(output_dir) / 'file_list'
@@ -72,7 +67,7 @@ def get_dataset_values(product, year=None, month=None, from_date=None, datacube_
         query['time'] = Range(datetime(year=year, month=month, day=1), datetime(year=year, month=month + 1, day=1))
     elif year:
         query['time'] = Range(datetime(year=year, month=1, day=1), datetime(year=year + 1, month=1, day=1))
-    dc = Datacube(app='streamer', env=datacube_env)
+    dc = Datacube(app='cog-worklist query', env=datacube_env)
 
     field_names = get_field_names(product)
     files = dc.index.datasets.search_returning(field_names=tuple(field_names), **query)
@@ -91,17 +86,17 @@ def yaml_files_for_product(inventory_list, product):
     """
 
     for item in inventory_list:
-        if CFG['products'][product]['prefix'] in item.Key and Path(item.Key).suffix == '.yaml':
+        if item.Key.startswith(CFG['products'][product]['prefix']) and Path(item.Key).suffix == '.yaml':
             yield item.Key
 
 
-def get_field_names(product):
+def get_field_names(product_config):
     """
     Get field names for a datacube query for a given product
     """
 
     # Get parameter names
-    param_names = get_param_names(product)
+    param_names = get_param_names(product_config['name_template'])
 
     # Populate field names
     field_names = ['uri']
@@ -116,36 +111,25 @@ def get_field_names(product):
     return field_names
 
 
-def get_param_names(product):
+def get_param_names(template_str):
     """
-    Return the list of parameter names for a product in config
+    Return parameter names from a template string
     """
-
-    # Reg for the time parameter
-    reg_time = r'\{time[:Ymd\-%]*\}'
-
-    # Substitute {time} for {time: *}
-    prod_tem = re.sub(reg_time, '{time}', CFG['products'][product]['name_template'])
-
-    # Get parameter names
-    return compile(prod_tem)._named_fields
+    return list(set(re.findall(r'{([\w_]+)[:Ymd\-%]*}', template_str)))
 
 
-def compute_prefix_from_query_result(result, product):
+def compute_prefix_from_query_result(result, product_config):
     """
-    Compute the AWS prefix corresponding to a dataset from datacube search result
+    Compute the AWS prefix for a dataset from a datacube search result
     """
-
-    # Get parameter names
-    param_names = get_param_names(product)
-
     params = {}
 
     # Get geo x and y values
     if hasattr(result, 'metadata_doc'):
         metadata = result.metadata_doc
         geo_ref = metadata['grid_spatial']['projection']['geo_ref_points']['ll']
-        params['x'], params['y'] = int(geo_ref['x'] / 100000), int(geo_ref['y'] / 100000)
+        params['x'] = int(geo_ref['x'] / 100000)
+        params['y'] = int(geo_ref['y'] / 100000)
 
     # Get lat and lon values
     if hasattr(result, 'lat'):
@@ -156,15 +140,12 @@ def compute_prefix_from_query_result(result, product):
     # Compute time values
     if hasattr(result, 'time'):
         mid_time = result.time.lower + (result.time.upper - result.time.lower) / 2
-        if 'time' in param_names:
-            params['time'] = mid_time
-        if 'start_time' in param_names:
-            params['start_time'] = result.time.lower
-        if 'end_time' in param_names:
-            params['end_time'] = result.time.upper
+        params['time'] = mid_time
+        params['start_time'] = result.time.lower
+        params['end_time'] = result.time.upper
 
-    return CFG['products'][product]['prefix'] + CFG['products'][product]['name_template'].format(**params)
+    return product_config['prefix'] + product_config['name_template'].format(**params)
 
 
 if __name__ == '__main__':
-    cli()
+    generate_work_list()
