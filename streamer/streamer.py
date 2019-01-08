@@ -52,12 +52,10 @@ class COGNetCDF:
     """
 
     def __init__(self, black_list=None, white_list=None, nonpym_list=None, default_rsp=None,
-                 src_nodata='auto',
                  bands_rsp=None, dest_template=None, src_template=None, predictor=None):
         self.nonpym_list = nonpym_list
         self.black_list = black_list
         self.white_list = white_list
-        self.src_nodata = src_nodata
         if predictor is None:
             self.predictor = 2
         else:
@@ -243,7 +241,6 @@ class COGNetCDF:
                               default_profile,
                               indexes=[i + 1],
                               overview_resampling=resampling_method,
-                              nodata=self.src_nodata,
                               overview_level=5,
                               config=DEFAULT_GDAL_CONFIG)
 

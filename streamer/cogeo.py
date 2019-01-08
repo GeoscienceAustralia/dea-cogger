@@ -17,7 +17,7 @@ def cog_translate(
     dst_path,
     dst_kwargs,
     indexes=None,
-    nodata='auto',
+    nodata=None,
     alpha=None,
     overview_level=5,
     overview_resampling=None,
@@ -54,9 +54,6 @@ def cog_translate(
 
             indexes = indexes if indexes else src.indexes
             meta = src.meta
-            if nodata == 'auto':
-                nodata = meta.get('nodata', None)
-
             meta["count"] = len(indexes)
             meta.pop("nodata", None)
             meta.pop("alpha", None)
