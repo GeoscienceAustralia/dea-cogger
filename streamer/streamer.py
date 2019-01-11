@@ -1,26 +1,29 @@
 #!/usr/bin/env python
+import click
+import dateutil.parser
+import gdal
 import logging
+import numpy as np
 import os
+import pickle
 import re
 import sys
 import subprocess
-from datetime import datetime
-from os.path import join as pjoin, basename, exists
-from subprocess import check_call
-from pandas import Timestamp
-from pathlib import Path
-import click
-import gdal
-import numpy as np
 import xarray
 import yaml
-from yaml import CSafeLoader as Loader, CSafeDumper as Dumper
+from datetime import datetime
 from enum import IntEnum
+from pathlib import Path
+from os.path import join as pjoin, basename, exists
+from yaml import CSafeLoader as Loader, CSafeDumper as Dumper
 
 from datacube import Datacube
-from datacube.model import Range
-from mpi4py import MPI
+from datacube.ui.expression import parse_expressions
+import digitalearthau
+from aws_s3_client import make_s3_client
+from aws_inventory import list_inventory
 from cogeo import cog_translate
+from mpi4py import MPI
 
 LOG = logging.getLogger('cog-converter')
 stdout_hdlr = logging.StreamHandler(sys.stdout)
@@ -31,19 +34,79 @@ LOG.addHandler(stdout_hdlr)
 LOG.setLevel(logging.DEBUG)
 
 DEFAULT_GDAL_CONFIG = {'NUM_THREADS': 1, 'GDAL_TIFF_OVR_BLOCKSIZE': 512}
-DEFAULT_CONFIG = """
-products: 
-    fcp_cog:
-        src_template: whatever_{x}_{y}_{time}
-        dest_template: x_{x}/y_{y}/{year}
-        nonpym_list: ["source", "observed"]
-        predictor: 2
-        default_rsp: average
-"""
 MPI_COMM = MPI.COMM_WORLD      # Get MPI communicator object
 MPI_JOB_SIZE = MPI_COMM.size   # Total number of processes
 MPI_JOB_RANK = MPI_COMM.rank   # Rank of this process
 MPI_JOB_STATUS = MPI.Status()  # Get MPI status object
+ROOT_DIR = Path(__file__).absolute().parent
+STREAMER_FILE_PATH = ROOT_DIR / 'streamer.py'
+YAMLFILE_PATH = ROOT_DIR / 'aws_products_config.yaml'
+GENERATE_FILE_PATH = ROOT_DIR / 'generate_work_list.sh'
+AWS_SYNC_PATH = ROOT_DIR / 'aws_sync.sh'
+VALIDATE_GEOTIFF_PATH = ROOT_DIR.parent / 'validate_cloud_optimized_geotiff.py'
+PICKLE_FILE_EXT = '_s3_inv_list.pickle'
+TASK_FILE_EXT = '_nc_file_list.txt'
+INVALID_GEOTIFF_FILES = list()
+REMOVE_ROOT_GEOTIFF_DIR = list()
+
+
+# pylint: disable=invalid-name
+queue_options = click.option('--queue', '-q', default='normal',
+                             type=click.Choice(['normal', 'express']))
+
+# pylint: disable=invalid-name
+project_options = click.option('--project', '-P', default='v10')
+
+# pylint: disable=invalid-name
+node_options = click.option('--nodes', '-n', default=5,
+                            help='Number of nodes to request (Optional)',
+                            type=click.IntRange(1, 5))
+
+# pylint: disable=invalid-name
+walltime_options = click.option('--walltime', '-t', default=10,
+                                help='Number of hours (range: 1-48hrs) to request (Optional)',
+                                type=click.IntRange(1, 48))
+
+# pylint: disable=invalid-name
+mail_options = click.option('--email-options', '-m', default='abe',
+                            type=click.Choice(['a', 'b', 'e', 'n', 'ae', 'ab', 'be', 'abe']),
+                            help='Send email when execution is, \n'
+                            '[a = aborted | b = begins | e = ends | n = do not send email]')
+
+# pylint: disable=invalid-name
+mail_id = click.option('--email-id', '-M', default='nci.monitor@dea.ga.gov.au',
+                       help='Email recipient id (Optional)')
+
+
+# pylint: disable=invalid-name
+output_dir_options = click.option('--output-dir', '-o', default='/g/data/v10/tmp/cog_output_files/',
+                                  help='Output work directory (Optional)')
+
+# pylint: disable=invalid-name
+product_options = click.option('--product-name', '-p', required=True,
+                               help="Product name as defined in product configuration file")
+
+# pylint: disable=invalid-name
+dc_env_options = click.option('--datacube-env', '-E', default='datacube', help='Datacube environment (Optional)')
+
+# pylint: disable=invalid-name
+s3_options = click.option('--inventory-manifest', '-i',
+                          default='s3://dea-public-data-inventory/dea-public-data/dea-public-data-csv-inventory/',
+                          help="The manifest of AWS S3 bucket inventory URL (Optional)")
+
+# pylint: disable=invalid-name
+aws_profile_options = click.option('--aws-profile', default='default', help='AWS profile name (Optional)')
+
+# pylint: disable=invalid-name
+s3_inventory_list_options = click.option('--s3-list', default=list(),
+                                         help='Pickle file containing the list of s3 bucket inventory (Optional)')
+
+# pylint: disable=invalid-name
+config_file_options = click.option('--config', '-c', default=YAMLFILE_PATH,
+                                   help='Product configuration file (Optional)')
+
+with open(ROOT_DIR / 'aws_products_config.yaml') as fd:
+    CFG = yaml.load(fd)
 
 
 class TagStatus(IntEnum):
@@ -61,9 +124,32 @@ def run_command(command):
     A simple utility to execute a subprocess command.
     """
     try:
-        check_call(command, stderr=subprocess.STDOUT, cwd=None, env=os.environ)
-    except subprocess.CalledProcessError as e:
-        raise RuntimeError("command '{}' failed with error (code {}): {}".format(e.cmd, e.returncode, e.output))
+        LOG.info('Running command: %s', command)
+        proc_output = subprocess.run(command, shell=True, check=True,
+                                     stdout=subprocess.PIPE,
+                                     stderr=subprocess.STDOUT,
+                                     universal_newlines=True,
+                                     encoding='utf-8',
+                                     errors='replace')
+
+        for line in proc_output.stdout.split(os.linesep):
+            try:
+                log_value = line.encode('ascii').decode('utf-8')
+                if '.r-man2' in log_value:
+                    return log_value
+            except UnicodeEncodeError:
+                pass
+        LOG.error("No qsub job submitted, hence exiting")
+        sys.exit(1)
+    except subprocess.CalledProcessError as suberror:
+        for line in suberror.stdout.split(os.linesep):
+            try:
+                log_value = line.encode('ascii').decode('utf-8')
+                LOG.error(log_value)
+            except UnicodeEncodeError:
+                LOG.warning("UnicodeEncodeError : %s", line.encode('ascii', 'replace'))
+        LOG.error("Subprocess call error, hence exiting")
+        raise
 
 
 class COGNetCDF:
@@ -72,27 +158,30 @@ class COGNetCDF:
     """
 
     def __init__(self, black_list=None, white_list=None, nonpym_list=None, default_rsp=None,
-                 bands_rsp=None, dest_template=None, src_template=None, predictor=None):
+                 bands_rsp=None, name_template=None, prefix=None, predictor=None, stacked_name_template=None):
+        # A list of keywords of bands which don't require resampling
         self.nonpym_list = nonpym_list
+
+        # A list of keywords of bands excluded in cog convert
         self.black_list = black_list
+
+        # A list of keywords of bands to be converted
         self.white_list = white_list
+
+        self.bands_rsp = bands_rsp
+        self.name_template = name_template
+        self.prefix = prefix
+        self.stacked_name_template = stacked_name_template
+
         if predictor is None:
             self.predictor = 2
         else:
             self.predictor = predictor
+
         if default_rsp is None:
             self.default_rsp = 'average'
         else:
             self.default_rsp = default_rsp
-        self.bands_rsp = bands_rsp
-        if dest_template is None:
-            self.dest_template = "x_{x}/y_{y}/{year}"
-        else:
-            self.dest_template = dest_template
-        if src_template is None:
-            self.src_template = "{x}_{y}_{time}"
-        else:
-            self.src_template = src_template
 
     def __call__(self, input_fname, dest_dir):
         prefix_name = self._make_out_prefix(input_fname, dest_dir)
@@ -104,35 +193,22 @@ class COGNetCDF:
         r = re.compile(r"(?<=_)[-\d.]+")
         indices = r.findall(prefix_name)
         r = re.compile(r"(?<={)\w+")
-        key_indices = r.findall(self.src_template)
-        keys = r.findall(self.dest_template)
-        if len(indices) > len(key_indices):
-            indices = indices[-len(key_indices):]
+        keys = sorted(set(r.findall(self.name_template)))
 
-        if len(key_indices) > 3:
-            indices = indices[-len(key_indices): -(len(key_indices) - 3)]
-        else:
-            indices += [None] * (3 - len(indices))
-            x_index, y_index, date_time = indices
+        if len(indices) > len(keys):
+            indices = indices[-len(keys):]
 
-        dest_dict = {keys[0]: x_index, keys[1]: y_index}
+        indices += [None] * (3 - len(indices))
+        x_index, y_index, date_time = indices
+
+        dest_dict = {keys[1]: x_index, keys[2]: y_index}
+
         if date_time is not None:
-            year = re.search(r"\d{4}", date_time)
-            month = re.search(r'(?<=\d{4})\d{2}', date_time)
-            day = re.search(r'(?<=\d{6})\d{2}', date_time)
-            time = re.search(r'(?<=\d{8})\d+', date_time)
-            if year is not None and len(keys) >= 3:
-                dest_dict[keys[2]] = year.group(0)
-            if month is not None and len(keys) >= 4:
-                dest_dict[keys[3]] = month.group(0)
-            if day is not None and len(keys) >= 5:
-                dest_dict[keys[4]] = day.group(0)
-            if time is not None and len(keys) >= 6:
-                dest_dict[keys[5]] = time.group(0)
+            dest_dict[keys[0]] = datetime.strptime(date_time, '%Y%m%d%H%M%S%f')
         else:
-            self.dest_template = '/'.join(self.dest_template.split('/')[0:2])
+            self.name_template = '/'.join(self.name_template.split('/')[0:2])
 
-        out_dir = pjoin(dest_dir, self.dest_template.format(**dest_dict))
+        out_dir = Path(pjoin(dest_dir, self.name_template.format(**dest_dict))).parents[0]
         os.makedirs(out_dir, exist_ok=True)
 
         return pjoin(out_dir, prefix_name)
@@ -280,8 +356,7 @@ class COGNetCDF:
 
         return rastercount
 
-    @staticmethod
-    def _check_tif(fname):
+    def _check_tif(self, fname):
         try:
             cog_tif = gdal.Open(fname, gdal.GA_ReadOnly)
             srcband = cog_tif.GetRasterBand(1)
@@ -293,68 +368,6 @@ class COGNetCDF:
             return True
         else:
             return False
-
-
-class COGProductConfiguration:
-    """
-    Utilities and some hardcoded stuff for tracking and coding job info.
-
-    :param dict cfg: Configuration for the product we're processing
-    """
-
-    def __init__(self, cfg):
-        self.cfg = cfg
-
-
-def get_indexed_files(product, year=None, month=None, datacube_env=None):
-    """
-    Extract the file list corresponding to a product for the given year and month using datacube API.
-    """
-    query = {'product': product}
-    if year and month:
-        query['time'] = Range(datetime(year=year, month=month, day=1), datetime(year=year, month=month + 1, day=1))
-    elif year:
-        query['time'] = Range(datetime(year=year, month=1, day=1), datetime(year=year + 1, month=1, day=1))
-    dc = Datacube(app='streamer', env=datacube_env)
-    files = dc.index.datasets.search_returning(field_names=('uri',), **query)
-
-    # TODO: For now, turn the URL into a file name by removing the schema and #part. Should be made more robust
-    def _filename_from_uri(uri):
-        return uri[0].split(':')[1].split('#')[0]
-
-    return set(_filename_from_uri(uri) for uri in files)
-
-
-def check_date(context, param, value):
-    """
-    Click callback to validate a date string
-    """
-    try:
-        return Timestamp(value)
-    except ValueError as error:
-        raise ValueError('Date must be valid string for pandas Timestamp') from error
-
-
-def get_indexed_files(product, year=None, month=None, from_date=None, datacube_env=None):
-    """
-    Extract the file list corresponding to a product for the given year and month using datacube API.
-    """
-    query = {'product': product}
-    if from_date:
-        query['time'] = Range(datetime(year=from_date.year, month=from_date.month, day=from_date.day),
-                              datetime.now())
-    elif year and month:
-        query['time'] = Range(datetime(year=year, month=month, day=1), datetime(year=year, month=month + 1, day=1))
-    elif year:
-        query['time'] = Range(datetime(year=year, month=1, day=1), datetime(year=year + 1, month=1, day=1))
-    dc = Datacube(app='streamer', env=datacube_env)
-    files = dc.index.datasets.search_returning(field_names=('uri',), **query)
-
-    # Extract file name from search_result
-    def filename_from_uri(uri):
-        return uri[0].split('//')[1]
-
-    return set(filename_from_uri(uri) for uri in files)
 
 
 def netcdf_cog_worker(wargs=None):
@@ -370,49 +383,289 @@ def _raise_value_err(exp):
     raise ValueError(exp)
 
 
+def validate_time_range(context, param, value):
+    """
+    Click callback to validate a date string
+    """
+    try:
+        parse_expressions(value)
+        return value
+    except SyntaxError:
+        raise click.BadParameter('Date range must be in one of the following format as a string:'
+                                 '\n\t1996-01 < time < 1996-12'
+                                 '\n\t1996 < time < 1997'
+                                 '\n\t1996-01-01 < time < 1996-12-31'
+                                 '\n\ttime in 1996'
+                                 '\n\ttime in 1996-12'
+                                 '\n\ttime in 1996-12-31'
+                                 '\n\ttime=1996'
+                                 '\n\ttime=1996-12'
+                                 '\n\ttime=1996-12-31')
+
+
+def get_dataset_values(product_name, time_range=None, datacube_env=None, s3_list=list()):
+    """
+    Extract the file list corresponding to a product for the given year and month using datacube API.
+    """
+    query = {**dict(product=product_name), **time_range}
+    dc = Datacube(app='cog-worklist query', env=datacube_env)
+
+    field_names = get_field_names(CFG['products'][product_name])
+
+    files = dc.index.datasets.search_returning(field_names=tuple(field_names), **query)
+
+    for result in files:
+        yield check_prefix_from_query_result(result, CFG['products'][product_name], s3_list)
+
+
+def yaml_files_for_product(s3_inventory_list):
+    """
+    Filter the given list of s3 keys to check for '.yaml' files corresponding to a product in S3 bucket
+    """
+    for item in s3_inventory_list:
+        if Path(item).name.endswith('.yaml'):
+            return Path(item)
+    return None
+
+
+def get_field_names(product_config):
+    """
+    Get field names for a datacube query for a given product
+    """
+
+    # Get parameter names
+    param_names = get_param_names(product_config['name_template'])
+
+    # Populate field names
+    field_names = ['uri']
+    if 'x' in param_names or 'y' in param_names:
+        field_names.append('metadata_doc')
+    if 'time' in param_names or 'start_time' in param_names or 'end_time' in param_names:
+        field_names.append('time')
+    if 'lat' in param_names:
+        field_names.append('lat')
+    if 'lon' in param_names:
+        field_names.append('lon')
+    return field_names
+
+
+def get_param_names(template_str):
+    """
+    Return parameter names from a template string
+    """
+    return list(set(re.findall(r'{([\w_]+)[:Ymd\-%]*}', template_str)))
+
+
+def check_prefix_from_query_result(result, product_config, s3_list):
+    """
+    Compute the AWS prefix for a dataset from a datacube search result
+    """
+    params = {}
+
+    # Get geo x and y values
+    if hasattr(result, 'metadata_doc'):
+        metadata = result.metadata_doc
+        geo_ref = metadata['grid_spatial']['projection']['geo_ref_points']['ll']
+        params['x'] = int(geo_ref['x'] / 100000)
+        params['y'] = int(geo_ref['y'] / 100000)
+        params['time'] = dateutil.parser.parse(metadata['extent']['center_dt'])
+
+    # Get lat and lon values
+    if hasattr(result, 'lat'):
+        params['lat'] = result.lat
+    if hasattr(result, 'lon'):
+        params['lon'] = result.lon
+
+    # Compute time values
+    if hasattr(result, 'time'):
+        params['start_time'] = result.time.lower
+        params['end_time'] = result.time.upper
+
+    prefix = product_config['prefix'] + '/' + product_config['name_template'].format(**params)
+    stack_prefix = product_config['prefix'] + '/' + product_config['stacked_name_template'].format(**params)
+
+    # Filter the inventory list to obtain files corresponding to the product in S3 bucket
+    file_list = [s3_file
+                 for s3_file in s3_list
+                 if s3_file.startswith(prefix) or s3_file.startswith(stack_prefix)]
+
+    s3_key = yaml_files_for_product(file_list)
+
+    if not s3_key:
+        # Return file URI for COG conversion
+        LOG.info(f"File does not exists in S3, add to file task list: {result.uri}")
+        return result.uri
+
+    # File already exists in S3
+    LOG.info("File exists in S3: ")
+    LOG.info(f"\tS3_path: {s3_key}")
+    LOG.info(f"\tFILE URL: {result.uri}")
+    return ""
+
+
+# pylint: disable=invalid-name
+time_range_options = click.option('--time-range', callback=validate_time_range, required=True,
+                                  help="The time range:\n"
+                                  " '2018-01-01 < time < 2018-12-31'  OR\n"
+                                  " 'time in 2018-12-31'  OR\n"
+                                  " 'time=2018-12-31'")
+
+
 @click.group(help=__doc__)
 def cli():
     pass
 
 
-@cli.command(name='generate-work-list')
-@click.option('--product-name', '-p', required=True, help="Product name")
-@click.option('--year', '-y', type=int, help="The year")
-@click.option('--month', '-m', type=int, help="The month")
-@click.option('--from-date', callback=check_date, help="The date from which the dataset time")
-@click.option('--output_dir', '-o', help='The list will be saved to this directory')
-def generate_work_list(product_name, year, month, from_date, output_dir):
+@cli.command(name='cog-convert', help="Convert a single/list of NetCDF files into COG format")
+@product_options
+@config_file_options
+@output_dir_options
+@click.option('--filelist', '-l', help='List of netcdf file names (Optional)', default=None)
+@click.argument('filenames', nargs=-1, type=click.Path())
+def convert_cog(product_name, config, output_dir, filelist, filenames):
     """
-    Connect to an ODC database and list NetCDF files
+    Convert a single or list of NetCDF files into Cloud Optimise GeoTIFF format
+    Uses a configuration file to define the file naming schema.
+
+    Before using this command, execute the following:
+      $ module use /g/data/v10/public/modules/modulefiles/
+      $ module load dea
     """
+    global CFG
+    with open(config) as config_file:
+        CFG = yaml.load(config_file)
 
-    # get file list
-    items_all = get_indexed_files(product_name, year, month, from_date, 'dea-prod')
+    product_config = CFG['products'][product_name]
 
-    out_file = Path(output_dir) / 'file_list'
-    with open(out_file, 'w') as fp:
-        for item in sorted(items_all):
-            fp.write(item + '\n')
+    cog_convert = COGNetCDF(**product_config)
 
-
-@cli.command(name='mpi-convert-cog')
-@click.option('--config', '-c', help='Config file')
-@click.option('--output-dir', help='Output directory', required=True)
-@click.option('--product', help='Product name', required=True)
-@click.option('--numprocs', type=int, help='Number of processes', required=True, default=1)
-@click.argument('filelist', nargs=1, required=True)
-def mpi_convert_cog(config, output_dir, product, numprocs, filelist):
-    """
-    Parallelise COG convert using MPI
-    Iterate over filename and output dir as job argument
-    """
-    global MPI_COMM, MPI_JOB_SIZE, MPI_JOB_RANK
-
-    if config:
-        with open(config) as cfg_file:
-            cfg = yaml.load(cfg_file)
+    # Preference is give to file list over argument list
+    if filelist:
+        try:
+            with open(filelist) as fb:
+                file_list = np.genfromtxt(fb, dtype='str')
+            tasks = file_list.size
+        except FileNotFoundError:
+            LOG.error(f'No netCDF file found in the input path')
+            raise
+        else:
+            if tasks == 0:
+                LOG.warning(f'Task file is empty')
+                sys.exit(1)
     else:
-        cfg = yaml.load(DEFAULT_CONFIG)
+        file_list = list(filenames)
+
+    LOG.info("Run with single process")
+    for filename in file_list:
+        cog_convert(filename, output_dir)
+
+
+@cli.command(name='inventory-store', help="Store S3 inventory list in a pickle file")
+@product_options
+@config_file_options
+@output_dir_options
+@s3_options
+@aws_profile_options
+def store_s3_inventory(product_name, config, output_dir, inventory_manifest, aws_profile):
+    """
+    Scan through S3 bucket for the specified product and fetch the file path of the uploaded files.
+    Save those file into a pickle file for further processing.
+    Uses a configuration file to define the file naming schema.
+
+    Before using this command, execute the following:
+      $ module use /g/data/v10/public/modules/modulefiles/
+      $ module load dea
+    """
+    s3_inv_list_file = list()
+    global CFG
+    with open(config) as config_file:
+        CFG = yaml.load(config_file)
+
+    for result in list_inventory(inventory_manifest, s3=make_s3_client(profile=aws_profile), aws_profile=aws_profile):
+        # Get the list for the product we are interested
+        if CFG['products'][product_name]['prefix'] in result.Key:
+            s3_inv_list_file.append(result.Key)
+    pickle_out = open(str(Path(output_dir) / product_name) + PICKLE_FILE_EXT, "wb")
+    pickle.dump(s3_inv_list_file, pickle_out)
+    pickle_out.close()
+
+
+@cli.command(name='list-datasets', help="Generate task list for COG conversion")
+@product_options
+@time_range_options
+@config_file_options
+@output_dir_options
+@dc_env_options
+@s3_options
+@aws_profile_options
+@s3_inventory_list_options
+def generate_work_list(product_name, time_range, config, output_dir, datacube_env,
+                       inventory_manifest, aws_profile, s3_list):
+    """
+    Compares datacube file uri's against S3 bucket (file names within pickle file) and writes the list of datasets
+    for cog conversion into the task file
+    Uses a configuration file to define the file naming schema.
+
+    Before using this command, execute the following:
+      $ module use /g/data/v10/public/modules/modulefiles/
+      $ module load dea
+    """
+    global CFG
+    with open(config) as config_file:
+        CFG = yaml.load(config_file)
+
+    if not s3_list:
+        for result in list_inventory(inventory_manifest, s3=make_s3_client(profile=aws_profile),
+                                     aws_profile=aws_profile):
+            # Get the list for the product we are interested
+            if CFG['products'][product_name]['prefix'] in result.Key:
+                s3_list.append(result.Key)
+    else:
+        pickle_in = open(str(Path(output_dir) / product_name) + PICKLE_FILE_EXT, "rb")
+        s3_list = pickle.load(pickle_in)
+
+    dc_file_list = set([uri
+                        for uri in get_dataset_values(product_name,
+                                                      parse_expressions(time_range),
+                                                      datacube_env,
+                                                      s3_list)
+                        if uri])
+    out_file = str(Path(output_dir) / product_name) + TASK_FILE_EXT
+
+    with open(out_file, 'w') as fp:
+        for nc_filepath in sorted(dc_file_list):
+            fp.write(nc_filepath.split('//')[1] + '\n')
+
+
+@cli.command(name='mpi-cog-convert', help="Parallelise COG convert using MPI")
+@product_options
+@click.option('--numprocs', type=int, required=True, default=1, help='Number of processes')
+@config_file_options
+@output_dir_options
+@click.argument('filelist', nargs=1, required=True)
+def mpi_cog_convert(product_name, numprocs, config, output_dir, filelist):
+    """
+    Convert netcdf files to COG format using parallelisation by MPI tool.
+    Iterate over the file list and assign MPI worker for COG conversion.
+    Following details how master and worker interact during MPI cog conversion process:
+       1) Master fetches the file list from the task file
+       2) Master shall then assign tasks to worker with task status as 'READY' for cog conversion
+       3) Worker executes COG conversion algorithm and sends task status as 'START'
+       4) Once worker finishes COG conversion, it sends task status as 'DONE' to the master
+       5) If master has more work, then process continues as defined in steps 2-4
+       6) If no tasks are pending with master, worker sends task status as 'EXIT' and closes the communication
+       7) Finally master closes the communication
+
+    Uses a configuration file to define the file naming schema.
+
+    Before using this command, execute the following:
+      $ module use /g/data/v10/public/modules/modulefiles/
+      $ module load dea
+    """
+    global MPI_COMM, MPI_JOB_SIZE, MPI_JOB_RANK, CFG
+
+    with open(config) as cfg_file:
+        CFG = yaml.load(cfg_file)
 
     try:
         with open(filelist) as fb:
@@ -423,9 +676,10 @@ def mpi_convert_cog(config, output_dir, product, numprocs, filelist):
         raise
     else:
         if tasks == 0:
-            _raise_value_err(f'MPI Worker ({MPI_JOB_RANK}): No netCDF file/s found in the input path')
+            LOG.warning(f'MPI Worker ({MPI_JOB_RANK}): Task file is empty')
+            sys.exit(1)
 
-    product_config = cfg['products'][product]
+    product_config = CFG['products'][product_name]
     num_workers = numprocs if numprocs > 0 else _raise_value_err(
         f"MPI Worker ({MPI_JOB_RANK}): Number of processes cannot be zero")
 
@@ -484,6 +738,163 @@ def mpi_convert_cog(config, output_dir, product, numprocs, filelist):
 
         LOG.debug(f"MPI Worker ({MPI_JOB_RANK}) did not receive any task, hence sending exit status to the master")
         MPI_COMM.send(None, dest=0, tag=TagStatus.EXIT)
+
+
+@cli.command(name='verify-cog-files',
+             help="Verify the converted GeoTIFF are Cloud Optimised GeoTIFF")
+@click.option('--path', '-p', required=True, help="Validate the GeoTIFF files from this folder",
+              type=click.Path(exists=True))
+def verify_cog_files(path):
+    """
+    Verify converted GeoTIFF files are (Geo)TIFF with cloud optimized compatible structure.
+
+    Mandatory Requirement: `validate_cloud_optimized_geotiff.py` gdal file
+    :param path: Cog Converted files directory path
+    :return:
+    """
+    gtiff_file_list = sorted(Path(path).rglob("*.tif"))
+    count = 0
+    for file_path in gtiff_file_list:
+        count += 1
+        command = f"python3 {VALIDATE_GEOTIFF_PATH} {file_path}"
+        output = subprocess.getoutput(command)
+        valid_output = (output.split('/'))[-1]
+
+        if 'is a valid cloud' in valid_output:
+            LOG.info(f"{count}: {valid_output}")
+        else:
+            LOG.error(f"{count}: {valid_output}")
+
+            # List erroneous *.tif file path
+            LOG.error(f"\tErroneous GeoTIFF filepath: {file_path}")
+            REMOVE_ROOT_GEOTIFF_DIR.append(file_path.parent)
+            for files in file_path.parent.rglob('*.*'):
+                # List all files associated with erroneous *.tif file and remove them
+                INVALID_GEOTIFF_FILES.append(files)
+
+    for rm_files in set(INVALID_GEOTIFF_FILES):
+        LOG.error(f"\tDelete {rm_files} file")
+        rm_files.unlink()
+
+    for rm_dir in set(REMOVE_ROOT_GEOTIFF_DIR):
+        LOG.error(f"\tDelete {rm_dir} directory")
+        rm_dir.rmdir()
+
+
+@cli.command(name='qsub-cog-convert', help="Kick off four stage COG Conversion PBS job")
+@product_options
+@time_range_options
+@config_file_options
+@output_dir_options
+@queue_options
+@project_options
+@node_options
+@walltime_options
+@mail_options
+@mail_id
+@s3_options
+@aws_profile_options
+@dc_env_options
+def qsub_cog_convert(product_name, time_range, config, output_dir, queue, project, nodes, walltime,
+                     email_options, email_id, inventory_manifest, aws_profile, datacube_env):
+    """
+    Submits an COG conversion job, using a four stage PBS job submission.
+    Uses a configuration file to define the file naming schema.
+
+    Stage 1 (Store S3 inventory list to a pickle file):
+        1) Scan through S3 inventory list and fetch the uploaded file names of the desired product
+        2) Save those file names in a pickle file
+
+    Stage 2 (Generate work list for COG conversion):
+           1) Compares datacube file uri's against S3 bucket (file names within pickle file)
+           2) Write the list of datasets not found in S3 to the task file
+           3) Repeat until all the datasets are compared against those found in S3
+
+    Stage 3 (COG convert using MPI runs):
+           1) Master fetches the file list from the task file
+           2) Master shall then assign tasks to worker with task status as 'READY' for cog conversion
+           3) Worker executes COG conversion algorithm and sends task status as 'START'
+           4) Once worker finishes COG conversion, it sends task status as 'DONE' to the master
+           5) If master has more work, then process continues as defined in steps 2-4
+           6) If no tasks are pending with master, worker sends task status as 'EXIT' and closes the communication
+           7) Finally master closes the communication
+
+    Stage 4 (Validate GeoTIFF files and run AWS sync to upload files to AWS S3):
+            1) Validate GeoTIFF files and if valid then upload to S3 bucket
+            2) Using aws sync command line tool, sync newly COG converted files to S3 bucket
+
+    Before using this command, execute the following:
+      $ module use /g/data/v10/public/modules/modulefiles/
+      $ module load dea
+    """
+    task_file = str(Path(output_dir) / product_name) + TASK_FILE_EXT
+
+    prep = 'qsub -q copyq -N store_s3_list_%(product)s -P %(project)s ' \
+           '-l wd,walltime=5:00:00,mem=31GB,jobfs=5GB -W umask=33 ' \
+           '-- /bin/bash -l -c "source $HOME/.bashrc; ' \
+           'module use /g/data/v10/public/modules/modulefiles/; ' \
+           'module load dea; ' \
+           'python3 %(streamer_file)s inventory-store -c %(yaml_file)s ' \
+           '--inventory-manifest %(s3_inventory)s --aws-profile %(aws_profile)s --product-name %(product)s ' \
+           '--output-dir %(output_dir)s"'
+    cmd = prep % dict(product=product_name, project=project, streamer_file=STREAMER_FILE_PATH,
+                      yaml_file=config, s3_inventory=inventory_manifest, aws_profile=aws_profile,
+                      output_dir=output_dir)
+
+    s3_inv_job = run_command(cmd)
+
+    prep = 'qsub -q %(queue)s -N generate_work_list_%(product)s -P %(project)s ' \
+           '-W depend=afterok:%(s3_inv_job)s: -l wd,walltime=10:00:00,mem=31GB,jobfs=5GB -W umask=33 ' \
+           '-- /bin/bash -l -c "source $HOME/.bashrc;' \
+           '%(generate_script)s --dea-module %(dea_module)s --streamer-file %(streamer_file)s ' \
+           '--config-file %(yaml_file)s --product-name %(product)s --output-dir %(output_dir)s ' \
+           '--datacube-env %(dc_env)s --s3-list %(pickle_file)s --time-range \'%(time_range)s\'"'
+    cmd = prep % dict(queue=queue, product=product_name, project=project, s3_inv_job=s3_inv_job.split('.')[0],
+                      generate_script=GENERATE_FILE_PATH, dea_module=digitalearthau.MODULE_NAME,
+                      streamer_file=STREAMER_FILE_PATH, yaml_file=config, output_dir=output_dir,
+                      dc_env=datacube_env, pickle_file=str(Path(output_dir) / product_name) + PICKLE_FILE_EXT,
+                      time_range=time_range)
+
+    file_list_job = run_command(cmd)
+
+    qsub = 'qsub -q %(queue)s -N mpi_cog_convert_%(product)s -P %(project)s ' \
+           '-W depend=afterok:%(file_list_job)s: -m %(email_options)s -M %(email_id)s ' \
+           '-l ncpus=%(ncpus)d,mem=%(mem)dgb,jobfs=10GB,walltime=%(walltime)d:00:00,wd ' \
+           '-- /bin/bash -l -c "source $HOME/.bashrc; ' \
+           'module use /g/data/v10/public/modules/modulefiles/; ' \
+           'module load dea; ' \
+           'mpirun --oversubscribe -n %(ncpus)d ' \
+           'python3 %(streamer_file)s mpi-cog-convert -c %(yaml_file)s ' \
+           '--output-dir %(output_dir)s --product-name %(product)s --numprocs %(nprocs)d %(file_list)s"'
+    cmd = qsub % dict(queue=queue,
+                      project=project,
+                      file_list_job=file_list_job.split('.')[0],
+                      email_options=email_options,
+                      email_id=email_id,
+                      ncpus=nodes * 16,
+                      mem=nodes * 31,
+                      nprocs=(nodes * 16) - 1,
+                      walltime=walltime,
+                      streamer_file=STREAMER_FILE_PATH,
+                      yaml_file=config,
+                      output_dir=str(Path(output_dir) / product_name),
+                      product=product_name,
+                      file_list=task_file)
+    cog_conversion_job = run_command(cmd)
+
+    prep = 'qsub -q copyq -N s3_sync_%(product)s -P %(project)s ' \
+           '-W depend=afterok:%(cog_conversion_job)s: ' \
+           '-l wd,walltime=5:00:00,mem=31GB,jobfs=5GB -W umask=33 ' \
+           '-- /bin/bash -l -c "source $HOME/.bashrc; ' \
+           '%(aws_sync_script)s --dea-module %(dea_module)s ' \
+           '--inventory-manifest %(s3_inventory)s --aws-profile %(aws_profile)s ' \
+           '--output-dir %(output_dir)s --streamer-file %(streamer_file)s"'
+    cmd = prep % dict(product=product_name, project=project,
+                      cog_conversion_job=cog_conversion_job.split('.')[0],
+                      aws_sync_script=AWS_SYNC_PATH, dea_module=digitalearthau.MODULE_NAME,
+                      s3_inventory=inventory_manifest, streamer_file=STREAMER_FILE_PATH, aws_profile=aws_profile,
+                      output_dir=str(Path(output_dir) / product_name))
+    run_command(cmd)
 
 
 if __name__ == '__main__':
