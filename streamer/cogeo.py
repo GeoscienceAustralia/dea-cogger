@@ -1,10 +1,4 @@
 """rio_cogeo.cogeo: translate a file to a cloud optimized geotiff."""
-
-import os
-import sys
-
-import click
-
 import numpy
 
 import gdal
@@ -48,7 +42,7 @@ def cog_translate(
     nodata_mask = None
     src = gdal.Open(src_path, gdal.GA_ReadOnly)
     band = src.GetRasterBand(1)
-    nodata = band.GetNoDataValue() 
+    nodata = band.GetNoDataValue()
     if band.DataType == gdal.GDT_Byte and  band.GetNoDataValue() < 0:
             nodata_mask = 255
     src = None
@@ -79,7 +73,7 @@ def cog_translate(
                             matrix[matrix==nodata_mask] = nodata
 
                         mem.write(matrix, window=w)
-                        
+
                     if overview_resampling is not None:
                         overviews = [2 ** j for j in range(1, overview_level + 1)]
 

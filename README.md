@@ -61,70 +61,56 @@
     data is actually needed.
 
 
-# NETCDF- COG conversion
- NetCDF to COG conversion from NCI file system
+# NETCDF-COG conversion
+  NetCDF to COG conversion from NCI file system
 
-- Convert the netcdfs that are on NCI g/data file system and save them to the output path provided
-- Use `streamer.py to convert to COG:
+   - Convert the netcdfs that are on NCI /g/data/ file system and save them to the output path provided
+   - Use `streamer.py to convert to COG:
+
+#### Usage
 
 ```
-> $python3 streamer/streamer.py mpi-convert-cog  --help
-Usage: streamer.py mpi-convert-cog [OPTIONS] FILELIST
-
-  Parallelise COG convert using MPI Iterate over filename and output dir as
-  job argument
+> $python3 streamer/streamer.py --help
+Usage: streamer.py [OPTIONS] COMMAND [ARGS]...
 
 Options:
-  -c, --config TEXT   Config file
-  --output-dir TEXT   Output directory  [required]
-  --product TEXT      Product name  [required]
-  --numprocs INTEGER  Number of processes  [required]
-  --help              Show this message and exit.
+  --help  Show this message and exit.
+
+Commands:
+  cog-convert       Convert a single/list of NetCDF files into COG format
+  inventory-store   Store S3 inventory list in a pickle file
+  list-datasets     Generate task list for COG conversion
+  mpi-cog-convert   Parallelise COG convert using MPI
+  qsub-cog-convert  Kick off four stage COG Conversion PBS job
+  verify-cog-files  Verify the converted GeoTIFF are Cloud Optimised GeoTIFF
+
 ```
 
-Description:
-
-    --config | -c ``$config_yaml_file``: load configurations from *YAML* file
-    --output-dir ``$output_dir``: specify the path where the *COGS* will be written
-    --product ``$product_name``: specify a product name declared in config yaml file ``$product_name``
-    --numprocs `$int`: number of processes when parallelized with *MPI*, usually the number should be
-        `$int = $number_of_cpus - 1`
-
-Example of a Yaml file:
-
+##### Example of a Yaml file:
 ```
     products:
-        fcp_seasonal:
-            dest_template: x_{x}/y_{y}/{year}{month}
-            src_template: whatever_{x}_{y}_{start}_{end}
-            default_rsp: average
-            nonpym_list: ["source", "observed"]
-        fcp_annual:
-            dest_template: x_{x}/y_{y}/{year}
-            src_template: whatever_{x}_{y}_{start}
-            default_rsp: average
-            nonpym_list: ["source", "observed"]
-        wofls:
-            dest_template: x_{x}/y_{y}/{year}/{month}/{day}
-            src_template: whatever_{x}_{y}_{time}
-            default_rsp: nearest
+        product_name:
+            prefix: WOfS/WOFLs/v2.1.5/combined
+            name_template: x_{x}/y_{y}/{time:%Y}/{time:%m}/{time:%d}/LS_WATER_3577_{x}_{y}_{time:%Y%m%d%H%M%S%f}
+            stacked_name_template: x_{x}/y_{y}/{time:%Y}/{time:%m}/{time:%d}/LS_WATER_3577_{x}_{y}_{time:%Y}_
             predictor: 2
+            nonpym_list: ["source", "observed"]
+            default_rsp: average
+            nonpym_list: None
+            white_list: None
+            black_list: None
+where,
+      product_name:              A unique user defined string (required)
+      prefix:                    Define the cogs folder structure and name (required)
+      name_template:             Define how to decipher the input file names (required)
+      stacked_name_template:     Define how to decipher the stacked input file names (required)
+      default_rsp:               Define the resampling method of pyramid view (default: average)
+      predictor:                 Define the predictor in COG convert (default: 2)
+      nonpym_list:               A list of keywords of bands which don't require resampling(optional)
+      white_list:                A list of keywords of bands to be converted (optional)
+      black_list:                A list of keywords of bands excluded in cog convert (optional)
 ```
-
-Config formatting to include:
-
-```
- products:
-        $product_name:         #a unique user defined string
-            dest_template:     #define the cogs folder structure and name (required)
-            src_template:      #define how to decipher the input file names (required)
-            default_rsp:       #define the resampling method of pyramid view (optional default: average)
-            predictor:         #define the predictor in COG convert (optional default: 2)
-            nonpym_list:       #a list of keywords of bands which don't require resampling(optional)
-            white_list:        #a list of keywords of bands to be converted (optional)
-            black_list:        #a list of keywords of bands excluded in cog convert (optional)
-```
-What to set for predictor and resampling:
+##### What to set for predictor and resampling:
 
 ```
 Predictor
@@ -145,79 +131,230 @@ Raster Resampling
 
 ```
 
-Example of converting COGS:
+## COGS-Conversion Command Options:
 
-## mpi-convert-cog
+### Requirements:
+Before using cog conversion command options, run the following:
+  * $ module use /g/data/v10/public/modules/modulefiles/
+  * $ module load dea
 
-  Convert To COG using parallelisation by MPI tool
+### Command: `cog-convert`
 
-#### Requirements:
+     Convert a single or list of NetCDF files into Cloud Optimise GeoTIFF format.
+     Uses a configuration file to define the file naming schema.
 
-* openmpi >= 3.0.0 (module load openmpi/3.0.0)
-* mpi4py (pip install mpi4py)
-
+#### Usage
 ```
->  python3 streamer/streamer.py --help
-Usage: streamer.py [OPTIONS] COMMAND [ARGS]...
+> $python3 streamer/streamer.py cog-convert --help
+Usage: streamer.py cog-convert [OPTIONS] [FILENAMES]...
+
+  Convert a single/list of NetCDF files into COG format
 
 Options:
-  --help  Show this message and exit.
-
-Commands:
-  generate-work-list  Connect to an ODC database and list NetCDF files
-  mpi-convert-cog     Parallelise COG convert using MPI Iterate over...
-```
-
-Command to run:
-
-```
-Num_Nodes = 5
-Num_Cpus = Num_Nodes*16
-Memory_required = (Num_Nodes*31)GB
-mpirun --oversubscribe -n $Num_Cpus python3 $path_to_script/streamer.py mpi-convert-cog -c cog.yaml \
-    --output-dir $ouput_dir --product $product_name --numprocs $((Num_Cpus-1)) $FILE_LIST
-```
-Note: the total number of CPUS is 64 over 4 nodes.
-
-
-## generate-work-list
-
-The simple way to get the file list is to do
-
-`find $path_to_netcdfs -name "*.nc" > path_to_file.list`
-or run `generate-work-list`.
-You need to set `datacube.conf` to run the following command
-```
-> $python3 streamer/streamer.py generate-work-list --help
-Usage: streamer.py generate-work-list [OPTIONS]
-
-  Connect to an ODC database and list NetCDF files
-
-Options:
-  -p, --product-name TEXT  Product name  [required]
-  -y, --year INTEGER       The year
-  -m, --month INTEGER      The month
+  -p, --product-name TEXT  Product name as defined in product configuration file  [required]
+  -c, --config TEXT        Product configuration file (Optional)
+  -o, --output-dir TEXT    Output work directory (Optional)
+  -l, --filelist TEXT      List of netcdf file names (Optional)
   --help                   Show this message and exit.
+
 ```
 
-# Validate the GeoTIFFs using the GDAL script
-- How to use the Validate_cloud_Optimized_GeoTIFF:
-```
-> $ python validate_cloud_optimized_geotiff.py --help
+#### Example
+`` python3 streamer/streamer.py cog-convert -p wofs_albers /-1_-12/test_-1_-12_2018100_v1546165254.nc
+                OR
+   python3 streamer/streamer.py cog-convert -p wofs_albers -l /tmp/wofs_albers_nc_file_list.txt``
 
+
+### Command: `inventory-store`
+
+    Scan through S3 bucket for the specified product and fetch the file path of the uploaded files.
+    Save those file into a pickle file for further processing.
+    Uses a configuration file to define the file naming schema.
+
+#### Usage
+```
+> $python3 streamer/streamer.py inventory-store --help
+Usage: streamer.py inventory-store [OPTIONS]
+
+  Store S3 inventory list in a pickle file
+
+Options:
+  -p, --product-name TEXT        Product name as defined in product configuration file  [required]
+  -c, --config TEXT              Product configuration file (Optional)
+  -o, --output-dir TEXT          Output work directory (Optional)
+  -i, --inventory-manifest TEXT  The manifest of AWS S3 bucket inventory URL (Optional)
+  --aws-profile TEXT             AWS profile name (Optional)
+  --help                         Show this message and exit.
+
+```
+
+#### Example
+`` python3 streamer/streamer.py inventory-store -p wofs_albers --aws-profile tempProfile -o /tmp/``
+
+
+### Command: `list-datasets`
+
+    Compares datacube file uri's against S3 bucket (file names within pickle file) and writes the list of datasets
+    for cog conversion into the task file.
+    Uses a configuration file to define the file naming schema.
+
+#### Usage
+```
+> $python3 streamer/streamer.py list-datasets --help
+Usage: streamer.py list-datasets [OPTIONS]
+
+  Generate task list for COG conversion
+
+Options:
+  -p, --product-name TEXT        Product name as defined in product configuration file  [required]
+  --time-range TEXT              The time range:
+                                 '2018-01-01 < time < 2018-12-31'  OR
+                                 'time in 2018-12-31'  OR
+                                 'time=2018-12-31'  [required]
+  -c, --config TEXT              Product configuration file (Optional)
+  -o, --output-dir TEXT          Output work directory (Optional)
+  -E, --datacube-env TEXT        Datacube environment (Optional)
+  -i, --inventory-manifest TEXT  The manifest of AWS S3 bucket inventory URL (Optional)
+  --aws-profile TEXT             AWS profile name (Optional)
+  --s3-list TEXT                 Pickle file containing the list of s3 bucket inventory (Optional)
+  --help                         Show this message and exit.
+
+```
+
+#### Example
+``python3 streamer/streamer.py list-datasets -p wofs_albers --time-range '2018-11-30 < time < 2018-12-01'``
+
+
+### Command: `mpi-cog-convert`
+
+    Convert netcdf files to COG format using parallelisation by MPI tool.
+    Iterate over the file list and assign MPI worker for processing.
+    Following details how master and worker interact during MPI cog conversion process:
+        1) Master fetches the file list from the task file.
+        2) Master shall then assign tasks to worker with task status as 'READY' for cog conversion.
+        3) Worker executes COG conversion algorithm and sends task status as 'START'.
+        4) Once worker finishes COG conversion, it sends task status as 'DONE' to the master.
+        5) If master has more work, then process continues as defined in steps 2-4.
+        6) If no tasks are pending with master, worker sends task status as 'EXIT' and closes the communication.
+        7) Finally master closes the communication.
+
+    Uses a configuration file to define the file naming schema.
+
+#### Usage
+```
+> $python3 streamer/streamer.py mpi-cog-convert --help
+Usage: streamer.py mpi-cog-convert [OPTIONS] FILELIST
+
+  Parallelise COG convert using MPI
+
+Options:
+  -p, --product-name TEXT  Product name as defined in product configuration file  [required]
+  --numprocs INTEGER       Number of processes  [required]
+  -c, --config TEXT        Product configuration file (Optional)
+  -o, --output-dir TEXT    Output work directory (Optional)
+  --help                   Show this message and exit.
+
+```
+
+#### Example
+``mpirun --oversubscribe -n 5 python3 streamer/streamer.py mpi-cog-convert -c aws_products_config.yaml 
+--output-dir /tmp/wofls_cog/ -p wofs_albers --numprocs 4 /tmp/wofs_albers_file_list``
+
+
+### Command: `qsub-cog-convert`
+
+    Submits an COG conversion job, using a four stage PBS job submission.
+    Uses a configuration file to define the file naming schema.
+
+    Stage 1 (Store S3 inventory list to a pickle file):
+        1) Scan through S3 inventory list and fetch the uploaded file names of the desired product.
+        2) Save those file names in a pickle file.
+
+    Stage 2 (Generate work list for COG conversion):
+           1) Compares datacube file uri's against S3 bucket (file names within pickle file).
+           2) Write the list of datasets not found in S3 to the task file.
+           3) Repeat until all the datasets are compared against those found in S3.
+
+    Stage 3 (COG convert using MPI runs):
+           1) Master fetches the file list from the task file.
+           2) Master shall then assign tasks to worker with task status as 'READY' for cog conversion.
+           3) Worker executes COG conversion algorithm and sends task status as 'START'.
+           4) Once worker finishes COG conversion, it sends task status as 'DONE' to the master.
+           5) If master has more work, then process continues as defined in steps 2-4.
+           6) If no tasks are pending with master, worker sends task status as 'EXIT' and closes the communication.
+           7) Finally master closes the communication.
+
+    Stage 4 (Validate GeoTIFF files and run AWS sync to upload files to AWS S3):
+            1) Validate GeoTIFF files and if valid then upload to S3 bucket.
+            2) Using aws sync command line tool, sync newly COG converted files to S3 bucket.
+
+#### Usage
+```
+> $python3 streamer/streamer.py qsub-cog-convert --help
+Usage: streamer.py qsub-cog-convert [OPTIONS]
+
+  Kick off four stage COG Conversion PBS job
+
+Options:
+  -p, --product-name TEXT         Product name as defined in product configuration file  [required]
+  --time-range TEXT               The time range:
+                                  '2018-01-01 < time < 2018-12-31'  OR
+                                  'time in 2018-12-31'  OR
+                                  'time=2018-12-31'  [required]
+  -c, --config TEXT               Product configuration file (Optional)
+  -o, --output-dir TEXT           Output work directory (Optional)
+  -q, --queue                     [normal|express]
+  -P, --project TEXT              Project Name
+  -n, --nodes INTEGER RANGE       Number of nodes to request (Optional)
+  -t, --walltime INTEGER RANGE    Number of hours (range: 1-48hrs) to request (Optional)
+  -m, --email-options             [a|b|e|n|ae|ab|be|abe]
+                                  Send email when execution is, 
+                                  [a = aborted | b = begins | e = ends | n = do not send email]
+  -M, --email-id TEXT             Email recipient id (Optional)
+  -i, --inventory-manifest TEXT   The manifest of AWS S3 bucket inventory URL (Optional)
+  --aws-profile TEXT              AWS profile name (Optional)
+  -E, --datacube-env TEXT         Datacube environment (Optional)
+  --help                          Show this message and exit.
+
+```
+
+#### Example
+``python3 streamer/streamer.py qsub-cog-convert -q normal -P v10 -M temp@email.com -p wofs_albers 
+--time-range '2018-11-30 < time < 2018-12-01'``
+
+
+### Command: `verify-cog-files`
+
+    Verify converted GeoTIFF files are (Geo)TIFF with cloud optimized compatible structure.
+    Mandatory Requirement: `validate_cloud_optimized_geotiff.py` gdal file.
+
+#### Usage
+```
+> $python3 streamer/streamer.py verify-cog-files --help
+Usage: streamer.py verify-cog-files [OPTIONS]
+
+  Verify the converted GeoTIFF are Cloud Optimised GeoTIFF
+
+Options:
+  -p, --path PATH  Validate the GeoTIFF files from this folder  [required]
+  --help           Show this message and exit.
+
+```
+
+#### Example
+`` python3 streamer/streamer.py verify-cog-files --path /tmp/wofls_cog``
+
+
+### Validate Cog Files
+
+    Validate the GeoTIFFs using the GDAL script.
+
+#### Usage
+```
+> $ python3 validate_cloud_optimized_geotiff.py --help
 Usage: validate_cloud_optimized_geotiff.py [-q] test.tif
 
 ```
-# To verify all GeoTIFF's, run the script:
-```
-> $python verify_cog.py --help
 
-  Usage: verify_cog.py [OPTIONS]
-
-  Verify the converted GeoTIFFs are Cloud Optimized GeoTIFFs. Mandatory
-  Requirement: validate_cloud_optimized_geotiff.py gdal file
-
-Options:
-  -p, --path PATH  Read the GeoTIFFs from this folder  [required]
-  --help           Show this message and exit.
-```
+#### Example
+``python3 validate_cloud_optimized_geotiff.py /tmp/x_0/y_-20/2018/11/30/LS_WATER_3577_0_-20_water.tif``

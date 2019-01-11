@@ -1,0 +1,14 @@
+# Required modules for Linting and Testing on Travis-CI
+pytest
+pycodestyle
+pylint
+
+# Modules required by the NCI Environment Modules. Checked by pylint
+boto3
+requests_aws4auth
+click
+psycopg2
+pyyaml
+boltons
+jinja2
+python-dateutil
