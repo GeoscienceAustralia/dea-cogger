@@ -27,8 +27,7 @@ from mpi4py import MPI
 
 LOG = logging.getLogger('cog-converter')
 stdout_hdlr = logging.StreamHandler(sys.stdout)
-formatter = logging.Formatter(
-        '[%(asctime)s.%(msecs)03d - %(levelname)s] %(message)s')
+formatter = logging.Formatter('[%(asctime)s.%(msecs)03d - %(levelname)s] %(message)s')
 stdout_hdlr.setFormatter(formatter)
 LOG.addHandler(stdout_hdlr)
 LOG.setLevel(logging.DEBUG)
@@ -223,8 +222,8 @@ class COGNetCDF:
         """
         try:
             dataset = gdal.Open(input_file, gdal.GA_ReadOnly)
-        except:
-            LOG.info("netcdf error: %s", input_file)
+        except Exception as exp:
+            LOG.info(f"netcdf error {input_file}: \n{exp}")
             return
 
         if dataset is None:
@@ -361,7 +360,8 @@ class COGNetCDF:
             cog_tif = gdal.Open(fname, gdal.GA_ReadOnly)
             srcband = cog_tif.GetRasterBand(1)
             t_stats = srcband.GetStatistics(True, True)
-        except:
+        except Exception as exp:
+            LOG.error(f"Exception: {exp}")
             return False
 
         if t_stats > [0.] * 4:

@@ -15,7 +15,6 @@ pylint -j 2 --reports no \
 # E701: "multiple statements on one line" is buggy as it doesn't understand py 3 types
 # E501: "line too long" duplicates pylint check
 pycodestyle --ignore=E122,E711,E701,E501 --max-line-length 120  \
-    COG-Conversion \
     streamer/*.py
 
 # Finds shell scripts based on #!
