@@ -2,26 +2,33 @@
 import logging
 import os
 import re
-import subprocess
 import sys
+import subprocess
 from datetime import datetime
 from os.path import join as pjoin, basename, exists
 from subprocess import check_call
-from time import sleep
-
+from pandas import Timestamp
+from pathlib import Path
 import click
 import gdal
 import numpy as np
 import xarray
 import yaml
 from yaml import CSafeLoader as Loader, CSafeDumper as Dumper
+from enum import IntEnum
 
 from datacube import Datacube
 from datacube.model import Range
+from mpi4py import MPI
 from cogeo import cog_translate
 
 LOG = logging.getLogger('cog-converter')
-WORKERS_POOL = 4
+stdout_hdlr = logging.StreamHandler(sys.stdout)
+formatter = logging.Formatter(
+        '[%(asctime)s.%(msecs)03d - %(levelname)s] %(message)s')
+stdout_hdlr.setFormatter(formatter)
+LOG.addHandler(stdout_hdlr)
+LOG.setLevel(logging.DEBUG)
 
 DEFAULT_GDAL_CONFIG = {'NUM_THREADS': 1, 'GDAL_TIFF_OVR_BLOCKSIZE': 512}
 DEFAULT_CONFIG = """
@@ -33,6 +40,20 @@ products:
         predictor: 2
         default_rsp: average
 """
+MPI_COMM = MPI.COMM_WORLD      # Get MPI communicator object
+MPI_JOB_SIZE = MPI_COMM.size   # Total number of processes
+MPI_JOB_RANK = MPI_COMM.rank   # Rank of this process
+MPI_JOB_STATUS = MPI.Status()  # Get MPI status object
+
+
+class TagStatus(IntEnum):
+    """
+        MPI message tag status
+    """
+    READY = 1
+    START = 2
+    DONE = 3
+    EXIT = 4
 
 
 def run_command(command):
@@ -41,7 +62,6 @@ def run_command(command):
     """
     try:
         check_call(command, stderr=subprocess.STDOUT, cwd=None, env=os.environ)
-        # run(command, cwd=work_dir, check=True, stderr=subprocess.PIPE, stdout=subprocess.PIPE)
     except subprocess.CalledProcessError as e:
         raise RuntimeError("command '{}' failed with error (code {}): {}".format(e.cmd, e.returncode, e.output))
 
@@ -75,10 +95,10 @@ class COGNetCDF:
             self.src_template = src_template
 
     def __call__(self, input_fname, dest_dir):
-        prefix_name = self.make_out_prefix(input_fname, dest_dir)
+        prefix_name = self._make_out_prefix(input_fname, dest_dir)
         self.netcdf_to_cog(input_fname, prefix_name)
 
-    def make_out_prefix(self, input_fname, dest_dir):
+    def _make_out_prefix(self, input_fname, dest_dir):
         abs_fname = basename(input_fname)
         prefix_name = re.search(r"[-\w\d.]*(?=\.\w)", abs_fname).group(0)
         r = re.compile(r"(?<=_)[-\d.]+")
@@ -144,7 +164,8 @@ class COGNetCDF:
         # Clean up XML files from GDAL
         # GDAL creates extra XML files which we don't want
 
-    def _dataset_to_yaml(self, prefix, dataset_array: xarray.Dataset, rastercount):
+    @staticmethod
+    def _dataset_to_yaml(prefix, dataset_array: xarray.Dataset, rastercount):
         """
         Write the datasets to separate yaml files
         """
@@ -299,10 +320,55 @@ def get_indexed_files(product, year=None, month=None, datacube_env=None):
     files = dc.index.datasets.search_returning(field_names=('uri',), **query)
 
     # TODO: For now, turn the URL into a file name by removing the schema and #part. Should be made more robust
-    def filename_from_uri(uri):
+    def _filename_from_uri(uri):
         return uri[0].split(':')[1].split('#')[0]
 
+    return set(_filename_from_uri(uri) for uri in files)
+
+
+def check_date(context, param, value):
+    """
+    Click callback to validate a date string
+    """
+    try:
+        return Timestamp(value)
+    except ValueError as error:
+        raise ValueError('Date must be valid string for pandas Timestamp') from error
+
+
+def get_indexed_files(product, year=None, month=None, from_date=None, datacube_env=None):
+    """
+    Extract the file list corresponding to a product for the given year and month using datacube API.
+    """
+    query = {'product': product}
+    if from_date:
+        query['time'] = Range(datetime(year=from_date.year, month=from_date.month, day=from_date.day),
+                              datetime.now())
+    elif year and month:
+        query['time'] = Range(datetime(year=year, month=month, day=1), datetime(year=year, month=month + 1, day=1))
+    elif year:
+        query['time'] = Range(datetime(year=year, month=1, day=1), datetime(year=year + 1, month=1, day=1))
+    dc = Datacube(app='streamer', env=datacube_env)
+    files = dc.index.datasets.search_returning(field_names=('uri',), **query)
+
+    # Extract file name from search_result
+    def filename_from_uri(uri):
+        return uri[0].split('//')[1]
+
     return set(filename_from_uri(uri) for uri in files)
+
+
+def netcdf_cog_worker(wargs=None):
+    """
+    Convert a list of NetCDF files into Cloud Optimise GeoTIFF format using MPI
+    Uses a configuration file to define the file naming schema.
+    """
+    netcdf_cog_fp = COGNetCDF(**list(wargs)[0])
+    netcdf_cog_fp(list(wargs)[1], list(wargs)[2])
+
+
+def _raise_value_err(exp):
+    raise ValueError(exp)
 
 
 @click.group(help=__doc__)
@@ -310,128 +376,116 @@ def cli():
     pass
 
 
-@cli.command()
+@cli.command(name='generate-work-list')
 @click.option('--product-name', '-p', required=True, help="Product name")
 @click.option('--year', '-y', type=int, help="The year")
 @click.option('--month', '-m', type=int, help="The month")
-def generate_work_list(product_name, year, month):
+@click.option('--from-date', callback=check_date, help="The date from which the dataset time")
+@click.option('--output_dir', '-o', help='The list will be saved to this directory')
+def generate_work_list(product_name, year, month, from_date, output_dir):
     """
     Connect to an ODC database and list NetCDF files
     """
-    items_all = get_indexed_files(product_name, year, month)
 
-    for item in sorted(items_all):
-        print(item)
+    # get file list
+    items_all = get_indexed_files(product_name, year, month, from_date, 'dea-prod')
 
-
-try:
-    from mpi4py import MPI
-except:
-    LOG.warning("mpi4py is not available")
+    out_file = Path(output_dir) / 'file_list'
+    with open(out_file, 'w') as fp:
+        for item in sorted(items_all):
+            fp.write(item + '\n')
 
 
-@cli.command()
-@click.option('--config', '-c', help='Config file')
-@click.option('--output-dir', help='Output directory', required=True)
-@click.option('--product', help='Product name', required=True)
-@click.option('--flist', '-l', help='List of file names', default=None)
-@click.argument('filenames', nargs=-1, type=click.Path())
-def convert_cog(config, output_dir, product, flist, filenames):
-    """
-    Convert a list of NetCDF files into Cloud Optimise GeoTIFF format
-
-    Uses a configuration file to define the file naming schema.
-
-    """
-    if config:
-        with open(config, 'r') as cfg_file:
-            cfg = yaml.load(cfg_file)
-    else:
-        cfg = yaml.load(DEFAULT_CONFIG)
-
-    product_config = cfg['products'][product]
-
-    cog_convert = COGNetCDF(**product_config)
-
-    if flist is not None:
-        with open(flist, 'r') as fb:
-            file_list = np.genfromtxt(fb, dtype='str')
-    else:
-        file_list = list(filenames)
-
-    try:
-        comm = MPI.Comm.Get_parent()
-        size = comm.Get_size()
-        rank = comm.Get_rank()
-    except:
-        LOG.info("Run with single process")
-        for filename in file_list:
-            cog_convert(filename, output_dir)
-    else:
-        comm.Merge(True)
-        batch_size = int(len(file_list) / size)
-        for filename in file_list[rank * batch_size:(rank + 1) * batch_size]:
-            cog_convert(filename, output_dir)
-        comm.Disconnect()
-
-
-@cli.command()
+@cli.command(name='mpi-convert-cog')
 @click.option('--config', '-c', help='Config file')
 @click.option('--output-dir', help='Output directory', required=True)
 @click.option('--product', help='Product name', required=True)
 @click.option('--numprocs', type=int, help='Number of processes', required=True, default=1)
-@click.option('--cog-path', help='cog convert script path', required=True,
-              default='../COG-Conversion/streamer/streamer.py')
 @click.argument('filelist', nargs=1, required=True)
-def mpi_convert_cog(config, output_dir, product, numprocs, cog_path, filelist):
+def mpi_convert_cog(config, output_dir, product, numprocs, filelist):
     """
-    parallelize the COG convert with MPI.
-
+    Parallelise COG convert using MPI
+    Iterate over filename and output dir as job argument
     """
-    cmd_line = [cog_path] + ['convert_cog', '-c'] + [config] + ['--output-dir'] + [output_dir] + ['--product'] + [
-        product]
-    args = cmd_line
-    with open(filelist, 'r') as fb:
-        file_list = np.genfromtxt(fb, dtype='str')
-    LOG.debug("Process file %s", filelist)
-    file_odd = len(file_list) % numprocs
-    LOG.debug("file_odd %d", file_odd)
-    margs = args + ['-l', filelist]
-    while True:
-        try:
-            comm = MPI.COMM_SELF.Spawn(sys.executable,
-                                       args=margs,
-                                       maxprocs=numprocs)
+    global MPI_COMM, MPI_JOB_SIZE, MPI_JOB_RANK
 
-        except:
-            sleep(1)
-        else:
-            comm.Merge()
-            break
-    comm.Disconnect()
-    LOG.debug("Batch done")
-    if file_odd > 0:
-        numprocs = file_odd
-        margs = args + list(file_list[-file_odd:])
+    if config:
+        with open(config) as cfg_file:
+            cfg = yaml.load(cfg_file)
+    else:
+        cfg = yaml.load(DEFAULT_CONFIG)
+
+    try:
+        with open(filelist) as fb:
+            file_list = np.genfromtxt(fb, dtype='str')
+        tasks = file_list.size
+    except FileNotFoundError:
+        LOG.error(f'MPI Worker ({MPI_JOB_RANK}): No netCDF file/s found in the input path')
+        raise
+    else:
+        if tasks == 0:
+            _raise_value_err(f'MPI Worker ({MPI_JOB_RANK}): No netCDF file/s found in the input path')
+
+    product_config = cfg['products'][product]
+    num_workers = numprocs if numprocs > 0 else _raise_value_err(
+        f"MPI Worker ({MPI_JOB_RANK}): Number of processes cannot be zero")
+
+    # Ensure all errors/exceptions are handled before this, else master-worker processes
+    # will enter a dead-lock situation
+    if MPI_JOB_RANK == 0:
+        name = MPI.Get_processor_name()
+        task_index = 0
+        closed_workers = 0
+        job_args = []
+        LOG.debug(f"MPI Master ({MPI_JOB_RANK}) on {name} node, starting with {num_workers} workers")
+
+        # Append the jobs_args list for each filename to be scheduled among all the available workers
+        if tasks == 1:
+            job_args = [(product_config, str(file_list), output_dir)]
+        elif tasks > 1:
+            for filename in file_list:
+                job_args.extend([(product_config, str(filename), output_dir)])
+
+        while closed_workers < num_workers:
+            MPI_COMM.recv(source=MPI.ANY_SOURCE, tag=MPI.ANY_TAG, status=MPI_JOB_STATUS)
+            source = MPI_JOB_STATUS.Get_source()
+            tag = MPI_JOB_STATUS.Get_tag()
+
+            if tag == TagStatus.READY:
+                # Worker is ready, so assign a task
+                if task_index < tasks:
+                    MPI_COMM.send(job_args[task_index], dest=source, tag=TagStatus.START)
+                    LOG.debug("MPI Master (%d) assigning task to worker (%d): Process %r file" % (MPI_JOB_RANK,
+                                                                                                  source,
+                                                                                                  job_args[task_index]))
+                    task_index += 1
+                else:
+                    MPI_COMM.send(None, dest=source, tag=TagStatus.EXIT)
+            elif tag == TagStatus.DONE:
+                LOG.debug(f"MPI Worker ({source}) on {name} completed the assigned task")
+            elif tag == TagStatus.EXIT:
+                LOG.debug(f"MPI Worker ({source}) exited")
+                closed_workers += 1
+
+        LOG.debug("Batch processing completed")
+    else:
+        proc_name = MPI.Get_processor_name()
+
         while True:
-            try:
-                comm = MPI.COMM_SELF.Spawn(sys.executable,
-                                           args=margs,
-                                           maxprocs=numprocs)
-            except:
-                sleep(1)
-            else:
-                comm.Merge()
+            MPI_COMM.send(None, dest=0, tag=TagStatus.READY)
+            task = MPI_COMM.recv(source=0, tag=MPI.ANY_TAG, status=MPI_JOB_STATUS)
+            tag = MPI_JOB_STATUS.Get_tag()
+
+            if tag == TagStatus.START:
+                LOG.debug(f"MPI Worker ({MPI_JOB_RANK}) on {proc_name} started COG conversion")
+                netcdf_cog_worker(wargs=task)
+                MPI_COMM.send(None, dest=0, tag=TagStatus.DONE)
+            elif tag == TagStatus.EXIT:
                 break
-        comm.Disconnect()
-    LOG.debug("Job done")
+
+        LOG.debug(f"MPI Worker ({MPI_JOB_RANK}) did not receive any task, hence sending exit status to the master")
+        MPI_COMM.send(None, dest=0, tag=TagStatus.EXIT)
 
 
 if __name__ == '__main__':
-    LOG = logging.getLogger(__name__)
-    LOG.setLevel(logging.DEBUG)
-    ch = logging.StreamHandler()
-    ch.setLevel(logging.DEBUG)
-    LOG.addHandler(ch)
-
     cli()
