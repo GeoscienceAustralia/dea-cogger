@@ -75,14 +75,14 @@ j=1
 f_j=$(qsub -V -P "$PROJECT" -q "$QUEUE" \
       -l walltime=1:00:00,mem=$MEM,jobfs=$JOBFS,ncpus=$NCPUS,wd \
       -- mpirun --oversubscribe -n $NCPUS python3 "$COGS" mpi-convert-cog -c "$YAMLFILE" --output-dir "$OUTDIR" \
-      --product-name "$PRODUCT" --numprocs $((NCPUS-1)) "$FILEL$j")
+      --product-name "$PRODUCT" "$FILEL$j")
 
 j=2
 while [ -s  "$FILEL$j" ]; do
     n_j=$(qsub -V -W depend=afterany:"$f_j" -P "$PROJECT" -q "$QUEUE" \
           -l walltime=1:00:00,mem=$MEM,jobfs=$JOBFS,ncpus=$NCPUS,wd \
           -- mpirun --oversubscribe -n $NCPUS python3 "$COGS" mpi-convert-cog -c "$YAMLFILE" --output-dir "$OUTDIR" \
-          --product-name "$PRODUCT" --numprocs $((NCPUS-1)) "$FILEL$j")
+          --product-name "$PRODUCT" "$FILEL$j")
     f_j=$n_j
     j=$((j+1))
 done
