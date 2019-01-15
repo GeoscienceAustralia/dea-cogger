@@ -96,7 +96,6 @@ Commands:
             predictor: 2
             nonpym_list: ["source", "observed"]
             default_rsp: average
-            nonpym_list: None
             white_list: None
             black_list: None
 where,
@@ -109,6 +108,10 @@ where,
       nonpym_list:               A list of keywords of bands which don't require resampling(optional)
       white_list:                A list of keywords of bands to be converted (optional)
       black_list:                A list of keywords of bands excluded in cog convert (optional)
+
+Note: `nonpym_list` contains the key words of the band names which one doesn't want to generate overviews.
+      This element cannot be used with other products as this 'cause it will match as *source*'.
+      For most products, this element is not needed. So far, only fractional cover percentile use this.
 ```
 ##### What to set for predictor and resampling:
 
