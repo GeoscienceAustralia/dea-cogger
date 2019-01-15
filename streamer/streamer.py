@@ -672,7 +672,7 @@ def mpi_cog_convert(product_name, config, output_dir, filelist):
             sys.exit(1)
 
     product_config = CFG['products'][product_name]
-    num_workers = MPI_JOB_SIZE-1 if MPI_JOB_SIZE > 1 else _raise_value_err(
+    num_workers = MPI_JOB_SIZE - 1 if MPI_JOB_SIZE > 1 else _raise_value_err(
         f"MPI Worker ({MPI_JOB_RANK}): Number of required processes has to be greater than 1")
 
     # Ensure all errors/exceptions are handled before this, else master-worker processes
