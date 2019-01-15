@@ -259,19 +259,8 @@ class COGNetCDF:
                 LOG.info("No yaml section %s", prefix)
                 continue
 
-            invalid_band = []
             # Update band urls
             for key, value in dataset['image']['bands'].items():
-                if self.black_list is not None:
-                    if re.search(self.black_list, key) is not None:
-                        invalid_band.append(key)
-                        continue
-
-                if self.white_list is not None:
-                    if re.search(self.white_list, key) is None:
-                        invalid_band.append(key)
-                        continue
-
                 if rastercount == 1:
                     tif_path = basename(prefix + '_' + key + '.tif')
                 else:
@@ -279,9 +268,6 @@ class COGNetCDF:
 
                 value['layer'] = str(i + 1)
                 value['path'] = tif_path
-
-            for band in invalid_band:
-                dataset['image']['bands'].pop(band)
 
             dataset['format'] = {'name': 'GeoTIFF'}
             dataset['lineage'] = {'source_datasets': {}}
