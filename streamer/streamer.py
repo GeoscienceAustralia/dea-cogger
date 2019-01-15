@@ -164,8 +164,7 @@ class COGNetCDF:
         # Clean up XML files from GDAL
         # GDAL creates extra XML files which we don't want
 
-    @staticmethod
-    def _dataset_to_yaml(prefix, dataset_array: xarray.Dataset, rastercount):
+    def _dataset_to_yaml(self, prefix, dataset_array: xarray.Dataset, rastercount):
         """
         Write the datasets to separate yaml files
         """
