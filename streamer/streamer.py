@@ -623,14 +623,20 @@ def generate_work_list(product_name, time_range, config, output_dir, datacube_en
             fp.write(nc_filepath.split('//')[1] + '\n')
 
 
-@cli.command(name='mpi-cog-convert', help="Parallelise COG convert using MPI")
+@cli.command(name='mpi-cog-convert')
 @product_options
-@click.option('--numprocs', type=int, required=True, default=1, help='Number of processes')
 @config_file_options
 @output_dir_options
 @click.argument('filelist', nargs=1, required=True)
-def mpi_cog_convert(product_name, numprocs, config, output_dir, filelist):
+def mpi_cog_convert(product_name, config, output_dir, filelist):
     """
+    \b
+    Parallelise COG convert using MPI
+    Example: mpirun --oversubscribe -n 5 python3 streamer.py mpi-cog-convert -c aws_products_config.yaml
+             --output-dir /tmp/wofls_cog/ -p wofs_albers /tmp/wofs_albers_file_list
+                where,
+                    -n is the total number of processes required for COG conversion
+    \f
     Convert netcdf files to COG format using parallelisation by MPI tool.
     Iterate over the file list and assign MPI worker for COG conversion.
     Following details how master and worker interact during MPI cog conversion process:
@@ -666,8 +672,8 @@ def mpi_cog_convert(product_name, numprocs, config, output_dir, filelist):
             sys.exit(1)
 
     product_config = CFG['products'][product_name]
-    num_workers = numprocs if numprocs > 0 else _raise_value_err(
-        f"MPI Worker ({MPI_JOB_RANK}): Number of processes cannot be zero")
+    num_workers = MPI_JOB_SIZE-1 if MPI_JOB_SIZE > 1 else _raise_value_err(
+        f"MPI Worker ({MPI_JOB_RANK}): Number of required processes has to be greater than 1")
 
     # Ensure all errors/exceptions are handled before this, else master-worker processes
     # will enter a dead-lock situation
@@ -851,7 +857,7 @@ def qsub_cog_convert(product_name, time_range, config, output_dir, queue, projec
            'module load dea; ' \
            'mpirun --oversubscribe -n %(ncpus)d ' \
            'python3 %(streamer_file)s mpi-cog-convert -c %(yaml_file)s ' \
-           '--output-dir %(output_dir)s --product-name %(product)s --numprocs %(nprocs)d %(file_list)s"'
+           '--output-dir %(output_dir)s --product-name %(product)s %(file_list)s"'
     cmd = qsub % dict(queue=queue,
                       project=project,
                       file_list_job=file_list_job.split('.')[0],
@@ -859,7 +865,6 @@ def qsub_cog_convert(product_name, time_range, config, output_dir, queue, projec
                       email_id=email_id,
                       ncpus=nodes * 16,
                       mem=nodes * 31,
-                      nprocs=(nodes * 16) - 1,
                       walltime=walltime,
                       streamer_file=STREAMER_FILE_PATH,
                       yaml_file=config,
