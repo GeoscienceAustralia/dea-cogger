@@ -57,11 +57,6 @@ queue_options = click.option('--queue', '-q', default='normal',
 project_options = click.option('--project', '-P', default='v10')
 
 # pylint: disable=invalid-name
-node_options = click.option('--nodes', '-n', default=5,
-                            help='Number of nodes to request (Optional)',
-                            type=click.IntRange(1, 5))
-
-# pylint: disable=invalid-name
 walltime_options = click.option('--walltime', '-t', default=10,
                                 help='Number of hours (range: 1-48hrs) to request (Optional)',
                                 type=click.IntRange(1, 48))
@@ -632,10 +627,8 @@ def mpi_cog_convert(product_name, config, output_dir, filelist):
     """
     \b
     Parallelise COG convert using MPI
-    Example: mpirun --oversubscribe -n 5 python3 streamer.py mpi-cog-convert -c aws_products_config.yaml
+    Example: mpirun python3 streamer.py mpi-cog-convert -c aws_products_config.yaml
              --output-dir /tmp/wofls_cog/ -p wofs_albers /tmp/wofs_albers_file_list
-                where,
-                    -n is the total number of processes required for COG conversion
     \f
     Convert netcdf files to COG format using parallelisation by MPI tool.
     Iterate over the file list and assign MPI worker for COG conversion.
@@ -780,14 +773,13 @@ def verify_cog_files(path):
 @output_dir_options
 @queue_options
 @project_options
-@node_options
 @walltime_options
 @mail_options
 @mail_id
 @s3_options
 @aws_profile_options
 @dc_env_options
-def qsub_cog_convert(product_name, time_range, config, output_dir, queue, project, nodes, walltime,
+def qsub_cog_convert(product_name, time_range, config, output_dir, queue, project, walltime,
                      email_options, email_id, inventory_manifest, aws_profile, datacube_env):
     """
     Submits an COG conversion job, using a four stage PBS job submission.
@@ -820,6 +812,7 @@ def qsub_cog_convert(product_name, time_range, config, output_dir, queue, projec
       $ module load dea
     """
     task_file = str(Path(output_dir) / product_name) + TASK_FILE_EXT
+    nodes = 5  # Requested number of nodes within Raijin
 
     prep = 'qsub -q copyq -N store_s3_list_%(product)s -P %(project)s ' \
            '-l wd,walltime=5:00:00,mem=31GB,jobfs=5GB -W umask=33 ' \
@@ -855,8 +848,7 @@ def qsub_cog_convert(product_name, time_range, config, output_dir, queue, projec
            '-- /bin/bash -l -c "source $HOME/.bashrc; ' \
            'module use /g/data/v10/public/modules/modulefiles/; ' \
            'module load dea; ' \
-           'mpirun --oversubscribe -n %(ncpus)d ' \
-           'python3 %(streamer_file)s mpi-cog-convert -c %(yaml_file)s ' \
+           'mpirun python3 %(streamer_file)s mpi-cog-convert -c %(yaml_file)s ' \
            '--output-dir %(output_dir)s --product-name %(product)s %(file_list)s"'
     cmd = qsub % dict(queue=queue,
                       project=project,

@@ -249,9 +249,6 @@ Options:
 Usage: streamer.py mpi-cog-convert [OPTIONS] FILELIST
 
   Parallelise COG convert using MPI
-  Example: mpirun --oversubscribe -n 5 python3 streamer.py mpi-cog-convert -c aws_products_config.yaml
-           --output-dir /tmp/wofls_cog/ -p wofs_albers /tmp/wofs_albers_file_list
-              where, -n is the total number of processes required for COG conversion
 
 Options:
   -p, --product-name TEXT  Product name as defined in product configuration file  [required]
@@ -263,10 +260,8 @@ Options:
 
 #### Example
 ``
-mpirun --oversubscribe -n 5 python3 streamer/streamer.py mpi-cog-convert -c aws_products_config.yaml 
---output-dir /tmp/wofls_cog/ -p wofs_albers /tmp/wofs_albers_file_list
-   where,
-     -n is the total number of processes required for COG conversion``
+mpirun python3 streamer/streamer.py mpi-cog-convert -c aws_products_config.yaml
+--output-dir /tmp/wofls_cog/ -p wofs_albers /tmp/wofs_albers_file_list``
 
 
 ### Command: `qsub-cog-convert`
