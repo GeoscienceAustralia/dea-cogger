@@ -58,7 +58,7 @@ find "$SRCDIR" -name "*.nc" | \
             echo "$file" >> "$FILEL$j"
             i=$((i+1))
         fi
-        if [ $((i)) -gt $((NCPUS*50)) ]
+        if [ $((i)) -gt $((NCPUS)) ]
         then
             i=1
             j=$((j+1))
@@ -74,14 +74,14 @@ cd "$OUTDIR" || exit 1
 j=1
 f_j=$(qsub -V -P "$PROJECT" -q "$QUEUE" \
       -l walltime=1:00:00,mem=$MEM,jobfs=$JOBFS,ncpus=$NCPUS,wd \
-      -- mpirun --oversubscribe -n $NCPUS python3 "$COGS" mpi-convert-cog -c "$YAMLFILE" --output-dir "$OUTDIR" \
+      -- mpirun python3 "$COGS" mpi-convert-cog -c "$YAMLFILE" --output-dir "$OUTDIR" \
       --product-name "$PRODUCT" "$FILEL$j")
 
 j=2
 while [ -s  "$FILEL$j" ]; do
     n_j=$(qsub -V -W depend=afterany:"$f_j" -P "$PROJECT" -q "$QUEUE" \
           -l walltime=1:00:00,mem=$MEM,jobfs=$JOBFS,ncpus=$NCPUS,wd \
-          -- mpirun --oversubscribe -n $NCPUS python3 "$COGS" mpi-convert-cog -c "$YAMLFILE" --output-dir "$OUTDIR" \
+          -- mpirun python3 "$COGS" mpi-convert-cog -c "$YAMLFILE" --output-dir "$OUTDIR" \
           --product-name "$PRODUCT" "$FILEL$j")
     f_j=$n_j
     j=$((j+1))
