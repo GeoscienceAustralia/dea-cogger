@@ -164,8 +164,7 @@ class COGNetCDF:
         # Clean up XML files from GDAL
         # GDAL creates extra XML files which we don't want
 
-    @staticmethod
-    def _dataset_to_yaml(prefix, dataset_array: xarray.Dataset, rastercount):
+    def _dataset_to_yaml(self, prefix, dataset_array: xarray.Dataset, rastercount):
         """
         Write the datasets to separate yaml files
         """
@@ -185,8 +184,19 @@ class COGNetCDF:
                 LOG.info("No yaml section %s", prefix)
                 continue
 
+            invalid_band = []
             # Update band urls
             for key, value in dataset['image']['bands'].items():
+                if self.black_list is not None:
+                    if re.search(self.black_list, key) is not None:
+                        invalid_band.append(key)
+                        continue
+
+                if self.white_list is not None:
+                    if re.search(self.white_list, key) is None:
+                        invalid_band.append(key)
+                        continue
+
                 if rastercount == 1:
                     tif_path = basename(prefix + '_' + key + '.tif')
                 else:
@@ -194,6 +204,9 @@ class COGNetCDF:
 
                 value['layer'] = str(i + 1)
                 value['path'] = tif_path
+
+            for band in invalid_band:
+                dataset['image']['bands'].pop(band)
 
             dataset['format'] = {'name': 'GeoTIFF'}
             dataset['lineage'] = {'source_datasets': {}}
@@ -208,11 +221,11 @@ class COGNetCDF:
         os.environ['GDAL_DISABLE_READDIR_ON_OPEN'] = 'YES'
         os.environ['CPL_VSIL_CURL_ALLOWED_EXTENSIONS'] = '.tif'
         if self.white_list is not None:
-            re_white = "|".join(self.white_list)
+            self.white_list = "|".join(self.white_list)
         if self.black_list is not None:
-            re_black = "|".join(self.black_list)
+            self.black_list = "|".join(self.black_list)
         if self.nonpym_list is not None:
-            re_nonpym = "|".join(self.nonpym_list)
+            self.nonpym_list = "|".join(self.nonpym_list)
 
         rastercount = 0
         for dts in subdatasets[:-1]:
@@ -222,11 +235,11 @@ class COGNetCDF:
 
                 # Only do specified bands if specified
                 if self.black_list is not None:
-                    if re.search(re_black, band_name) is not None:
+                    if re.search(self.black_list, band_name) is not None:
                         continue
 
                 if self.white_list is not None:
-                    if re.search(re_white, band_name) is None:
+                    if re.search(self.white_list, band_name) is None:
                         continue
 
                 if rastercount == 1:
@@ -246,7 +259,7 @@ class COGNetCDF:
                 if resampling_method is None:
                     resampling_method = self.default_rsp
                 if self.nonpym_list is not None:
-                    if re.search(re_nonpym, band_name) is not None:
+                    if re.search(self.nonpym_list, band_name) is not None:
                         resampling_method = None
 
                 default_profile = {'driver': 'GTiff',
