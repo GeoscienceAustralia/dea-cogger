@@ -198,7 +198,10 @@ class COGNetCDF:
         dest_dict = {keys[1]: x_index, keys[2]: y_index}
 
         if date_time is not None:
-            dest_dict[keys[0]] = datetime.strptime(date_time, '%Y%m%d%H%M%S%f')
+            try:
+                dest_dict[keys[0]] = datetime.strptime(date_time, '%Y%m%d%H%M%S%f')
+            except ValueError:
+                dest_dict[keys[0]] = datetime.strptime(date_time, '%Y')  # Stacked netCDF file
         else:
             self.name_template = '/'.join(self.name_template.split('/')[0:2])
 
@@ -393,10 +396,16 @@ def get_dataset_values(product_name, time_range=None, datacube_env=None, s3_list
 
     field_names = get_field_names(CFG['products'][product_name])
 
+    LOG.info("Perform a datacube dataset search, returning only the specified fields.")
     files = dc.index.datasets.search_returning(field_names=tuple(field_names), **query)
 
+    search_results = False
     for result in files:
+        search_results = True
         yield check_prefix_from_query_result(result, CFG['products'][product_name], s3_list)
+
+    if not search_results:
+        LOG.warning(f"Datacube product query is empty for {product_name} product with query args, {time_range}")
 
 
 def yaml_files_for_product(s3_inventory_list):

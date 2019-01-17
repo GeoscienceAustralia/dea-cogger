@@ -58,7 +58,11 @@ if [[ -s ~/.aws/credentials ]]; then
 
         python3 "$STREAMER_FILE" verify-cog-files --path "$OUTPUT_DIR"
 
-        aws s3 sync "$OUTPUT_DIR" "$S3_INVENTORY" --exclude "*.pickle" --exclude "*.txt" --exclude "*file_list*"
+        aws s3 sync "$OUTPUT_DIR" "$S3_INVENTORY" --exclude "*.pickle" --exclude "*.txt" --exclude "*file_list*" \
+        --exclude "*.log"
+
+        # Remove cog converted files after aws s3 sync
+        rm -r "$OUTPUT_DIR"
     else
         echo "'$AWS_PROFILE' profile does not exist in '~/.aws/credentials' file"
         exit 1
