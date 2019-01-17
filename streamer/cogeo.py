@@ -1,21 +1,20 @@
 """rio_cogeo.cogeo: translate a file to a cloud optimized geotiff."""
-import numpy
-
 import gdal
+import numpy
 import rasterio
-from rasterio.io import MemoryFile
 from rasterio.enums import Resampling
+from rasterio.io import MemoryFile
 from rasterio.shutil import copy
 
 
 def cog_translate(
-    src_path,
-    dst_path,
-    dst_kwargs,
-    indexes=None,
-    overview_level=5,
-    overview_resampling=None,
-    config=None,
+        src_path,
+        dst_path,
+        dst_kwargs,
+        indexes=None,
+        overview_level=5,
+        overview_resampling=None,
+        config=None,
 ):
     """
     Create Cloud Optimized Geotiff.
@@ -43,8 +42,8 @@ def cog_translate(
     src = gdal.Open(src_path, gdal.GA_ReadOnly)
     band = src.GetRasterBand(1)
     nodata = band.GetNoDataValue()
-    if band.DataType == gdal.GDT_Byte and  band.GetNoDataValue() < 0:
-            nodata_mask = 255
+    if band.DataType == gdal.GDT_Byte and band.GetNoDataValue() < 0:
+        nodata_mask = 255
     src = None
 
     with rasterio.Env(**config):
@@ -70,7 +69,7 @@ def cog_translate(
                         matrix = src.read(window=w, indexes=indexes)
                         if nodata_mask is not None:
                             matrix = numpy.array(matrix, dtype='int16')
-                            matrix[matrix==nodata_mask] = nodata
+                            matrix[matrix == nodata_mask] = nodata
 
                         mem.write(matrix, window=w)
 
