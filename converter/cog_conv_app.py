@@ -17,7 +17,7 @@ from datacube.ui.expression import parse_expressions
 import digitalearthau
 from aws_s3_client import make_s3_client
 from aws_inventory import list_inventory
-from cogeo import cog_translate, COGNetCDF
+from cogeo import COGNetCDF
 from mpi4py import MPI
 
 LOG = logging.getLogger('cog-converter')

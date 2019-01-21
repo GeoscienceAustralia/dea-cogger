@@ -238,7 +238,6 @@ class COGNetCDF:
                               default_profile,
                               indexes=[i + 1],
                               overview_resampling=resampling_method,
-                              overview_level=5,
                               config=DEFAULT_GDAL_CONFIG)
 
         return rastercount
