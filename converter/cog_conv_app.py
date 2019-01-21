@@ -1,7 +1,6 @@
 #!/usr/bin/env python
 import click
 import dateutil.parser
-import gdal
 import logging
 import numpy as np
 import os
@@ -9,20 +8,16 @@ import pickle
 import re
 import sys
 import subprocess
-import xarray
 import yaml
-from datetime import datetime
+
 from enum import IntEnum
 from pathlib import Path
-from os.path import join as pjoin, basename, exists
-from yaml import CSafeLoader as Loader, CSafeDumper as Dumper
-
 from datacube import Datacube
 from datacube.ui.expression import parse_expressions
 import digitalearthau
 from aws_s3_client import make_s3_client
 from aws_inventory import list_inventory
-from cogeo import cog_translate
+from cogeo import cog_translate, COGNetCDF
 from mpi4py import MPI
 
 LOG = logging.getLogger('cog-converter')
@@ -32,13 +27,12 @@ stdout_hdlr.setFormatter(formatter)
 LOG.addHandler(stdout_hdlr)
 LOG.setLevel(logging.DEBUG)
 
-DEFAULT_GDAL_CONFIG = {'NUM_THREADS': 1, 'GDAL_TIFF_OVR_BLOCKSIZE': 512}
 MPI_COMM = MPI.COMM_WORLD      # Get MPI communicator object
 MPI_JOB_SIZE = MPI_COMM.size   # Total number of processes
 MPI_JOB_RANK = MPI_COMM.rank   # Rank of this process
 MPI_JOB_STATUS = MPI.Status()  # Get MPI status object
 ROOT_DIR = Path(__file__).absolute().parent
-STREAMER_FILE_PATH = ROOT_DIR / 'streamer.py'
+COG_FILE_PATH = ROOT_DIR / 'cog_conv_app.py'
 YAMLFILE_PATH = ROOT_DIR / 'aws_products_config.yaml'
 GENERATE_FILE_PATH = ROOT_DIR / 'generate_work_list.sh'
 AWS_SYNC_PATH = ROOT_DIR / 'aws_sync.sh'
@@ -47,7 +41,7 @@ PICKLE_FILE_EXT = '_s3_inv_list.pickle'
 TASK_FILE_EXT = '_nc_file_list.txt'
 INVALID_GEOTIFF_FILES = list()
 REMOVE_ROOT_GEOTIFF_DIR = list()
-
+OUTPUT_DIR = '/g/data/v10/tmp/cog_output_files'
 
 # pylint: disable=invalid-name
 queue_options = click.option('--queue', '-q', default='normal',
@@ -73,8 +67,7 @@ mail_id = click.option('--email-id', '-M', default='nci.monitor@dea.ga.gov.au',
 
 
 # pylint: disable=invalid-name
-output_dir_options = click.option('--output-dir', '-o', default='/g/data/v10/tmp/cog_output_files/',
-                                  help='Output work directory (Optional)')
+output_dir_options = click.option('--output-dir', '-o', default=OUTPUT_DIR, help='Output work directory (Optional)')
 
 # pylint: disable=invalid-name
 product_options = click.option('--product-name', '-p', required=True,
@@ -84,9 +77,14 @@ product_options = click.option('--product-name', '-p', required=True,
 dc_env_options = click.option('--datacube-env', '-E', default='datacube', help='Datacube environment (Optional)')
 
 # pylint: disable=invalid-name
-s3_options = click.option('--inventory-manifest', '-i',
-                          default='s3://dea-public-data-inventory/dea-public-data/dea-public-data-csv-inventory/',
-                          help="The manifest of AWS S3 bucket inventory URL (Optional)")
+s3_inv_options = click.option('--inventory-manifest', '-i',
+                              default='s3://dea-public-data-inventory/dea-public-data/dea-public-data-csv-inventory/',
+                              help="The manifest of AWS S3 bucket inventory URL (Optional)")
+
+# pylint: disable=invalid-name
+s3_output_dir_options = click.option('--s3-output-url',
+                                     default=None,
+                                     help="S3 URL for uploading the converted files (Optional)")
 
 # pylint: disable=invalid-name
 aws_profile_options = click.option('--aws-profile', default='default', help='AWS profile name (Optional)')
@@ -111,6 +109,7 @@ class TagStatus(IntEnum):
     START = 2
     DONE = 3
     EXIT = 4
+    ERROR = 5
 
 
 def run_command(command):
@@ -144,214 +143,6 @@ def run_command(command):
                 LOG.warning("UnicodeEncodeError : %s", line.encode('ascii', 'replace'))
         LOG.error("Subprocess call error, hence exiting")
         raise
-
-
-class COGNetCDF:
-    """
-    Convert NetCDF files to COG style GeoTIFFs
-    """
-
-    def __init__(self, black_list=None, white_list=None, nonpym_list=None, default_rsp=None,
-                 bands_rsp=None, name_template=None, prefix=None, predictor=None, stacked_name_template=None):
-        # A list of keywords of bands which don't require resampling
-        self.nonpym_list = nonpym_list
-
-        # A list of keywords of bands excluded in cog convert
-        self.black_list = black_list
-
-        # A list of keywords of bands to be converted
-        self.white_list = white_list
-
-        self.bands_rsp = bands_rsp
-        self.name_template = name_template
-        self.prefix = prefix
-        self.stacked_name_template = stacked_name_template
-
-        if predictor is None:
-            self.predictor = 2
-        else:
-            self.predictor = predictor
-
-        if default_rsp is None:
-            self.default_rsp = 'average'
-        else:
-            self.default_rsp = default_rsp
-
-    def __call__(self, input_fname, dest_dir):
-        prefix_name = self._make_out_prefix(input_fname, dest_dir)
-        self.netcdf_to_cog(input_fname, prefix_name)
-
-    def _make_out_prefix(self, input_fname, dest_dir):
-        abs_fname = basename(input_fname)
-        prefix_name = re.search(r"[-\w\d.]*(?=\.\w)", abs_fname).group(0)
-        r = re.compile(r"(?<=_)[-\d.]+")
-        indices = r.findall(prefix_name)
-        r = re.compile(r"(?<={)\w+")
-        keys = sorted(set(r.findall(self.name_template)))
-
-        if len(indices) > len(keys):
-            indices = indices[-len(keys):]
-
-        indices += [None] * (3 - len(indices))
-        x_index, y_index, date_time = indices
-
-        dest_dict = {keys[1]: x_index, keys[2]: y_index}
-
-        if date_time is not None:
-            try:
-                dest_dict[keys[0]] = datetime.strptime(date_time, '%Y%m%d%H%M%S%f')
-            except ValueError:
-                dest_dict[keys[0]] = datetime.strptime(date_time, '%Y')  # Stacked netCDF file
-        else:
-            self.name_template = '/'.join(self.name_template.split('/')[0:2])
-
-        out_dir = Path(pjoin(dest_dir, self.name_template.format(**dest_dict))).parents[0]
-        os.makedirs(out_dir, exist_ok=True)
-
-        return pjoin(out_dir, prefix_name)
-
-    def netcdf_to_cog(self, input_file, prefix):
-        """
-        Convert the datasets in the NetCDF file 'file' into 'dest_dir'
-
-        Each dataset is put in a separate directory.
-
-        The directory names will look like 'LS_WATER_3577_9_-39_20180506102018'
-        """
-        try:
-            dataset = gdal.Open(input_file, gdal.GA_ReadOnly)
-        except Exception as exp:
-            LOG.info(f"netcdf error {input_file}: \n{exp}")
-            return
-
-        if dataset is None:
-            return
-
-        subdatasets = dataset.GetSubDatasets()
-
-        # Extract each band from the NetCDF and write to individual GeoTIFF files
-        rastercount = self._dataset_to_cog(prefix, subdatasets)
-
-        dataset_array = xarray.open_dataset(input_file)
-        self._dataset_to_yaml(prefix, dataset_array, rastercount)
-        # Clean up XML files from GDAL
-        # GDAL creates extra XML files which we don't want
-
-    def _dataset_to_yaml(self, prefix, dataset_array: xarray.Dataset, rastercount):
-        """
-        Write the datasets to separate yaml files
-        """
-        for i in range(rastercount):
-            if rastercount == 1:
-                yaml_fname = prefix + '.yaml'
-                dataset_object = (dataset_array.dataset.item()).decode('utf-8')
-            else:
-                yaml_fname = prefix + '_' + str(i + 1) + '.yaml'
-                dataset_object = (dataset_array.dataset.item(i)).decode('utf-8')
-
-            if exists(yaml_fname):
-                continue
-
-            dataset = yaml.load(dataset_object, Loader=Loader)
-            if dataset is None:
-                LOG.info("No yaml section %s", prefix)
-                continue
-
-            # Update band urls
-            for key, value in dataset['image']['bands'].items():
-                if rastercount == 1:
-                    tif_path = basename(prefix + '_' + key + '.tif')
-                else:
-                    tif_path = basename(prefix + '_' + key + '_' + str(i + 1) + '.tif')
-
-                value['layer'] = str(i + 1)
-                value['path'] = tif_path
-
-            dataset['format'] = {'name': 'GeoTIFF'}
-            dataset['lineage'] = {'source_datasets': {}}
-            with open(yaml_fname, 'w') as fp:
-                yaml.dump(dataset, fp, default_flow_style=False, Dumper=Dumper)
-
-    def _dataset_to_cog(self, prefix, subdatasets):
-        """
-        Write the datasets to separate cog files
-        """
-
-        os.environ['GDAL_DISABLE_READDIR_ON_OPEN'] = 'YES'
-        os.environ['CPL_VSIL_CURL_ALLOWED_EXTENSIONS'] = '.tif'
-        if self.white_list is not None:
-            self.white_list = "|".join(self.white_list)
-        if self.black_list is not None:
-            self.black_list = "|".join(self.black_list)
-        if self.nonpym_list is not None:
-            self.nonpym_list = "|".join(self.nonpym_list)
-
-        rastercount = 0
-        for dts in subdatasets[:-1]:
-            rastercount = gdal.Open(dts[0]).RasterCount
-            for i in range(rastercount):
-                band_name = dts[0].split(':')[-1]
-
-                # Only do specified bands if specified
-                if self.black_list is not None:
-                    if re.search(self.black_list, band_name) is not None:
-                        continue
-
-                if self.white_list is not None:
-                    if re.search(self.white_list, band_name) is None:
-                        continue
-
-                if rastercount == 1:
-                    out_fname = prefix + '_' + band_name + '.tif'
-                else:
-                    out_fname = prefix + '_' + band_name + '_' + str(i + 1) + '.tif'
-
-                # Check the done files might need a force option later
-                if exists(out_fname):
-                    if self._check_tif(out_fname):
-                        continue
-
-                # Resampling method of this band
-                resampling_method = None
-                if self.bands_rsp is not None:
-                    resampling_method = self.bands_rsp.get(band_name)
-                if resampling_method is None:
-                    resampling_method = self.default_rsp
-                if self.nonpym_list is not None:
-                    if re.search(self.nonpym_list, band_name) is not None:
-                        resampling_method = None
-
-                default_profile = {'driver': 'GTiff',
-                                   'interleave': 'pixel',
-                                   'tiled': True,
-                                   'blockxsize': 512,
-                                   'blockysize': 512,
-                                   'compress': 'DEFLATE',
-                                   'predictor': self.predictor,
-                                   'zlevel': 9}
-
-                cog_translate(dts[0], out_fname,
-                              default_profile,
-                              indexes=[i + 1],
-                              overview_resampling=resampling_method,
-                              overview_level=5,
-                              config=DEFAULT_GDAL_CONFIG)
-
-        return rastercount
-
-    def _check_tif(self, fname):
-        try:
-            cog_tif = gdal.Open(fname, gdal.GA_ReadOnly)
-            srcband = cog_tif.GetRasterBand(1)
-            t_stats = srcband.GetStatistics(True, True)
-        except Exception as exp:
-            LOG.error(f"Exception: {exp}")
-            return False
-
-        if t_stats > [0.] * 4:
-            return True
-        else:
-            return False
 
 
 def netcdf_cog_worker(wargs=None):
@@ -554,7 +345,7 @@ def convert_cog(product_name, config, output_dir, filelist, filenames):
 @product_options
 @config_file_options
 @output_dir_options
-@s3_options
+@s3_inv_options
 @aws_profile_options
 def store_s3_inventory(product_name, config, output_dir, inventory_manifest, aws_profile):
     """
@@ -586,7 +377,7 @@ def store_s3_inventory(product_name, config, output_dir, inventory_manifest, aws
 @config_file_options
 @output_dir_options
 @dc_env_options
-@s3_options
+@s3_inv_options
 @aws_profile_options
 @s3_inventory_list_options
 def generate_work_list(product_name, time_range, config, output_dir, datacube_env,
@@ -636,7 +427,7 @@ def mpi_cog_convert(product_name, config, output_dir, filelist):
     """
     \b
     Parallelise COG convert using MPI
-    Example: mpirun python3 streamer.py mpi-cog-convert -c aws_products_config.yaml
+    Example: mpirun python3 cog_conv_app.py mpi-cog-convert -c aws_products_config.yaml
              --output-dir /tmp/wofls_cog/ -p wofs_albers /tmp/wofs_albers_file_list
     \f
     Convert netcdf files to COG format using parallelisation by MPI tool.
@@ -677,6 +468,7 @@ def mpi_cog_convert(product_name, config, output_dir, filelist):
     num_workers = MPI_JOB_SIZE - 1 if MPI_JOB_SIZE > 1 else _raise_value_err(
         f"MPI Worker ({MPI_JOB_RANK}): Number of required processes has to be greater than 1")
 
+    exit_flag = False
     # Ensure all errors/exceptions are handled before this, else master-worker processes
     # will enter a dead-lock situation
     if MPI_JOB_RANK == 0:
@@ -713,8 +505,16 @@ def mpi_cog_convert(product_name, config, output_dir, filelist):
             elif tag == TagStatus.EXIT:
                 LOG.debug(f"MPI Worker ({source}) exited")
                 closed_workers += 1
+            elif tag == TagStatus.ERROR:
+                LOG.debug(f"MPI Worker ({source}) error detected during processing")
+                exit_flag = True
+                closed_workers += 1
 
-        LOG.debug("Batch processing completed")
+        if exit_flag:
+            LOG.error("Error occurred during cog conversion, hence stop everything and do not proceed")
+            sys.exit(1)
+        else:
+            LOG.debug("Batch processing completed")
     else:
         proc_name = MPI.Get_processor_name()
 
@@ -725,7 +525,12 @@ def mpi_cog_convert(product_name, config, output_dir, filelist):
 
             if tag == TagStatus.START:
                 LOG.debug(f"MPI Worker ({MPI_JOB_RANK}) on {proc_name} started COG conversion")
-                netcdf_cog_worker(wargs=task)
+                try:
+                    netcdf_cog_worker(wargs=task)
+                except Exception as exp:
+                    LOG.error(f"Unexpected error occurred during cog conversion: {exp}")
+                    MPI_COMM.send(None, dest=0, tag=TagStatus.ERROR)
+                    raise
                 MPI_COMM.send(None, dest=0, tag=TagStatus.DONE)
             elif tag == TagStatus.EXIT:
                 break
@@ -785,11 +590,12 @@ def verify_cog_files(path):
 @walltime_options
 @mail_options
 @mail_id
-@s3_options
+@s3_inv_options
+@s3_output_dir_options
 @aws_profile_options
 @dc_env_options
 def qsub_cog_convert(product_name, time_range, config, output_dir, queue, project, walltime,
-                     email_options, email_id, inventory_manifest, aws_profile, datacube_env):
+                     email_options, email_id, inventory_manifest, s3_output_url, aws_profile, datacube_env):
     """
     Submits an COG conversion job, using a four stage PBS job submission.
     Uses a configuration file to define the file naming schema.
@@ -828,10 +634,10 @@ def qsub_cog_convert(product_name, time_range, config, output_dir, queue, projec
            '-- /bin/bash -l -c "source $HOME/.bashrc; ' \
            'module use /g/data/v10/public/modules/modulefiles/; ' \
            'module load dea; ' \
-           'python3 %(streamer_file)s inventory-store -c %(yaml_file)s ' \
+           'python3 %(cog_converter_file)s inventory-store -c %(yaml_file)s ' \
            '--inventory-manifest %(s3_inventory)s --aws-profile %(aws_profile)s --product-name %(product)s ' \
            '--output-dir %(output_dir)s"'
-    cmd = prep % dict(product=product_name, project=project, streamer_file=STREAMER_FILE_PATH,
+    cmd = prep % dict(product=product_name, project=project, cog_converter_file=COG_FILE_PATH,
                       yaml_file=config, s3_inventory=inventory_manifest, aws_profile=aws_profile,
                       output_dir=output_dir)
 
@@ -840,12 +646,12 @@ def qsub_cog_convert(product_name, time_range, config, output_dir, queue, projec
     prep = 'qsub -q %(queue)s -N generate_work_list_%(product)s -P %(project)s ' \
            '-W depend=afterok:%(s3_inv_job)s: -l wd,walltime=10:00:00,mem=31GB,jobfs=5GB -W umask=33 ' \
            '-- /bin/bash -l -c "source $HOME/.bashrc;' \
-           '%(generate_script)s --dea-module %(dea_module)s --streamer-file %(streamer_file)s ' \
+           '%(generate_script)s --dea-module %(dea_module)s --cog-file %(cog_converter_file)s ' \
            '--config-file %(yaml_file)s --product-name %(product)s --output-dir %(output_dir)s ' \
            '--datacube-env %(dc_env)s --s3-list %(pickle_file)s --time-range \'%(time_range)s\'"'
     cmd = prep % dict(queue=queue, product=product_name, project=project, s3_inv_job=s3_inv_job.split('.')[0],
                       generate_script=GENERATE_FILE_PATH, dea_module=digitalearthau.MODULE_NAME,
-                      streamer_file=STREAMER_FILE_PATH, yaml_file=config, output_dir=output_dir,
+                      cog_converter_file=COG_FILE_PATH, yaml_file=config, output_dir=output_dir,
                       dc_env=datacube_env, pickle_file=str(Path(output_dir) / product_name) + PICKLE_FILE_EXT,
                       time_range=time_range)
 
@@ -857,7 +663,7 @@ def qsub_cog_convert(product_name, time_range, config, output_dir, queue, projec
            '-- /bin/bash -l -c "source $HOME/.bashrc; ' \
            'module use /g/data/v10/public/modules/modulefiles/; ' \
            'module load dea; ' \
-           'mpirun python3 %(streamer_file)s mpi-cog-convert -c %(yaml_file)s ' \
+           'mpirun --tag-output python3 %(cog_converter_file)s mpi-cog-convert -c %(yaml_file)s ' \
            '--output-dir %(output_dir)s --product-name %(product)s %(file_list)s"'
     cmd = qsub % dict(queue=queue,
                       project=project,
@@ -867,24 +673,29 @@ def qsub_cog_convert(product_name, time_range, config, output_dir, queue, projec
                       ncpus=nodes * 16,
                       mem=nodes * 31,
                       walltime=walltime,
-                      streamer_file=STREAMER_FILE_PATH,
+                      cog_converter_file=COG_FILE_PATH,
                       yaml_file=config,
                       output_dir=str(Path(output_dir) / product_name),
                       product=product_name,
                       file_list=task_file)
     cog_conversion_job = run_command(cmd)
 
+    if not s3_output_url:
+        s3_output = s3_output_url
+    else:
+        s3_output = 's3://dea-public-data/' + CFG['products'][product_name]['prefix']
+
     prep = 'qsub -q copyq -N s3_sync_%(product)s -P %(project)s ' \
            '-W depend=afterok:%(cog_conversion_job)s: ' \
            '-l wd,walltime=5:00:00,mem=31GB,jobfs=5GB -W umask=33 ' \
            '-- /bin/bash -l -c "source $HOME/.bashrc; ' \
            '%(aws_sync_script)s --dea-module %(dea_module)s ' \
-           '--inventory-manifest %(s3_inventory)s --aws-profile %(aws_profile)s ' \
-           '--output-dir %(output_dir)s --streamer-file %(streamer_file)s"'
+           '--s3-dir %(s3_output_url)s --aws-profile %(aws_profile)s ' \
+           '--output-dir %(output_dir)s --cog-file %(cog_converter_file)s"'
     cmd = prep % dict(product=product_name, project=project,
                       cog_conversion_job=cog_conversion_job.split('.')[0],
                       aws_sync_script=AWS_SYNC_PATH, dea_module=digitalearthau.MODULE_NAME,
-                      s3_inventory=inventory_manifest, streamer_file=STREAMER_FILE_PATH, aws_profile=aws_profile,
+                      s3_output_url=s3_output, cog_converter_file=COG_FILE_PATH, aws_profile=aws_profile,
                       output_dir=str(Path(output_dir) / product_name))
     run_command(cmd)
 

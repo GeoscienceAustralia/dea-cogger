@@ -133,3 +133,10 @@ products:
     stacked_name_template: "{x}_{y}/MANGROVE_COVER_3577_{x}_{y}_{time:%Y%m%d}"
     predictor: 2
     default_rsp: average
+
+  S1:
+    prefix: ga_s1a_c_ard/1-0-0/Copernicus_Backscatter/Sentinel-1/C-SAR/GRD  # dir's in AWS
+    name_template: "{time:%Y}/{time:%Y-%m}/{coord}"
+    stacked_name_template: "{time:%Y}/{time:%Y-%m}/{coord}"
+    predictor: 2
+    default_rsp: average

@@ -10,14 +10,14 @@ while [[ "$#" -gt 0 ]]; do
         --aws-profile )         shift
                                 AWS_PROFILE="$1"
                                 ;;
-        --streamer-file )       shift
-                                STREAMER_FILE="$1"
+        --cog-file )            shift
+                                COG_CONV_FILE="$1"
                                 ;;
         --output-dir )          shift
                                 OUTPUT_DIR="$1"
                                 ;;
-        --inventory-manifest )  shift
-                                S3_INVENTORY="$1"
+        --s3-dir )              shift
+                                S3_OUTPUT_DIR="$1"
                                 ;;
         * )
           echo "Input key, '$key', did not match the expected input argument key"
@@ -56,9 +56,9 @@ if [[ -s ~/.aws/credentials ]]; then
         exit 1
         }
 
-        python3 "$STREAMER_FILE" verify-cog-files --path "$OUTPUT_DIR"
+        python3 "$COG_CONV_FILE" verify-cog-files --path "$OUTPUT_DIR"
 
-        aws s3 sync "$OUTPUT_DIR" "$S3_INVENTORY" --exclude "*.pickle" --exclude "*.txt" --exclude "*file_list*" \
+        aws s3 sync "$OUTPUT_DIR" "$S3_OUTPUT_DIR" --exclude "*.pickle" --exclude "*.txt" --exclude "*file_list*" \
         --exclude "*.log"
 
         # Remove cog converted files after aws s3 sync

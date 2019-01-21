@@ -10,8 +10,8 @@ while [[ "$#" -gt 0 ]]; do
         --config-file )         shift
                                 YAML_FILE="$1"
                                 ;;
-        --streamer-file )       shift
-                                STREAMER_FILE="$1"
+        --cog-file )            shift
+                                COG_CONV_FILE="$1"
                                 ;;
         --product-name )        shift
                                 PRODUCT_NAME="$1"
@@ -46,5 +46,5 @@ cd "$OUTPUT_DIR" || {
   exit 1
 }
 
-python3 "$STREAMER_FILE" list-datasets -c "$YAML_FILE" --product-name "$PRODUCT_NAME" \
+python3 "$COG_CONV_FILE" list-datasets -c "$YAML_FILE" --product-name "$PRODUCT_NAME" \
 --output-dir "$OUTPUT_DIR" -E "$DATACUBE_ENV" --s3-list "$PICKLE_FILE" --time-range "$TIME_RANGE"

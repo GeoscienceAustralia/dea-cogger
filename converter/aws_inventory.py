@@ -7,7 +7,7 @@ import json
 from aws_s3_client import make_s3_client, s3_fetch, s3_ls_dir
 
 
-def find_latest_manifest(prefix, s3):
+def _find_latest_manifest(prefix, s3):
     manifest_dirs = sorted(s3_ls_dir(prefix, s3=s3), reverse=True)
 
     for d in manifest_dirs:
@@ -25,7 +25,7 @@ def list_inventory(manifest, s3=None, **kw):
     s3 = s3 or make_s3_client(**kw)
 
     if manifest.endswith('/'):
-        manifest = find_latest_manifest(manifest, s3)
+        manifest = _find_latest_manifest(manifest, s3)
 
     info = s3_fetch(manifest, s3=s3)
     info = json.loads(info)
@@ -35,8 +35,8 @@ def list_inventory(manifest, s3=None, **kw):
     if missing_keys:
         raise ValueError("Manifest file haven't parsed correctly")
 
-    fileFormat = info['fileFormat']
-    if fileFormat.upper() != 'CSV':
+    file_format = info['fileFormat']
+    if file_format.upper() != 'CSV':
         raise ValueError('Data is not in CSV format')
 
     prefix = 's3://' + info['destinationBucket'].split(':')[-1] + '/'
