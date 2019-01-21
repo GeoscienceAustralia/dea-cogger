@@ -65,13 +65,13 @@
   NetCDF to COG conversion from NCI file system
 
    - Convert the netcdfs that are on NCI /g/data/ file system and save them to the output path provided
-   - Use `streamer.py to convert to COG:
+   - Use `cog_conv_app.py to convert to COG:
 
 #### Usage
 
 ```
-> $python3 streamer/streamer.py --help
-Usage: streamer.py [OPTIONS] COMMAND [ARGS]...
+> $python3 converter/cog_conv_app.py --help
+Usage: cog_conv_app.py [OPTIONS] COMMAND [ARGS]...
 
 Options:
   --help  Show this message and exit.
@@ -148,8 +148,8 @@ Before using cog conversion command options, run the following:
 
 #### Usage
 ```
-> $python3 streamer/streamer.py cog-convert --help
-Usage: streamer.py cog-convert [OPTIONS] [FILENAMES]...
+> $python3 converter/cog_conv_app.py cog-convert --help
+Usage: cog_conv_app.py cog-convert [OPTIONS] [FILENAMES]...
 
   Convert a single/list of NetCDF files into COG format
 
@@ -163,9 +163,9 @@ Options:
 ```
 
 #### Example
-`` python3 streamer/streamer.py cog-convert -p wofs_albers /-1_-12/test_-1_-12_2018100_v1546165254.nc
+`` python3 converter/cog_conv_app.py cog-convert -p wofs_albers /-1_-12/test_-1_-12_2018100_v1546165254.nc
                 OR
-   python3 streamer/streamer.py cog-convert -p wofs_albers -l /tmp/wofs_albers_nc_file_list.txt``
+   python3 converter/cog_conv_app.py cog-convert -p wofs_albers -l /tmp/wofs_albers_nc_file_list.txt``
 
 
 ### Command: `inventory-store`
@@ -176,8 +176,8 @@ Options:
 
 #### Usage
 ```
-> $python3 streamer/streamer.py inventory-store --help
-Usage: streamer.py inventory-store [OPTIONS]
+> $python3 converter/cog_conv_app.py inventory-store --help
+Usage: cog_conv_app.py inventory-store [OPTIONS]
 
   Store S3 inventory list in a pickle file
 
@@ -192,7 +192,7 @@ Options:
 ```
 
 #### Example
-`` python3 streamer/streamer.py inventory-store -p wofs_albers --aws-profile tempProfile -o /tmp/``
+`` python3 converter/cog_conv_app.py inventory-store -p wofs_albers --aws-profile tempProfile -o /tmp/``
 
 
 ### Command: `list-datasets`
@@ -203,8 +203,8 @@ Options:
 
 #### Usage
 ```
-> $python3 streamer/streamer.py list-datasets --help
-Usage: streamer.py list-datasets [OPTIONS]
+> $python3 converter/cog_conv_app.py list-datasets --help
+Usage: cog_conv_app.py list-datasets [OPTIONS]
 
   Generate task list for COG conversion
 
@@ -225,7 +225,7 @@ Options:
 ```
 
 #### Example
-``python3 streamer/streamer.py list-datasets -p wofs_albers --time-range '2018-11-30 < time < 2018-12-01'``
+``python3 converter/cog_conv_app.py list-datasets -p wofs_albers --time-range '2018-11-30 < time < 2018-12-01'``
 
 
 ### Command: `mpi-cog-convert`
@@ -245,8 +245,8 @@ Options:
 
 #### Usage
 ```
-> $python3 streamer/streamer.py mpi-cog-convert --help
-Usage: streamer.py mpi-cog-convert [OPTIONS] FILELIST
+> $python3 converter/cog_conv_app.py mpi-cog-convert --help
+Usage: cog_conv_app.py mpi-cog-convert [OPTIONS] FILELIST
 
   Parallelise COG convert using MPI
 
@@ -260,7 +260,7 @@ Options:
 
 #### Example
 ``
-mpirun python3 streamer/streamer.py mpi-cog-convert -c aws_products_config.yaml
+mpirun python3 converter/cog_conv_app.py mpi-cog-convert -c aws_products_config.yaml
 --output-dir /tmp/wofls_cog/ -p wofs_albers /tmp/wofs_albers_file_list``
 
 
@@ -293,8 +293,8 @@ mpirun python3 streamer/streamer.py mpi-cog-convert -c aws_products_config.yaml
 
 #### Usage
 ```
-> $python3 streamer/streamer.py qsub-cog-convert --help
-Usage: streamer.py qsub-cog-convert [OPTIONS]
+> $python3 converter/cog_conv_app.py qsub-cog-convert --help
+Usage: cog_conv_app.py qsub-cog-convert [OPTIONS]
 
   Kick off four stage COG Conversion PBS job
 
@@ -315,6 +315,7 @@ Options:
                                   [a = aborted | b = begins | e = ends | n = do not send email]
   -M, --email-id TEXT             Email recipient id (Optional)
   -i, --inventory-manifest TEXT   The manifest of AWS S3 bucket inventory URL (Optional)
+  --s3-output-url TEXT            S3 URL for uploading the converted files (Optional)
   --aws-profile TEXT              AWS profile name (Optional)
   -E, --datacube-env TEXT         Datacube environment (Optional)
   --help                          Show this message and exit.
@@ -322,7 +323,7 @@ Options:
 ```
 
 #### Example
-``python3 streamer/streamer.py qsub-cog-convert -q normal -P v10 -M temp@email.com -p wofs_albers 
+``python3 converter/cog_conv_app.py qsub-cog-convert -q normal -P v10 -M temp@email.com -p wofs_albers 
 --time-range '2018-11-30 < time < 2018-12-01'``
 
 
@@ -333,8 +334,8 @@ Options:
 
 #### Usage
 ```
-> $python3 streamer/streamer.py verify-cog-files --help
-Usage: streamer.py verify-cog-files [OPTIONS]
+> $python3 converter/cog_conv_app.py verify-cog-files --help
+Usage: cog_conv_app.py verify-cog-files [OPTIONS]
 
   Verify the converted GeoTIFF are Cloud Optimised GeoTIFF
 
@@ -345,7 +346,7 @@ Options:
 ```
 
 #### Example
-`` python3 streamer/streamer.py verify-cog-files --path /tmp/wofls_cog``
+`` python3 converter/cog_conv_app.py verify-cog-files --path /tmp/wofls_cog``
 
 
 ### Validate Cog Files
