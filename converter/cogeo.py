@@ -185,6 +185,7 @@ class COGNetCDF:
         if self.nonpym_list is not None:
             self.nonpym_list = "|".join(self.nonpym_list)
 
+        rastercount = 1
         for dts in subdatasets[:-1]:
             rastercount = gdal.Open(dts[0]).RasterCount
             for i in range(rastercount):
