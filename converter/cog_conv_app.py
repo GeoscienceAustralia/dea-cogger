@@ -680,7 +680,7 @@ def qsub_cog_convert(product_name, time_range, config, output_dir, queue, projec
                       file_list=task_file)
     cog_conversion_job = run_command(cmd)
 
-    if not s3_output_url:
+    if s3_output_url:
         s3_output = s3_output_url
     else:
         s3_output = 's3://dea-public-data/' + CFG['products'][product_name]['prefix']
