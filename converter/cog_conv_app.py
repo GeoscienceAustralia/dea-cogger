@@ -671,7 +671,7 @@ def qsub_cog_convert(product_name, time_range, config, output_dir, queue, projec
                       email_options=email_options,
                       email_id=email_id,
                       ncpus=nodes * 16,
-                      mem=nodes * 31,
+                      mem=nodes * 62,
                       walltime=walltime,
                       cog_converter_file=COG_FILE_PATH,
                       yaml_file=config,
