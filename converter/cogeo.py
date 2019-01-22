@@ -119,12 +119,7 @@ class COGNetCDF:
         subdatasets = dataset.GetSubDatasets()
 
         # Extract each band from the NetCDF and write to individual GeoTIFF files
-        rastercount = self._dataset_to_cog(prefix, subdatasets)
-
-        dataset_array = xarray.open_dataset(input_file)
-        self._dataset_to_yaml(prefix, dataset_array, rastercount)
-        # Clean up XML files from GDAL
-        # GDAL creates extra XML files which we don't want
+        self._dataset_to_cog(prefix, subdatasets, input_file)
 
     def _dataset_to_yaml(self, prefix, dataset_array: xarray.Dataset, rastercount):
         """
@@ -174,8 +169,9 @@ class COGNetCDF:
             dataset['lineage'] = {'source_datasets': {}}
             with open(yaml_fname, 'w') as fp:
                 yaml.dump(dataset, fp, default_flow_style=False, Dumper=Dumper)
+                print(f"Created yaml file, {yaml_fname}")
 
-    def _dataset_to_cog(self, prefix, subdatasets):
+    def _dataset_to_cog(self, prefix, subdatasets, input_file):
         """
         Write the datasets to separate cog files
         """
@@ -189,7 +185,6 @@ class COGNetCDF:
         if self.nonpym_list is not None:
             self.nonpym_list = "|".join(self.nonpym_list)
 
-        rastercount = 0
         for dts in subdatasets[:-1]:
             rastercount = gdal.Open(dts[0]).RasterCount
             for i in range(rastercount):
@@ -224,23 +219,32 @@ class COGNetCDF:
                     if re.search(self.nonpym_list, band_name) is not None:
                         resampling_method = None
 
+                # Note: DEFLATE compression while more efficient than LZW can cause compatibility issues
+                #       with some software packages
+                #       DEFLATE or LZW can be used for lossless compression, or
+                #       JPEG for lossy compression
                 default_profile = {'driver': 'GTiff',
                                    'interleave': 'pixel',
                                    'tiled': True,
-                                   'blockxsize': 512,
-                                   'blockysize': 512,
+                                   'blockxsize': 512,  # 256 or 512 pixels
+                                   'blockysize': 512,  # 256 or 512 pixels
                                    'compress': 'DEFLATE',
                                    'predictor': self.predictor,
+                                   'copy_src_overviews': True,
                                    'zlevel': 9}
 
-                print(f"{dts[0]}", file=sys.stdout)
                 cog_translate(dts[0], out_fname,
                               default_profile,
                               indexes=[i + 1],
                               overview_resampling=resampling_method,
                               config=DEFAULT_GDAL_CONFIG)
 
-        return rastercount
+        dataset_array = xarray.open_dataset(input_file)
+
+        # Create a single yaml file for a sub-dataset (consolidated one for a band group)
+        self._dataset_to_yaml(prefix, dataset_array, rastercount)
+        # Clean up XML files from GDAL
+        # GDAL creates extra XML files which we don't want
 
     def _check_tif(self, fname):
         try:
@@ -331,7 +335,9 @@ def cog_translate(
                         )
 
                     try:
-                        copy(mem, dst_path, copy_src_overviews=True, **dst_kwargs)
+                        copy(mem, dst_path, **dst_kwargs)
+                        print(f"Created a cloud optimized GeoTIFF file, {dst_path}")
                     except Exception as exp:
-                        print(f"Error while cog conversion: {exp}", file=sys.stderr)
+                        print(f"Error while creating a cloud optimized GeoTIFF file, {dst_path}\n\t{exp}",
+                              file=sys.stderr)
                         raise
