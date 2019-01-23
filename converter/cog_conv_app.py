@@ -645,7 +645,7 @@ def qsub_cog_convert(product_name, time_range, config, output_dir, queue, projec
 
     prep = 'qsub -q %(queue)s -N generate_work_list_%(product)s -P %(project)s ' \
            '-W depend=afterok:%(s3_inv_job)s: -l wd,walltime=10:00:00,mem=31GB,jobfs=5GB -W umask=33 ' \
-           '-- /bin/bash -l -c "source $HOME/.bashrc;' \
+           '-- /bin/bash -l -c "source $HOME/.bashrc; ' \
            '%(generate_script)s --dea-module %(dea_module)s --cog-file %(cog_converter_file)s ' \
            '--config-file %(yaml_file)s --product-name %(product)s --output-dir %(output_dir)s ' \
            '--datacube-env %(dc_env)s --s3-list %(pickle_file)s --time-range \'%(time_range)s\'"'
@@ -663,8 +663,8 @@ def qsub_cog_convert(product_name, time_range, config, output_dir, queue, projec
            '-- /bin/bash -l -c "source $HOME/.bashrc; ' \
            'module use /g/data/v10/public/modules/modulefiles/; ' \
            'module load dea; ' \
-           'mpirun --tag-output python3 %(cog_converter_file)s mpi-cog-convert -c %(yaml_file)s ' \
-           '--output-dir %(output_dir)s --product-name %(product)s %(file_list)s"'
+           'mpirun --tag-output --oversubscribe -n %(ncpus)d python3 %(cog_converter_file)s mpi-cog-convert ' \
+           '-c %(yaml_file)s --output-dir %(output_dir)s --product-name %(product)s %(file_list)s"'
     cmd = qsub % dict(queue=queue,
                       project=project,
                       file_list_job=file_list_job.split('.')[0],
