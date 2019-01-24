@@ -106,8 +106,8 @@ num_nodes_options = click.option('--nodes', default=16,
 # pylint: disable=invalid-name
 # https://cs.anu.edu.au/courses/distMemHPC/sessions/MF1.html
 num_cores_options = click.option('--cores', default=8,
-                                 help='Number of cores per processes (range: 1-57472) to request (Optional)',
-                                 type=click.IntRange(1, 57472))
+                                 help='Number of cores per socket (range: 1-8) to request (Optional)',
+                                 type=click.IntRange(1, 8))
 
 with open(ROOT_DIR / 'aws_products_config.yaml') as fd:
     CFG = yaml.load(fd)
