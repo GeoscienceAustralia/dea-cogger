@@ -42,6 +42,8 @@ TASK_FILE_EXT = '_nc_file_list.txt'
 INVALID_GEOTIFF_FILES = list()
 REMOVE_ROOT_GEOTIFF_DIR = list()
 OUTPUT_DIR = '/g/data/v10/tmp/cog_output_files'
+NUM_NODES = 16  # Requested number of nodes within Raijin
+NUM_THREADS_PER_PROCESS = 8  # Number of threads per process
 
 # pylint: disable=invalid-name
 queue_options = click.option('--queue', '-q', default='normal',
@@ -472,11 +474,11 @@ def mpi_cog_convert(product_name, config, output_dir, filelist):
     # Ensure all errors/exceptions are handled before this, else master-worker processes
     # will enter a dead-lock situation
     if MPI_JOB_RANK == 0:
-        name = MPI.Get_processor_name()
+        master_node_name = MPI.Get_processor_name()
         task_index = 0
         closed_workers = 0
         job_args = []
-        LOG.debug(f"MPI Master ({MPI_JOB_RANK}) on {name} node, starting with {num_workers} workers")
+        LOG.debug(f"MPI Master ({MPI_JOB_RANK}) on {master_node_name} node, starting with {num_workers} workers")
 
         # Append the jobs_args list for each filename to be scheduled among all the available workers
         if tasks == 1:
@@ -501,7 +503,7 @@ def mpi_cog_convert(product_name, config, output_dir, filelist):
                 else:
                     MPI_COMM.send(None, dest=source, tag=TagStatus.EXIT)
             elif tag == TagStatus.DONE:
-                LOG.debug(f"MPI Worker ({source}) on {name} completed the assigned task")
+                LOG.debug(f"MPI Worker ({source}) completed the assigned task")
             elif tag == TagStatus.EXIT:
                 LOG.debug(f"MPI Worker ({source}) exited")
                 closed_workers += 1
@@ -516,7 +518,7 @@ def mpi_cog_convert(product_name, config, output_dir, filelist):
         else:
             LOG.debug("Batch processing completed")
     else:
-        proc_name = MPI.Get_processor_name()
+        worker_node_name = MPI.Get_processor_name()
 
         while True:
             MPI_COMM.send(None, dest=0, tag=TagStatus.READY)
@@ -524,7 +526,7 @@ def mpi_cog_convert(product_name, config, output_dir, filelist):
             tag = MPI_JOB_STATUS.Get_tag()
 
             if tag == TagStatus.START:
-                LOG.debug(f"MPI Worker ({MPI_JOB_RANK}) on {proc_name} started COG conversion")
+                LOG.debug(f"MPI Worker ({MPI_JOB_RANK}) on {worker_node_name} node started COG conversion")
                 try:
                     netcdf_cog_worker(wargs=task)
                 except Exception as exp:
@@ -535,7 +537,8 @@ def mpi_cog_convert(product_name, config, output_dir, filelist):
             elif tag == TagStatus.EXIT:
                 break
 
-        LOG.debug(f"MPI Worker ({MPI_JOB_RANK}) did not receive any task, hence sending exit status to the master")
+        LOG.debug(f"MPI Worker ({MPI_JOB_RANK}) on {worker_node_name} node did not receive any task, hence sending "
+                  f"exit status to the master")
         MPI_COMM.send(None, dest=0, tag=TagStatus.EXIT)
 
 
@@ -627,7 +630,6 @@ def qsub_cog_convert(product_name, time_range, config, output_dir, queue, projec
       $ module load dea
     """
     task_file = str(Path(output_dir) / product_name) + TASK_FILE_EXT
-    nodes = 5  # Requested number of nodes within Raijin
 
     prep = 'qsub -q copyq -N store_s3_list_%(product)s -P %(project)s ' \
            '-l wd,walltime=5:00:00,mem=31GB,jobfs=5GB -W umask=33 ' \
@@ -659,20 +661,24 @@ def qsub_cog_convert(product_name, time_range, config, output_dir, queue, projec
 
     qsub = 'qsub -q %(queue)s -N mpi_cog_convert_%(product)s -P %(project)s ' \
            '-W depend=afterok:%(file_list_job)s: -m %(email_options)s -M %(email_id)s ' \
-           '-l ncpus=%(ncpus)d,mem=%(mem)dgb,jobfs=10GB,walltime=%(walltime)d:00:00,wd ' \
+           '-l ncpus=%(ncpus)d,mem=%(mem)dgb,jobfs=32GB,walltime=%(walltime)d:00:00,wd ' \
            '-- /bin/bash -l -c "source $HOME/.bashrc; ' \
            'module use /g/data/v10/public/modules/modulefiles/; ' \
-           'module load dea; ' \
-           'mpirun --tag-output --oversubscribe -n %(ncpus)d python3 %(cog_converter_file)s mpi-cog-convert ' \
+           'module load dea/20181015; ' \
+           'module load openmpi/3.1.2;' \
+           'mpirun -np %(nprocs)d --map-by node:PE=%(ncores)d --tag-output --report-bindings --rank-by core ' \
+           'python3 %(cog_converter_file)s mpi-cog-convert ' \
            '-c %(yaml_file)s --output-dir %(output_dir)s --product-name %(product)s %(file_list)s"'
     cmd = qsub % dict(queue=queue,
                       project=project,
                       file_list_job=file_list_job.split('.')[0],
                       email_options=email_options,
                       email_id=email_id,
-                      ncpus=nodes * 16,
-                      mem=nodes * 62,
+                      ncpus=NUM_NODES * 16,
+                      mem=NUM_NODES * 31,
                       walltime=walltime,
+                      nprocs=(NUM_NODES * 16) / NUM_THREADS_PER_PROCESS,
+                      ncores=NUM_THREADS_PER_PROCESS,
                       cog_converter_file=COG_FILE_PATH,
                       yaml_file=config,
                       output_dir=str(Path(output_dir) / product_name),
