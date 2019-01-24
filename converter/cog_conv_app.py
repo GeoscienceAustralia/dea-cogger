@@ -99,7 +99,7 @@ config_file_options = click.option('--config', '-c', default=YAMLFILE_PATH,
 
 # pylint: disable=invalid-name
 # https://cs.anu.edu.au/courses/distMemHPC/sessions/MF1.html
-num_nodes_options = click.option('--nodes', default=16,
+num_nodes_options = click.option('--nodes', default=31,
                                  help='Number of raijin nodes (range: 1-3592) to request (Optional)',
                                  type=click.IntRange(1, 3592))
 
