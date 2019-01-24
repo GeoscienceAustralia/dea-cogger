@@ -103,12 +103,6 @@ num_nodes_options = click.option('--nodes', default=16,
                                  help='Number of raijin nodes (range: 1-3592) to request (Optional)',
                                  type=click.IntRange(1, 3592))
 
-# pylint: disable=invalid-name
-# https://cs.anu.edu.au/courses/distMemHPC/sessions/MF1.html
-num_cores_options = click.option('--cores', default=8,
-                                 help='Number of cores per socket (range: 1-8) to request (Optional)',
-                                 type=click.IntRange(1, 8))
-
 with open(ROOT_DIR / 'aws_products_config.yaml') as fd:
     CFG = yaml.load(fd)
 
@@ -602,14 +596,13 @@ def verify_cog_files(path):
 @project_options
 @walltime_options
 @num_nodes_options
-@num_cores_options
 @mail_options
 @mail_id
 @s3_inv_options
 @s3_output_dir_options
 @aws_profile_options
 @dc_env_options
-def qsub_cog_convert(product_name, time_range, config, output_dir, queue, project, walltime, nodes, cores,
+def qsub_cog_convert(product_name, time_range, config, output_dir, queue, project, walltime, nodes,
                      email_options, email_id, inventory_manifest, s3_output_url, aws_profile, datacube_env):
     """
     Submits an COG conversion job, using a four stage PBS job submission.
@@ -678,7 +671,7 @@ def qsub_cog_convert(product_name, time_range, config, output_dir, queue, projec
            'module use /g/data/v10/public/modules/modulefiles/; ' \
            'module load dea/20181015; ' \
            'module load openmpi/3.1.2;' \
-           'mpirun -np %(nprocs)d --map-by node:PE=%(ncores)d --tag-output --report-bindings --rank-by core ' \
+           'mpirun --tag-output --report-bindings ' \
            'python3 %(cog_converter_file)s mpi-cog-convert ' \
            '-c %(yaml_file)s --output-dir %(output_dir)s --product-name %(product)s %(file_list)s"'
     cmd = qsub % dict(queue=queue,
@@ -687,10 +680,8 @@ def qsub_cog_convert(product_name, time_range, config, output_dir, queue, projec
                       email_options=email_options,
                       email_id=email_id,
                       ncpus=nodes * 16,
-                      mem=nodes * 31,
+                      mem=nodes * 16 * 4,
                       walltime=walltime,
-                      nprocs=(nodes * 16) / cores,
-                      ncores=cores,
                       cog_converter_file=COG_FILE_PATH,
                       yaml_file=config,
                       output_dir=str(Path(output_dir) / product_name),

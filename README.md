@@ -328,7 +328,6 @@ Options:
   -P, --project TEXT              Project Name
   -t, --walltime INTEGER RANGE    Number of hours (range: 1-48hrs) to request (Optional)
   --nodes INTEGER RANGE           Number of raijin nodes (range: 1-3592) to request (Optional)
-  --cores INTEGER RANGE           Number of cores per socket (range: 1-8) to request (Optional)
   -m, --email-options             [a|b|e|n|ae|ab|be|abe]
                                   Send email when execution is, 
                                   [a = aborted | b = begins | e = ends | n = do not send email]
