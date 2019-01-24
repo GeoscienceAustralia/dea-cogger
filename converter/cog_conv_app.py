@@ -42,8 +42,6 @@ TASK_FILE_EXT = '_nc_file_list.txt'
 INVALID_GEOTIFF_FILES = list()
 REMOVE_ROOT_GEOTIFF_DIR = list()
 OUTPUT_DIR = '/g/data/v10/tmp/cog_output_files'
-NUM_NODES = 16  # Requested number of nodes within Raijin
-NUM_THREADS_PER_PROCESS = 8  # Number of threads per process
 
 # pylint: disable=invalid-name
 queue_options = click.option('--queue', '-q', default='normal',
@@ -98,6 +96,18 @@ s3_inventory_list_options = click.option('--s3-list', default=list(),
 # pylint: disable=invalid-name
 config_file_options = click.option('--config', '-c', default=YAMLFILE_PATH,
                                    help='Product configuration file (Optional)')
+
+# pylint: disable=invalid-name
+# https://cs.anu.edu.au/courses/distMemHPC/sessions/MF1.html
+num_nodes_options = click.option('--nodes', default=16,
+                                 help='Number of raijin nodes (range: 1-3592) to request (Optional)',
+                                 type=click.IntRange(1, 3592))
+
+# pylint: disable=invalid-name
+# https://cs.anu.edu.au/courses/distMemHPC/sessions/MF1.html
+num_cores_options = click.option('--cores', default=8,
+                                 help='Number of cores per processes (range: 1-57472) to request (Optional)',
+                                 type=click.IntRange(1, 57472))
 
 with open(ROOT_DIR / 'aws_products_config.yaml') as fd:
     CFG = yaml.load(fd)
@@ -591,13 +601,15 @@ def verify_cog_files(path):
 @queue_options
 @project_options
 @walltime_options
+@num_nodes_options
+@num_cores_options
 @mail_options
 @mail_id
 @s3_inv_options
 @s3_output_dir_options
 @aws_profile_options
 @dc_env_options
-def qsub_cog_convert(product_name, time_range, config, output_dir, queue, project, walltime,
+def qsub_cog_convert(product_name, time_range, config, output_dir, queue, project, walltime, nodes, cores,
                      email_options, email_id, inventory_manifest, s3_output_url, aws_profile, datacube_env):
     """
     Submits an COG conversion job, using a four stage PBS job submission.
@@ -674,11 +686,11 @@ def qsub_cog_convert(product_name, time_range, config, output_dir, queue, projec
                       file_list_job=file_list_job.split('.')[0],
                       email_options=email_options,
                       email_id=email_id,
-                      ncpus=NUM_NODES * 16,
-                      mem=NUM_NODES * 31,
+                      ncpus=nodes * 16,
+                      mem=nodes * 31,
                       walltime=walltime,
-                      nprocs=(NUM_NODES * 16) / NUM_THREADS_PER_PROCESS,
-                      ncores=NUM_THREADS_PER_PROCESS,
+                      nprocs=(nodes * 16) / cores,
+                      ncores=cores,
                       cog_converter_file=COG_FILE_PATH,
                       yaml_file=config,
                       output_dir=str(Path(output_dir) / product_name),
