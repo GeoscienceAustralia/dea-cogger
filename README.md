@@ -259,9 +259,27 @@ Options:
 ```
 
 #### Example
-``
-mpirun python3 converter/cog_conv_app.py mpi-cog-convert -c aws_products_config.yaml
---output-dir /tmp/wofls_cog/ -p wofs_albers /tmp/wofs_albers_file_list``
+```
+#!/bin/bash
+#PBS -q normal
+#PBS -l walltime=20:00:00
+#PBS -l ncpus=256
+#PBS -l mem=256GB
+#PBS -l jobfs=1GB
+#PBS -l wd
+module use /g/data/v10/public/modules/modulefiles/
+module load dea/20181015
+module load openmpi/3.1.2
+mpirun -np 32 --map-by node:PE=8 --tag-output --report-bindings --rank-by core python3 converter/cog_conv_app.py
+mpi-cog-convert -c aws_products_config.yaml --output-dir /tmp/wofls_cog/ -p wofs_albers /tmp/wofs_albers_file_list
+
+       OR
+
+qsub -q express -N mpi_cog_convert_product -l ncpus=256,mem=496gb,jobfs=32GB,walltime=05:00:00,wd -- /bin/bash -l -c
+"module use /g/data/v10/public/modules/modulefiles/; module load dea; module load openmpi/3.1.2;
+mpirun -np 32 --map-by node:PE=8 --tag-output --report-bindings --rank-by core python3 converter/cog_conv_app.py
+mpi-cog-convert -c aws_products_config.yaml --output-dir /tmp/wofls_cog/ -p wofs_albers /tmp/wofs_albers_file_list"
+```
 
 
 ### Command: `qsub-cog-convert`
