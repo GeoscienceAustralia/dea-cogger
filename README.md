@@ -263,8 +263,8 @@ Options:
 #!/bin/bash
 #PBS -q normal
 #PBS -l walltime=20:00:00
-#PBS -l ncpus=256
-#PBS -l mem=256GB
+#PBS -l ncpus=80
+#PBS -l mem=155GB
 #PBS -l jobfs=1GB
 #PBS -l wd
 module use /g/data/v10/public/modules/modulefiles/
@@ -275,7 +275,7 @@ mpi-cog-convert -c aws_products_config.yaml --output-dir /tmp/wofls_cog/ -p wofs
 
        OR
 
-qsub -q express -N mpi_cog_convert_product -l ncpus=256,mem=496gb,jobfs=32GB,walltime=05:00:00,wd -- /bin/bash -l -c
+qsub -q express -N mpi_cog_convert_product -l ncpus=80,mem=155gb,jobfs=32GB,walltime=05:00:00,wd -- /bin/bash -l -c
 "module use /g/data/v10/public/modules/modulefiles/; module load dea; module load openmpi/3.1.2;
 mpirun --tag-output --report-bindings --rank-by core python3 converter/cog_conv_app.py
 mpi-cog-convert -c aws_products_config.yaml --output-dir /tmp/wofls_cog/ -p wofs_albers /tmp/wofs_albers_file_list"
