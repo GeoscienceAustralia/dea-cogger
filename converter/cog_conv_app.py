@@ -99,7 +99,7 @@ config_file_options = click.option('--config', '-c', default=YAMLFILE_PATH,
 
 # pylint: disable=invalid-name
 # https://cs.anu.edu.au/courses/distMemHPC/sessions/MF1.html
-num_nodes_options = click.option('--nodes', default=31,
+num_nodes_options = click.option('--nodes', default=5,
                                  help='Number of raijin nodes (range: 1-3592) to request (Optional)',
                                  type=click.IntRange(1, 3592))
 
@@ -680,7 +680,7 @@ def qsub_cog_convert(product_name, time_range, config, output_dir, queue, projec
                       email_options=email_options,
                       email_id=email_id,
                       ncpus=nodes * 16,
-                      mem=nodes * 16 * 4,
+                      mem=nodes * 62,
                       walltime=walltime,
                       cog_converter_file=COG_FILE_PATH,
                       yaml_file=config,

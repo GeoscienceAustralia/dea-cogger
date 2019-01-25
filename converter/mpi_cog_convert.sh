@@ -40,37 +40,30 @@ done
 
 FILEL=$OUTDIR/file_list_
 FILEN=$OUTDIR/file_empty_list
-NNODES=31
+NNODES=5
 NCPUS=$((NNODES*16))
-MEM=$((NNODES*16*4))GB
+MEM=$((NNODES*62))GB
 JOBFS=32GB
 
-i=1
-j=1
 echo "" > "$FILEN"
-echo "" > "$FILEL$j"
+echo "" > "$FILEL"
 find "$SRCDIR" -name "*.nc" | \
     while read -r file
     do
         SIZE=$(stat -c%s "$file")
+
+        # If we have any netCDF files with size 0, then append them to
+        # file_empty_list file
         if [ $((SIZE)) -eq 0 ]
         then
             echo "$file" >> "$FILEN"
         else
-            echo "$file" >> "$FILEL$j"
-            i=$((i+1))
-        fi
-        if [ $((i)) -gt $((NCPUS*20)) ]
-        then
-            i=1
-            j=$((j+1))
-            echo "" > "$FILEL$j"
+            echo "$file" >> "$FILEL"
         fi
     done
 
 cd "$OUTDIR" || exit 1
 
-j=1
 f_j=$(qsub -P "$PROJECT" -q "$QUEUE" \
       -l walltime=1:00:00,mem=$MEM,jobfs=$JOBFS,ncpus=$NCPUS,wd \
       -- /bin/bash -l -c "source $HOME/.bashrc; \
@@ -78,21 +71,6 @@ f_j=$(qsub -P "$PROJECT" -q "$QUEUE" \
       module load ${MODULE}; \
       module load openmpi/3.1.2; \
       mpirun --tag-output --report-bindings python3 $COGS mpi-convert-cog -c $YAMLFILE --output-dir $OUTDIR \
-      --product-name $PRODUCT $FILEL$j")
+      --product-name $PRODUCT $FILEL")
 
 echo "Submitting qsub job, $f_j"
-
-j=2
-while [ -s  "$FILEL$j" ]; do
-    n_j=$(qsub -W depend=afterany:"$f_j" -P "$PROJECT" -q "$QUEUE" \
-          -l walltime=1:00:00,mem=$MEM,jobfs=$JOBFS,ncpus=$NCPUS,wd \
-          -- /bin/bash -l -c "source $HOME/.bashrc; \
-          module use /g/data/v10/public/modules/modulefiles/; \
-          module load ${MODULE}; \
-          module load openmpi/3.1.2; \
-          mpirun --tag-output --report-bindings python3 $COGS mpi-convert-cog -c $YAMLFILE \
-          --output-dir $OUTDIR --product-name $PRODUCT $FILEL$j")
-    f_j=$n_j
-    j=$((j+1))
-    echo "Submitting qsub job, $f_j"
-done
