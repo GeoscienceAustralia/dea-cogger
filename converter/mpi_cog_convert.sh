@@ -36,6 +36,8 @@ while [[ "$#" -gt 0 ]]; do
     shift
 done
 
+[ -d "$OUTDIR" ] || mkdir -p "$OUTDIR"
+
 FILEL=$OUTDIR/file_list_
 FILEN=$OUTDIR/file_empty_list
 NNODES=31
@@ -78,6 +80,8 @@ f_j=$(qsub -P "$PROJECT" -q "$QUEUE" \
       mpirun --tag-output --report-bindings python3 $COGS mpi-convert-cog -c $YAMLFILE --output-dir $OUTDIR \
       --product-name $PRODUCT $FILEL$j")
 
+echo "Submitting qsub job, $f_j"
+
 j=2
 while [ -s  "$FILEL$j" ]; do
     n_j=$(qsub -W depend=afterany:"$f_j" -P "$PROJECT" -q "$QUEUE" \
@@ -90,4 +94,5 @@ while [ -s  "$FILEL$j" ]; do
           --output-dir $OUTDIR --product-name $PRODUCT $FILEL$j")
     f_j=$n_j
     j=$((j+1))
+    echo "Submitting qsub job, $f_j"
 done
