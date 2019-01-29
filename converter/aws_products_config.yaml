@@ -11,21 +11,21 @@ products:
     name_template: x_{x}/y_{y}/wofs_filtered_summary_{x}_{y}
     stacked_name_template: x_{x}/y_{y}/wofs_filtered_summary_{x}_{y}
     predictor: 2
-    default_rsp: nearest
+    default_rsp: average
 
   wofs_summary:
     prefix: WOfS/summary/v2.1.0/combined
     name_template: x_{x}/y_{y}/WOFS_3577_{x}_{y}_summary
     stacked_name_template: x_{x}/y_{y}/WOFS_3577_{x}_{y}_summary
     predictor: 2
-    default_rsp: nearest
+    default_rsp: average
 
   wofs_annual_summary:
     prefix: WOfS/annual_summary/v2.1.5/combined
     name_template: x_{x}/y_{y}/{time:%Y}/WOFS_3577_{x}_{y}_{time:%Y}_summary
     stacked_name_template: x_{x}/y_{y}/{time:%Y}/WOFS_3577_{x}_{y}_{time:%Y}_summary
     predictor: 2
-    default_rsp: nearest
+    default_rsp: average
 
   ls5_fc_albers:
     prefix: fractional-cover/fc/v2.2.0/ls5
