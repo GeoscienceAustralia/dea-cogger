@@ -4,7 +4,7 @@ products:
     name_template: x_{x}/y_{y}/{time:%Y}/{time:%m}/{time:%d}/LS_WATER_3577_{x}_{y}_{time:%Y%m%d%H%M%S%f}
     stacked_name_template: x_{x}/y_{y}/{time:%Y}/{time:%m}/{time:%d}/LS_WATER_3577_{x}_{y}_{time:%Y}_
     predictor: 2
-    default_rsp: average
+    default_rsp: nearest
 
   wofs_filtered_summary:
     prefix: WOfS/filtered_summary/v2.1.0/combined
