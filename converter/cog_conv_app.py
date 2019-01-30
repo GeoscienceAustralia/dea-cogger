@@ -39,8 +39,6 @@ AWS_SYNC_PATH = ROOT_DIR / 'aws_sync.sh'
 VALIDATE_GEOTIFF_PATH = ROOT_DIR.parent / 'validate_cloud_optimized_geotiff.py'
 PICKLE_FILE_EXT = '_s3_inv_list.pickle'
 TASK_FILE_EXT = '_nc_file_list.txt'
-INVALID_GEOTIFF_FILES = list()
-REMOVE_ROOT_GEOTIFF_DIR = list()
 OUTPUT_DIR = '/g/data/v10/tmp/cog_output_files'
 
 # pylint: disable=invalid-name
@@ -240,7 +238,7 @@ def get_param_names(template_str):
     """
     Return parameter names from a template string
     """
-    return list(set(re.findall(r'{([\w_]+)[:Ymd\-%]*}', template_str)))
+    return set(re.findall(r'{([\w_]+)[:Ymd\-%]*}', template_str))
 
 
 def check_prefix_from_query_result(result, product_config, s3_list):
@@ -372,7 +370,7 @@ def store_s3_inventory(product_name, config, output_dir, inventory_manifest, aws
         # Get the list for the product we are interested
         if CFG['products'][product_name]['prefix'] in result.Key:
             s3_inv_list_file.append(result.Key)
-    pickle_out = open(str(Path(output_dir) / product_name) + PICKLE_FILE_EXT, "wb")
+    pickle_out = open(Path(output_dir) / product_name + PICKLE_FILE_EXT, "wb")
     pickle.dump(s3_inv_list_file, pickle_out)
     pickle_out.close()
 
@@ -408,7 +406,7 @@ def generate_work_list(product_name, time_range, config, output_dir, datacube_en
             if CFG['products'][product_name]['prefix'] in result.Key:
                 s3_list.append(result.Key)
     else:
-        pickle_in = open(str(Path(output_dir) / product_name) + PICKLE_FILE_EXT, "rb")
+        pickle_in = open(Path(output_dir) / product_name + PICKLE_FILE_EXT, "rb")
         s3_list = pickle.load(pickle_in)
 
     dc_file_list = set([uri
@@ -417,7 +415,7 @@ def generate_work_list(product_name, time_range, config, output_dir, datacube_en
                                                       datacube_env,
                                                       s3_list)
                         if uri])
-    out_file = str(Path(output_dir) / product_name) + TASK_FILE_EXT
+    out_file = Path(output_dir) / product_name + TASK_FILE_EXT
 
     with open(out_file, 'w') as fp:
         for nc_filepath in sorted(dc_file_list):
@@ -558,13 +556,16 @@ def verify_cog_files(path):
     :param path: Cog Converted files directory path
     :return:
     """
+    invalid_geotiff_files = list()
+    remove_root_geotiff_dir = list()
+
     gtiff_file_list = sorted(Path(path).rglob("*.tif"))
     count = 0
     for file_path in gtiff_file_list:
         count += 1
         command = f"python3 {VALIDATE_GEOTIFF_PATH} {file_path}"
         output = subprocess.getoutput(command)
-        valid_output = (output.split('/'))[-1]
+        valid_output = output.split('/')[-1]
 
         if 'is a valid cloud' in valid_output:
             LOG.info(f"{count}: {valid_output}")
@@ -573,16 +574,16 @@ def verify_cog_files(path):
 
             # List erroneous *.tif file path
             LOG.error(f"\tErroneous GeoTIFF filepath: {file_path}")
-            REMOVE_ROOT_GEOTIFF_DIR.append(file_path.parent)
+            remove_root_geotiff_dir.append(file_path.parent)
             for files in file_path.parent.rglob('*.*'):
                 # List all files associated with erroneous *.tif file and remove them
-                INVALID_GEOTIFF_FILES.append(files)
+                invalid_geotiff_files.append(files)
 
-    for rm_files in set(INVALID_GEOTIFF_FILES):
+    for rm_files in set(invalid_geotiff_files):
         LOG.error(f"\tDelete {rm_files} file")
         rm_files.unlink()
 
-    for rm_dir in set(REMOVE_ROOT_GEOTIFF_DIR):
+    for rm_dir in set(remove_root_geotiff_dir):
         LOG.error(f"\tDelete {rm_dir} directory")
         rm_dir.rmdir()
 
@@ -636,6 +637,7 @@ def qsub_cog_convert(product_name, time_range, config, output_dir, queue, projec
     """
     task_file = str(Path(output_dir) / product_name) + TASK_FILE_EXT
 
+    # language=bash
     prep = 'qsub -q copyq -N store_s3_list_%(product)s -P %(project)s ' \
            '-l wd,walltime=5:00:00,mem=31GB,jobfs=5GB -W umask=33 ' \
            '-- /bin/bash -l -c "source $HOME/.bashrc; ' \
@@ -650,6 +652,7 @@ def qsub_cog_convert(product_name, time_range, config, output_dir, queue, projec
 
     s3_inv_job = run_command(cmd)
 
+    # language=bash
     prep = 'qsub -q %(queue)s -N generate_work_list_%(product)s -P %(project)s ' \
            '-W depend=afterok:%(s3_inv_job)s: -l wd,walltime=10:00:00,mem=31GB,jobfs=5GB -W umask=33 ' \
            '-- /bin/bash -l -c "source $HOME/.bashrc; ' \
@@ -659,11 +662,12 @@ def qsub_cog_convert(product_name, time_range, config, output_dir, queue, projec
     cmd = prep % dict(queue=queue, product=product_name, project=project, s3_inv_job=s3_inv_job.split('.')[0],
                       generate_script=GENERATE_FILE_PATH, dea_module=digitalearthau.MODULE_NAME,
                       cog_converter_file=COG_FILE_PATH, yaml_file=config, output_dir=output_dir,
-                      dc_env=datacube_env, pickle_file=str(Path(output_dir) / product_name) + PICKLE_FILE_EXT,
+                      dc_env=datacube_env, pickle_file=Path(output_dir) / product_name + PICKLE_FILE_EXT,
                       time_range=time_range)
 
     file_list_job = run_command(cmd)
 
+    # language=bash
     qsub = 'qsub -q %(queue)s -N mpi_cog_convert_%(product)s -P %(project)s ' \
            '-W depend=afterok:%(file_list_job)s: -m %(email_options)s -M %(email_id)s ' \
            '-l ncpus=%(ncpus)d,mem=%(mem)dgb,jobfs=32GB,walltime=%(walltime)d:00:00,wd ' \
@@ -684,7 +688,7 @@ def qsub_cog_convert(product_name, time_range, config, output_dir, queue, projec
                       walltime=walltime,
                       cog_converter_file=COG_FILE_PATH,
                       yaml_file=config,
-                      output_dir=str(Path(output_dir) / product_name),
+                      output_dir=Path(output_dir) / product_name,
                       product=product_name,
                       file_list=task_file)
     cog_conversion_job = run_command(cmd)
@@ -694,6 +698,7 @@ def qsub_cog_convert(product_name, time_range, config, output_dir, queue, projec
     else:
         s3_output = 's3://dea-public-data/' + CFG['products'][product_name]['prefix']
 
+    # language=bash
     prep = 'qsub -q copyq -N s3_sync_%(product)s -P %(project)s ' \
            '-W depend=afterok:%(cog_conversion_job)s: ' \
            '-l wd,walltime=5:00:00,mem=31GB,jobfs=5GB -W umask=33 ' \
@@ -705,7 +710,7 @@ def qsub_cog_convert(product_name, time_range, config, output_dir, queue, projec
                       cog_conversion_job=cog_conversion_job.split('.')[0],
                       aws_sync_script=AWS_SYNC_PATH, dea_module=digitalearthau.MODULE_NAME,
                       s3_output_url=s3_output, cog_converter_file=COG_FILE_PATH, aws_profile=aws_profile,
-                      output_dir=str(Path(output_dir) / product_name))
+                      output_dir=Path(output_dir) / product_name)
     run_command(cmd)
 
 
