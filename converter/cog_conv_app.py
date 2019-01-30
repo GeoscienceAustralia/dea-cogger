@@ -1,24 +1,25 @@
 #!/usr/bin/env python
-import click
-import dateutil.parser
 import logging
-import numpy as np
 import os
 import pickle
 import re
-import sys
 import subprocess
-import yaml
-
+import sys
 from enum import IntEnum
 from pathlib import Path
+
+import click
+import dateutil.parser
+import digitalearthau
+import numpy as np
+import yaml
+from mpi4py import MPI
+
+from aws_inventory import list_inventory
+from aws_s3_client import make_s3_client
+from cogeo import COGNetCDF
 from datacube import Datacube
 from datacube.ui.expression import parse_expressions
-import digitalearthau
-from aws_s3_client import make_s3_client
-from aws_inventory import list_inventory
-from cogeo import COGNetCDF
-from mpi4py import MPI
 
 LOG = logging.getLogger('cog-converter')
 stdout_hdlr = logging.StreamHandler(sys.stdout)
@@ -27,9 +28,9 @@ stdout_hdlr.setFormatter(formatter)
 LOG.addHandler(stdout_hdlr)
 LOG.setLevel(logging.DEBUG)
 
-MPI_COMM = MPI.COMM_WORLD      # Get MPI communicator object
-MPI_JOB_SIZE = MPI_COMM.size   # Total number of processes
-MPI_JOB_RANK = MPI_COMM.rank   # Rank of this process
+MPI_COMM = MPI.COMM_WORLD  # Get MPI communicator object
+MPI_JOB_SIZE = MPI_COMM.size  # Total number of processes
+MPI_JOB_RANK = MPI_COMM.rank  # Rank of this process
 MPI_JOB_STATUS = MPI.Status()  # Get MPI status object
 ROOT_DIR = Path(__file__).absolute().parent
 COG_FILE_PATH = ROOT_DIR / 'cog_conv_app.py'
@@ -57,12 +58,11 @@ walltime_options = click.option('--walltime', '-t', default=10,
 mail_options = click.option('--email-options', '-m', default='abe',
                             type=click.Choice(['a', 'b', 'e', 'n', 'ae', 'ab', 'be', 'abe']),
                             help='Send email when execution is, \n'
-                            '[a = aborted | b = begins | e = ends | n = do not send email]')
+                                 '[a = aborted | b = begins | e = ends | n = do not send email]')
 
 # pylint: disable=invalid-name
 mail_id = click.option('--email-id', '-M', default='nci.monitor@dea.ga.gov.au',
                        help='Email recipient id (Optional)')
-
 
 # pylint: disable=invalid-name
 output_dir_options = click.option('--output-dir', '-o', default=OUTPUT_DIR, help='Output work directory (Optional)')
@@ -149,13 +149,13 @@ def run_command(command):
         raise
 
 
-def netcdf_cog_worker(wargs=None):
+def netcdf_cog_worker(product_config, in_filename, output_dir):
     """
     Convert a list of NetCDF files into Cloud Optimise GeoTIFF format using MPI
     Uses a configuration file to define the file naming schema.
     """
-    netcdf_cog_fp = COGNetCDF(**list(wargs)[0])
-    netcdf_cog_fp(list(wargs)[1], list(wargs)[2])
+    netcdf_cog_fp = COGNetCDF(**product_config)
+    netcdf_cog_fp(in_filename, output_dir)
 
 
 def _raise_value_err(exp):
@@ -182,7 +182,7 @@ def validate_time_range(context, param, value):
                                  '\n\ttime=1996-12-31')
 
 
-def get_dataset_values(product_name, time_range=None, datacube_env=None, s3_list=list()):
+def get_dataset_values(product_name, time_range=None, datacube_env=None, s3_list=None):
     """
     Extract the file list corresponding to a product for the given year and month using datacube API.
     """
@@ -192,12 +192,12 @@ def get_dataset_values(product_name, time_range=None, datacube_env=None, s3_list
     field_names = get_field_names(CFG['products'][product_name])
 
     LOG.info("Perform a datacube dataset search, returning only the specified fields.")
-    files = dc.index.datasets.search_returning(field_names=tuple(field_names), **query)
+    ds_records = dc.index.datasets.search_returning(field_names=tuple(field_names), **query)
 
     search_results = False
-    for result in files:
+    for ds_rec in ds_records:
         search_results = True
-        yield check_prefix_from_query_result(result, CFG['products'][product_name], s3_list)
+        yield check_prefix_from_query_result(ds_rec, CFG['products'][product_name], s3_list)
 
     if not search_results:
         LOG.warning(f"Datacube product query is empty for {product_name} product with query args, {time_range}")
@@ -267,7 +267,8 @@ def check_prefix_from_query_result(result, product_config, s3_list):
         params['end_time'] = result.time.upper
 
     prefix = product_config['prefix'] + '/' + product_config['name_template'].format(**params)
-    stack_prefix = product_config['prefix'] + '/' + product_config['stacked_name_template'].format(**params)
+    return prefix
+    # stack_prefix = product_config['prefix'] + '/' + product_config['stacked_name_template'].format(**params)
 
     # Filter the inventory list to obtain files corresponding to the product in S3 bucket
     file_list = [s3_file
@@ -291,9 +292,9 @@ def check_prefix_from_query_result(result, product_config, s3_list):
 # pylint: disable=invalid-name
 time_range_options = click.option('--time-range', callback=validate_time_range, required=True,
                                   help="The time range:\n"
-                                  " '2018-01-01 < time < 2018-12-31'  OR\n"
-                                  " 'time in 2018-12-31'  OR\n"
-                                  " 'time=2018-12-31'")
+                                       " '2018-01-01 < time < 2018-12-31'  OR\n"
+                                       " 'time in 2018-12-31'  OR\n"
+                                       " 'time=2018-12-31'")
 
 
 @click.group(help=__doc__)
@@ -371,7 +372,7 @@ def store_s3_inventory(product_name, config, output_dir, inventory_manifest, aws
         if CFG['products'][product_name]['prefix'] in result.Key:
             s3_inv_list_file.append(result.Key)
     pickle_out = open(Path(output_dir) / product_name + PICKLE_FILE_EXT, "wb")
-    pickle.dump(s3_inv_list_file, pickle_out)
+    pickle.dump(set(s3_inv_list_file), pickle_out)
     pickle_out.close()
 
 
@@ -409,12 +410,12 @@ def generate_work_list(product_name, time_range, config, output_dir, datacube_en
         pickle_in = open(Path(output_dir) / product_name + PICKLE_FILE_EXT, "rb")
         s3_list = pickle.load(pickle_in)
 
-    dc_file_list = set([uri
-                        for uri in get_dataset_values(product_name,
-                                                      parse_expressions(time_range),
-                                                      datacube_env,
-                                                      s3_list)
-                        if uri])
+    dc_file_list = [uri
+                    for uri in get_dataset_values(product_name,
+                                                  parse_expressions(time_range),
+                                                  datacube_env,
+                                                  s3_list)
+                    if uri]
     out_file = Path(output_dir) / product_name + TASK_FILE_EXT
 
     with open(out_file, 'w') as fp:
@@ -524,13 +525,13 @@ def mpi_cog_convert(product_name, config, output_dir, filelist):
 
         while True:
             MPI_COMM.send(None, dest=0, tag=TagStatus.READY)
-            task = MPI_COMM.recv(source=0, tag=MPI.ANY_TAG, status=MPI_JOB_STATUS)
+            product_config, in_filename, output_dir = MPI_COMM.recv(source=0, tag=MPI.ANY_TAG, status=MPI_JOB_STATUS)
             tag = MPI_JOB_STATUS.Get_tag()
 
             if tag == TagStatus.START:
                 LOG.debug(f"MPI Worker ({MPI_JOB_RANK}) on {worker_node_name} node started COG conversion")
                 try:
-                    netcdf_cog_worker(wargs=task)
+                    netcdf_cog_worker(product_config, in_filename, output_dir)
                 except Exception as exp:
                     LOG.error(f"Unexpected error occurred during cog conversion: {exp}")
                     MPI_COMM.send(None, dest=0, tag=TagStatus.ERROR)

@@ -69,8 +69,10 @@ class COGNetCDF:
     def _make_outprefix(self, input_fname, dest_dir):
         abs_fname = basename(input_fname)
         prefix_name = re.search(r"[-\w\d.]*(?=\.\w)", abs_fname).group(0)
+
         r = re.compile(r"(?<=_)[-\d.]+")
         indices = r.findall(prefix_name)
+
         r = re.compile(r"(?<={)\w+")
         keys = sorted(set(r.findall(self.name_template)))
 
