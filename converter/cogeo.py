@@ -1,5 +1,4 @@
 """rio_cogeo.cogeo: translate a file to a cloud optimized geotiff."""
-from datetime import datetime
 import gdal
 import numpy
 import os
@@ -9,7 +8,7 @@ import sys
 import xarray
 import yaml
 
-from os.path import join as pjoin, basename, exists, split
+from os.path import basename, exists
 from pathlib import Path
 from rasterio.io import MemoryFile
 from rasterio.enums import Resampling
@@ -19,9 +18,9 @@ from yaml import CSafeLoader as Loader, CSafeDumper as Dumper
 DEFAULT_GDAL_CONFIG = {'NUM_THREADS': 1, 'GDAL_TIFF_OVR_BLOCKSIZE': 512}
 
 
-class COGNetCDF:
+class COGConvert:
     """
-    Convert NetCDF files to COG style GeoTIFFs
+    Convert the input files to COG style GeoTIFFs
     """
 
     def __init__(self, black_list=None, white_list=None, nonpym_list=None, default_rsp=None,
@@ -37,7 +36,7 @@ class COGNetCDF:
 
         self.bands_rsp = bands_rsp
         self.name_template = name_template
-        self.prefix = prefix
+        self.s3_prefix_path = prefix
         self.stacked_name_template = stacked_name_template
 
         if predictor is None:
@@ -51,59 +50,13 @@ class COGNetCDF:
             self.default_rsp = default_rsp
 
     def __call__(self, input_fname, dest_dir):
-        prefix_name = self._make_outprefix(input_fname, dest_dir)
-        self.netcdf_to_cog(input_fname, prefix_name)
+        os.makedirs(Path(dest_dir).parent, exist_ok=True)
+        dst_prefix_path = Path(dest_dir).parent / basename(input_fname).split('.')[0]
+        self.generate_cog_files(input_fname, str(dst_prefix_path))
 
-    def _make_s1_outprefix(self, input_fname, dest_dir):
-        abs_fname = split(input_fname)[0]
-        dirname = basename(abs_fname)
-        coords = basename(split(abs_fname)[0])
-
-        prefix_name = re.search(r"[-\w\d.]*(?=\.\w)", abs_fname).group(0)
-        r = re.compile(r"(?<=_)[-\d.T]+")
-        indices = r.findall(prefix_name)
-
-        dest_dict = {"time": datetime.strptime(indices[1].replace('T', ''), '%Y%m%d%H%M%S'), "coord": coords}
-        return Path(dest_dir).joinpath(self.name_template.format(**dest_dict)).joinpath(dirname), dirname
-
-    def _make_outprefix(self, input_fname, dest_dir):
-        abs_fname = basename(input_fname)
-        prefix_name = re.search(r"[-\w\d.]*(?=\.\w)", abs_fname).group(0)
-
-        r = re.compile(r"(?<=_)[-\d.]+")
-        indices = r.findall(prefix_name)
-
-        r = re.compile(r"(?<={)\w+")
-        keys = sorted(set(r.findall(self.name_template)))
-
-        if len(indices) > len(keys):
-            indices = indices[-len(keys):]
-
-        indices += [None] * (3 - len(indices))
-        x_index, y_index, date_time = indices
-
-        if indices == [None] * len(indices):
-            out_dir, prefix_name = self._make_s1_outprefix(input_fname, dest_dir)
-        else:
-            dest_dict = {keys[1]: x_index, keys[2]: y_index}
-
-            if date_time is not None:
-                try:
-                    dest_dict[keys[0]] = datetime.strptime(date_time, '%Y%m%d%H%M%S%f')
-                except ValueError:
-                    dest_dict[keys[0]] = datetime.strptime(date_time, '%Y')  # Stacked netCDF file
-            else:
-                self.name_template = '/'.join(self.name_template.split('/')[0:2])
-
-            out_dir = Path(pjoin(dest_dir, self.name_template.format(**dest_dict))).parents[0]
-
-        os.makedirs(out_dir, exist_ok=True)
-
-        return pjoin(out_dir, prefix_name)
-
-    def netcdf_to_cog(self, input_file, prefix):
+    def generate_cog_files(self, input_file, dst_prefix_path):
         """
-        Convert the datasets in the NetCDF file 'file' into 'dest_dir'
+        Convert the datasets from the input file to COG format and save them in the 'dest_dir'
 
         Each dataset is put in a separate directory.
 
@@ -112,7 +65,7 @@ class COGNetCDF:
         try:
             dataset = gdal.Open(input_file, gdal.GA_ReadOnly)
         except Exception as exp:
-            print(f"netcdf error {input_file}: \n{exp}", file=sys.stderr)
+            print(f"GDAL input file error {input_file}: \n{exp}", file=sys.stderr)
             return
 
         if dataset is None:
@@ -120,19 +73,19 @@ class COGNetCDF:
 
         subdatasets = dataset.GetSubDatasets()
 
-        # Extract each band from the NetCDF and write to individual GeoTIFF files
-        self._dataset_to_cog(prefix, subdatasets, input_file)
+        # Extract each band from the input file and write to individual GeoTIFF files
+        self._dataset_to_cog(dst_prefix_path, subdatasets, input_file)
 
-    def _dataset_to_yaml(self, prefix, dataset_array: xarray.Dataset, rastercount):
+    def _dataset_to_yaml(self, dst_prefix_path, dataset_array: xarray.Dataset, rastercount):
         """
         Write the datasets to separate yaml files
         """
         for i in range(rastercount):
             if rastercount == 1:
-                yaml_fname = prefix + '.yaml'
+                yaml_fname = dst_prefix_path + '.yaml'
                 dataset_object = (dataset_array.dataset.item()).decode('utf-8')
             else:
-                yaml_fname = prefix + '_' + str(i + 1) + '.yaml'
+                yaml_fname = dst_prefix_path + '_' + str(i + 1) + '.yaml'
                 dataset_object = (dataset_array.dataset.item(i)).decode('utf-8')
 
             if exists(yaml_fname):
@@ -140,7 +93,7 @@ class COGNetCDF:
 
             dataset = yaml.load(dataset_object, Loader=Loader)
             if dataset is None:
-                print(f"No yaml section {prefix}", file=sys.stderr)
+                print(f"No yaml section {dst_prefix_path}", file=sys.stderr)
                 continue
 
             invalid_band = []
@@ -157,9 +110,9 @@ class COGNetCDF:
                         continue
 
                 if rastercount == 1:
-                    tif_path = basename(prefix + '_' + key + '.tif')
+                    tif_path = basename(dst_prefix_path + '_' + key + '.tif')
                 else:
-                    tif_path = basename(prefix + '_' + key + '_' + str(i + 1) + '.tif')
+                    tif_path = basename(dst_prefix_path + '_' + key + '_' + str(i + 1) + '.tif')
 
                 value['layer'] = str(i + 1)
                 value['path'] = tif_path
@@ -173,7 +126,7 @@ class COGNetCDF:
                 yaml.dump(dataset, fp, default_flow_style=False, Dumper=Dumper)
                 print(f"Created yaml file, {yaml_fname}")
 
-    def _dataset_to_cog(self, prefix, subdatasets, input_file):
+    def _dataset_to_cog(self, dst_prefix_path, subdatasets, input_file):
         """
         Write the datasets to separate cog files
         """
@@ -203,9 +156,9 @@ class COGNetCDF:
                         continue
 
                 if rastercount == 1:
-                    out_fname = prefix + '_' + band_name + '.tif'
+                    out_fname = dst_prefix_path + '_' + band_name + '.tif'
                 else:
-                    out_fname = prefix + '_' + band_name + '_' + str(i + 1) + '.tif'
+                    out_fname = dst_prefix_path + '_' + band_name + '_' + str(i + 1) + '.tif'
 
                 # Check the done files might need a force option later
                 if exists(out_fname):
@@ -245,7 +198,7 @@ class COGNetCDF:
         dataset_array = xarray.open_dataset(input_file)
 
         # Create a single yaml file for a sub-dataset (consolidated one for a band group)
-        self._dataset_to_yaml(prefix, dataset_array, rastercount)
+        self._dataset_to_yaml(dst_prefix_path, dataset_array, rastercount)
         # Clean up XML files from GDAL
         # GDAL creates extra XML files which we don't want
 

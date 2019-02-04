@@ -123,3 +123,9 @@ products:
     name_template: "{time:%Y}/{time:%Y-%m}/{coord}"
     predictor: 2
     default_rsp: average
+
+  ls8_nbar_scene:
+    prefix: LANDSAT_SCENE/v1.0.0/ls8_nbar_scene
+    name_template: x_{x}/y_{y}/{time:%Y}/{time:%m}/LS8_OLITIRS_NBAR_P54_GANBAR01-032_{x}_{y}_{time:%Y%m%d}
+    predictor: 2
+    default_rsp: average

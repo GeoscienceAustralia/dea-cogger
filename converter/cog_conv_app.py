@@ -7,6 +7,7 @@ import subprocess
 import sys
 from enum import IntEnum
 from pathlib import Path
+from os.path import split, basename
 
 import click
 import dateutil.parser
@@ -17,7 +18,7 @@ from mpi4py import MPI
 
 from aws_inventory import list_inventory
 from aws_s3_client import make_s3_client
-from cogeo import COGNetCDF
+from cogeo import COGConvert
 from datacube import Datacube
 from datacube.ui.expression import parse_expressions
 
@@ -39,8 +40,7 @@ GENERATE_FILE_PATH = ROOT_DIR / 'generate_work_list.sh'
 AWS_SYNC_PATH = ROOT_DIR / 'aws_sync.sh'
 VALIDATE_GEOTIFF_PATH = ROOT_DIR.parent / 'validate_cloud_optimized_geotiff.py'
 PICKLE_FILE_EXT = '_s3_inv_list.pickle'
-TASK_FILE_EXT = '_nc_file_list.txt'
-OUTPUT_DIR = '/g/data/v10/tmp/cog_output_files'
+TASK_FILE_EXT = '_file_list.txt'
 
 # pylint: disable=invalid-name
 queue_options = click.option('--queue', '-q', default='normal',
@@ -65,7 +65,9 @@ mail_id = click.option('--email-id', '-M', default='nci.monitor@dea.ga.gov.au',
                        help='Email recipient id (Optional)')
 
 # pylint: disable=invalid-name
-output_dir_options = click.option('--output-dir', '-o', default=OUTPUT_DIR, help='Output work directory (Optional)')
+output_dir_options = click.option('--output-dir', '-o', required=True,
+                                  type=click.Path(exists=True, writable=True),
+                                  help='Output destination directory')
 
 # pylint: disable=invalid-name
 product_options = click.option('--product-name', '-p', required=True,
@@ -88,8 +90,8 @@ s3_output_dir_options = click.option('--s3-output-url',
 aws_profile_options = click.option('--aws-profile', default='default', help='AWS profile name (Optional)')
 
 # pylint: disable=invalid-name
-s3_inventory_list_options = click.option('--s3-list', default=list(),
-                                         help='Pickle file containing the list of s3 bucket inventory (Optional)')
+s3_pickle_file_options = click.option('--pickle-file', default=None,
+                                      help='Pickle file containing the list of s3 bucket inventory (Optional)')
 
 # pylint: disable=invalid-name
 config_file_options = click.option('--config', '-c', default=YAMLFILE_PATH,
@@ -149,13 +151,13 @@ def run_command(command):
         raise
 
 
-def netcdf_cog_worker(product_config, in_filename, output_dir):
+def cog_converter(product_config, in_filepath, output_dir):
     """
-    Convert a list of NetCDF files into Cloud Optimise GeoTIFF format using MPI
+    Convert a list of input files into Cloud Optimise GeoTIFF format using MPI
     Uses a configuration file to define the file naming schema.
     """
-    netcdf_cog_fp = COGNetCDF(**product_config)
-    netcdf_cog_fp(in_filename, output_dir)
+    convert_to_cog = COGConvert(**product_config)
+    convert_to_cog(in_filepath, output_dir)
 
 
 def _raise_value_err(exp):
@@ -182,7 +184,7 @@ def validate_time_range(context, param, value):
                                  '\n\ttime=1996-12-31')
 
 
-def get_dataset_values(product_name, time_range=None, datacube_env=None, s3_list=None):
+def get_dataset_values(product_name, time_range=None, datacube_env=None):
     """
     Extract the file list corresponding to a product for the given year and month using datacube API.
     """
@@ -197,20 +199,11 @@ def get_dataset_values(product_name, time_range=None, datacube_env=None, s3_list
     search_results = False
     for ds_rec in ds_records:
         search_results = True
-        yield check_prefix_from_query_result(ds_rec, CFG['products'][product_name], s3_list)
+        yield check_prefix_from_query_result(ds_rec, CFG['products'][product_name])
 
     if not search_results:
         LOG.warning(f"Datacube product query is empty for {product_name} product with query args, {time_range}")
-
-
-def yaml_files_for_product(s3_inventory_list):
-    """
-    Filter the given list of s3 keys to check for '.yaml' files corresponding to a product in S3 bucket
-    """
-    for item in s3_inventory_list:
-        if Path(item).name.endswith('.yaml'):
-            return Path(item)
-    return None
+        return "", ""
 
 
 def get_field_names(product_config):
@@ -237,11 +230,18 @@ def get_field_names(product_config):
 def get_param_names(template_str):
     """
     Return parameter names from a template string
+
+    Use the product template string from the `aws_products_config.yaml` file and return
+    unique occurrence of the keys within the `name_template`
+
+    ex. Let name_template = x_{x}/y_{y}/{time:%Y}/{time:%m}/{time:%d}/LS_WATER_3577_{x}_{y}_{time:%Y%m%d%H%M%S%f}
+        A regular expression on `name_template` would return `['x', 'y', 'time', 'time', 'time', 'x', 'y']`
+        Hence, set operation on the return value will give us unique values of the list.
     """
     return set(re.findall(r'{([\w_]+)[:Ymd\-%]*}', template_str))
 
 
-def check_prefix_from_query_result(result, product_config, s3_list):
+def check_prefix_from_query_result(result, product_config):
     """
     Compute the AWS prefix for a dataset from a datacube search result
     """
@@ -250,10 +250,17 @@ def check_prefix_from_query_result(result, product_config, s3_list):
     # Get geo x and y values
     if hasattr(result, 'metadata_doc'):
         metadata = result.metadata_doc
-        geo_ref = metadata['grid_spatial']['projection']['geo_ref_points']['ll']
-        params['x'] = int(geo_ref['x'] / 100000)
-        params['y'] = int(geo_ref['y'] / 100000)
-        params['time'] = dateutil.parser.parse(metadata['extent']['center_dt'])
+        try:
+            # Process level2 scenes
+            satellite_ref_point_start = metadata['image']['satellite_ref_point_start']
+            params['x'] = int(satellite_ref_point_start['x'])
+            params['y'] = int(satellite_ref_point_start['y'])
+        except KeyError:
+            # Found netCDF files. Process them.
+            geo_ref = metadata['grid_spatial']['projection']['geo_ref_points']['ll']
+            params['x'] = int(geo_ref['x'] / 100000)
+            params['y'] = int(geo_ref['y'] / 100000)
+            params['time'] = dateutil.parser.parse(metadata['extent']['center_dt'])
 
     # Get lat and lon values
     if hasattr(result, 'lat'):
@@ -266,27 +273,9 @@ def check_prefix_from_query_result(result, product_config, s3_list):
         params['start_time'] = result.time.lower
         params['end_time'] = result.time.upper
 
-    prefix = product_config['prefix'] + '/' + product_config['name_template'].format(**params)
-    return prefix
-    # stack_prefix = product_config['prefix'] + '/' + product_config['stacked_name_template'].format(**params)
-
-    # Filter the inventory list to obtain files corresponding to the product in S3 bucket
-    file_list = [s3_file
-                 for s3_file in s3_list
-                 if s3_file.startswith(prefix) or s3_file.startswith(stack_prefix)]
-
-    s3_key = yaml_files_for_product(file_list)
-
-    if not s3_key:
-        # Return file URI for COG conversion
-        LOG.info(f"File does not exists in S3, add to file task list: {result.uri}")
-        return result.uri
-
-    # File already exists in S3
-    LOG.info("File exists in S3: ")
-    LOG.info(f"\tS3_path: {s3_key}")
-    LOG.info(f"\tFILE URL: {result.uri}")
-    return ""
+    cog_file_uri_prefix = product_config['prefix'] + '/' + product_config['name_template'].format(**params)
+    new_s3_yamlfile = split(cog_file_uri_prefix)[0] + '/' + basename(result.uri).split('.')[0] + '.yaml'
+    return result.uri, product_config['name_template'].format(**params), new_s3_yamlfile
 
 
 # pylint: disable=invalid-name
@@ -302,15 +291,15 @@ def cli():
     pass
 
 
-@cli.command(name='cog-convert', help="Convert a single/list of NetCDF files into COG format")
+@cli.command(name='cog-convert', help="Convert a single/list of files into COG format")
 @product_options
 @config_file_options
 @output_dir_options
-@click.option('--filelist', '-l', help='List of netcdf file names (Optional)', default=None)
+@click.option('--filelist', '-l', help='List of input file names (Optional)', default=None)
 @click.argument('filenames', nargs=-1, type=click.Path())
 def convert_cog(product_name, config, output_dir, filelist, filenames):
     """
-    Convert a single or list of NetCDF files into Cloud Optimise GeoTIFF format
+    Convert a single or list of input files into Cloud Optimise GeoTIFF format
     Uses a configuration file to define the file naming schema.
 
     Before using this command, execute the following:
@@ -323,16 +312,16 @@ def convert_cog(product_name, config, output_dir, filelist, filenames):
 
     product_config = CFG['products'][product_name]
 
-    cog_convert = COGNetCDF(**product_config)
+    cog_convert = COGConvert(**product_config)
 
     # Preference is give to file list over argument list
     if filelist:
         try:
-            with open(filelist) as fb:
-                file_list = np.genfromtxt(fb, dtype='str')
+            with open(filelist) as fl:
+                file_list = np.genfromtxt(fl, dtype='str')
             tasks = file_list.size
         except FileNotFoundError:
-            LOG.error(f'No netCDF file found in the input path')
+            LOG.error(f'No input file for the COG conversion found in the specified path')
             raise
         else:
             if tasks == 0:
@@ -346,7 +335,7 @@ def convert_cog(product_name, config, output_dir, filelist, filenames):
         cog_convert(filename, output_dir)
 
 
-@cli.command(name='inventory-store', help="Store S3 inventory list in a pickle file")
+@cli.command(name='store-s3-inventory', help="Store S3 inventory list in a pickle file")
 @product_options
 @config_file_options
 @output_dir_options
@@ -369,24 +358,23 @@ def store_s3_inventory(product_name, config, output_dir, inventory_manifest, aws
 
     for result in list_inventory(inventory_manifest, s3=make_s3_client(profile=aws_profile), aws_profile=aws_profile):
         # Get the list for the product we are interested
-        if CFG['products'][product_name]['prefix'] in result.Key:
+        if CFG['products'][product_name]['prefix'] in result.Key and \
+           Path(result.Key).name.endswith('.yaml'):
+            # Store only metadata configuration files for `set` operation
             s3_inv_list_file.append(result.Key)
     pickle_out = open(Path(output_dir) / product_name + PICKLE_FILE_EXT, "wb")
     pickle.dump(set(s3_inv_list_file), pickle_out)
     pickle_out.close()
 
 
-@cli.command(name='list-datasets', help="Generate task list for COG conversion")
+@cli.command(name='generate-work-list', help="Generate task list for COG conversion")
 @product_options
 @time_range_options
 @config_file_options
 @output_dir_options
 @dc_env_options
-@s3_inv_options
-@aws_profile_options
-@s3_inventory_list_options
-def generate_work_list(product_name, time_range, config, output_dir, datacube_env,
-                       inventory_manifest, aws_profile, s3_list):
+@s3_pickle_file_options
+def generate_work_list(product_name, time_range, config, output_dir, datacube_env, pickle_file):
     """
     Compares datacube file uri's against S3 bucket (file names within pickle file) and writes the list of datasets
     for cog conversion into the task file
@@ -400,27 +388,36 @@ def generate_work_list(product_name, time_range, config, output_dir, datacube_en
     with open(config) as config_file:
         CFG = yaml.load(config_file)
 
-    if not s3_list:
-        for result in list_inventory(inventory_manifest, s3=make_s3_client(profile=aws_profile),
-                                     aws_profile=aws_profile):
-            # Get the list for the product we are interested
-            if CFG['products'][product_name]['prefix'] in result.Key:
-                s3_list.append(result.Key)
+    if not pickle_file:
+        # Use pickle file generated by store_s3_inventory function
+        pickle_in_fl = open(Path(output_dir) / product_name + PICKLE_FILE_EXT, "rb")
+        s3_file_list = pickle.load(pickle_in_fl)
     else:
-        pickle_in = open(Path(output_dir) / product_name + PICKLE_FILE_EXT, "rb")
-        s3_list = pickle.load(pickle_in)
+        # Use pickle file supplied by the user
+        pickle_in_fl = open(Path(pickle_file), "rb")
+        s3_file_list = pickle.load(pickle_in_fl)
 
-    dc_file_list = [uri
-                    for uri in get_dataset_values(product_name,
-                                                  parse_expressions(time_range),
-                                                  datacube_env,
-                                                  s3_list)
-                    if uri]
-    out_file = Path(output_dir) / product_name + TASK_FILE_EXT
+    dc_workgen_list = dict()
+
+    for uri, dest_dir, dc_yamlfile_path in get_dataset_values(product_name,
+                                                              parse_expressions(time_range),
+                                                              datacube_env):
+        if uri:
+            dc_workgen_list[dc_yamlfile_path] = [uri.split('file://')[1], dest_dir]
+
+    work_list = set(sorted(dc_workgen_list.keys())) - set(sorted(s3_file_list))
+    out_file = Path(output_dir) / (product_name + TASK_FILE_EXT)
 
     with open(out_file, 'w') as fp:
-        for nc_filepath in sorted(dc_file_list):
-            fp.write(nc_filepath.split('//')[1] + '\n')
+        for s3_filepath in work_list:
+            # dict_value shall contain uri value and s3 output directory path template
+            dict_value = dc_workgen_list.get(s3_filepath, None)
+            if dict_value:
+                LOG.info(f"File does not exists in S3, add to work gen list: {dict_value[0]}")
+                fp.write(f"{dict_value[0]}, {dict_value[1]}\n")
+
+    if not work_list:
+        LOG.info(f"No tasks found")
 
 
 @cli.command(name='mpi-cog-convert')
@@ -435,7 +432,7 @@ def mpi_cog_convert(product_name, config, output_dir, filelist):
     Example: mpirun python3 cog_conv_app.py mpi-cog-convert -c aws_products_config.yaml
              --output-dir /tmp/wofls_cog/ -p wofs_albers /tmp/wofs_albers_file_list
     \f
-    Convert netcdf files to COG format using parallelisation by MPI tool.
+    Convert input files to COG format using parallelisation by MPI tool.
     Iterate over the file list and assign MPI worker for COG conversion.
     Following details how master and worker interact during MPI cog conversion process:
        1) Master fetches the file list from the task file
@@ -458,11 +455,12 @@ def mpi_cog_convert(product_name, config, output_dir, filelist):
         CFG = yaml.load(cfg_file)
 
     try:
-        with open(filelist) as fb:
-            file_list = np.genfromtxt(fb, dtype='str')
-        tasks = file_list.size
+        with open(filelist) as fl:
+            file_list = np.genfromtxt(fl, dtype='str', delimiter=",")
+        tasks = int(file_list.size / 2)  # Since we have two columns in a numpy array
     except FileNotFoundError:
-        LOG.error(f'MPI Worker ({MPI_JOB_RANK}): No netCDF file/s found in the input path')
+        LOG.error(f'MPI Worker ({MPI_JOB_RANK}): Task file consisting of file URIs for COG Conversion '
+                  f'is not found in the input path')
         raise
     else:
         if tasks == 0:
@@ -487,8 +485,8 @@ def mpi_cog_convert(product_name, config, output_dir, filelist):
         if tasks == 1:
             job_args = [(product_config, str(file_list), output_dir)]
         elif tasks > 1:
-            for filename in file_list:
-                job_args.extend([(product_config, str(filename), output_dir)])
+            for in_filepath, s3_out_suffix in file_list:
+                job_args.extend([(product_config, in_filepath, Path(output_dir) / s3_out_suffix.strip())])
 
         while closed_workers < num_workers:
             MPI_COMM.recv(source=MPI.ANY_SOURCE, tag=MPI.ANY_TAG, status=MPI_JOB_STATUS)
@@ -504,7 +502,8 @@ def mpi_cog_convert(product_name, config, output_dir, filelist):
                                                                                                   job_args[task_index]))
                     task_index += 1
                 else:
-                    MPI_COMM.send(None, dest=source, tag=TagStatus.EXIT)
+                    # Completed assigning all the tasks, signal workers to exit
+                    MPI_COMM.send((None, None, None), dest=source, tag=TagStatus.EXIT)
             elif tag == TagStatus.DONE:
                 LOG.debug(f"MPI Worker ({source}) completed the assigned task")
             elif tag == TagStatus.EXIT:
@@ -524,14 +523,19 @@ def mpi_cog_convert(product_name, config, output_dir, filelist):
         worker_node_name = MPI.Get_processor_name()
 
         while True:
+            # Indicate master that the worker is ready for processing task
             MPI_COMM.send(None, dest=0, tag=TagStatus.READY)
-            product_config, in_filename, output_dir = MPI_COMM.recv(source=0, tag=MPI.ANY_TAG, status=MPI_JOB_STATUS)
+
+            # Fetch task information from the master
+            product_config, in_filepath, out_dir = MPI_COMM.recv(source=0, tag=MPI.ANY_TAG, status=MPI_JOB_STATUS)
+
+            # Get the tag status from the master
             tag = MPI_JOB_STATUS.Get_tag()
 
             if tag == TagStatus.START:
                 LOG.debug(f"MPI Worker ({MPI_JOB_RANK}) on {worker_node_name} node started COG conversion")
                 try:
-                    netcdf_cog_worker(product_config, in_filename, output_dir)
+                    cog_converter(product_config, in_filepath, out_dir)
                 except Exception as exp:
                     LOG.error(f"Unexpected error occurred during cog conversion: {exp}")
                     MPI_COMM.send(None, dest=0, tag=TagStatus.ERROR)
