@@ -258,8 +258,8 @@ def check_prefix_from_query_result(result, product_config):
         try:
             # Process level2 scenes
             satellite_ref_point_start = metadata['image']['satellite_ref_point_start']
-            params['x'] = int(satellite_ref_point_start['x'])
-            params['y'] = int(satellite_ref_point_start['y'])
+            params['x'] = f"{satellite_ref_point_start['x']:03}"
+            params['y'] = f"{satellite_ref_point_start['y']:03}"
         except KeyError:
             # Found netCDF files. Process them.
             geo_ref = metadata['grid_spatial']['projection']['geo_ref_points']['ll']
