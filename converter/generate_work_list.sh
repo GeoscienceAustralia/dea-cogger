@@ -22,7 +22,7 @@ while [[ "$#" -gt 0 ]]; do
         --datacube-env )        shift
                                 DATACUBE_ENV="$1"
                                 ;;
-        --pickle-file )             shift
+        --pickle-file )         shift
                                 PICKLE_FILE="$1"
                                 ;;
         --time-range )          shift
