@@ -265,7 +265,7 @@ def check_prefix_from_query_result(result, product_config):
             geo_ref = metadata['grid_spatial']['projection']['geo_ref_points']['ll']
             params['x'] = int(geo_ref['x'] / 100000)
             params['y'] = int(geo_ref['y'] / 100000)
-            params['time'] = dateutil.parser.parse(metadata['extent']['center_dt'])
+        params['time'] = dateutil.parser.parse(metadata['extent']['center_dt'])
 
     # Get lat and lon values
     if hasattr(result, 'lat'):
