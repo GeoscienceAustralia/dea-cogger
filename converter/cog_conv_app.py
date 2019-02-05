@@ -50,21 +50,6 @@ queue_options = click.option('--queue', '-q', default='normal',
 project_options = click.option('--project', '-P', default='v10')
 
 # pylint: disable=invalid-name
-walltime_options = click.option('--walltime', '-t', default=10,
-                                help='Number of hours (range: 1-48hrs) to request (Optional)',
-                                type=click.IntRange(1, 48))
-
-# pylint: disable=invalid-name
-mail_options = click.option('--email-options', '-m', default='abe',
-                            type=click.Choice(['a', 'b', 'e', 'n', 'ae', 'ab', 'be', 'abe']),
-                            help='Send email when execution is, \n'
-                                 '[a = aborted | b = begins | e = ends | n = do not send email]')
-
-# pylint: disable=invalid-name
-mail_id = click.option('--email-id', '-M', default='nci.monitor@dea.ga.gov.au',
-                       help='Email recipient id (Optional)')
-
-# pylint: disable=invalid-name
 output_dir_options = click.option('--output-dir', '-o', required=True,
                                   type=click.Path(exists=True, writable=True),
                                   help='Output destination directory')
@@ -74,17 +59,16 @@ product_options = click.option('--product-name', '-p', required=True,
                                help="Product name as defined in product configuration file")
 
 # pylint: disable=invalid-name
+s3_output_dir_options = click.option('--s3-output-url', default=None,
+                                     help="S3 URL for uploading the converted files (Required)")
+
+# pylint: disable=invalid-name
 dc_env_options = click.option('--datacube-env', '-E', default='datacube', help='Datacube environment (Optional)')
 
 # pylint: disable=invalid-name
 s3_inv_options = click.option('--inventory-manifest', '-i',
                               default='s3://dea-public-data-inventory/dea-public-data/dea-public-data-csv-inventory/',
                               help="The manifest of AWS S3 bucket inventory URL (Optional)")
-
-# pylint: disable=invalid-name
-s3_output_dir_options = click.option('--s3-output-url',
-                                     default=None,
-                                     help="S3 URL for uploading the converted files (Optional)")
 
 # pylint: disable=invalid-name
 aws_profile_options = click.option('--aws-profile', default='default', help='AWS profile name (Optional)')
@@ -102,6 +86,21 @@ config_file_options = click.option('--config', '-c', default=YAMLFILE_PATH,
 num_nodes_options = click.option('--nodes', default=5,
                                  help='Number of raijin nodes (range: 1-3592) to request (Optional)',
                                  type=click.IntRange(1, 3592))
+
+# pylint: disable=invalid-name
+walltime_options = click.option('--walltime', '-t', default=10,
+                                help='Number of hours (range: 1-48hrs) to request (Optional)',
+                                type=click.IntRange(1, 48))
+
+# pylint: disable=invalid-name
+mail_options = click.option('--email-options', '-m', default='abe',
+                            type=click.Choice(['a', 'b', 'e', 'n', 'ae', 'ab', 'be', 'abe']),
+                            help='Send email when execution is, \n'
+                                 '[a = aborted | b = begins | e = ends | n = do not send email]')
+
+# pylint: disable=invalid-name
+mail_id = click.option('--email-id', '-M', default='nci.monitor@dea.ga.gov.au',
+                       help='Email recipient id (Optional)')
 
 with open(ROOT_DIR / 'aws_products_config.yaml') as fd:
     CFG = yaml.load(fd)
@@ -157,7 +156,7 @@ def cog_converter(product_config, in_filepath, output_dir):
     Uses a configuration file to define the file naming schema.
     """
     convert_to_cog = COGConvert(**product_config)
-    convert_to_cog(in_filepath, output_dir)
+    convert_to_cog(in_filepath, output_dir.parent)
 
 
 def _raise_value_err(exp):
@@ -184,16 +183,21 @@ def validate_time_range(context, param, value):
                                  '\n\ttime=1996-12-31')
 
 
-def get_dataset_values(product_name, time_range=None, datacube_env=None):
+def get_dataset_values(product_name, time_range=None, datacube_env='datacube'):
     """
     Extract the file list corresponding to a product for the given year and month using datacube API.
     """
-    query = {**dict(product=product_name), **time_range}
+    try:
+        query = {**dict(product=product_name), **time_range}
+    except TypeError:
+        # Time range is None
+        query = {**dict(product=product_name)}
+
     dc = Datacube(app='cog-worklist query', env=datacube_env)
 
     field_names = get_field_names(CFG['products'][product_name])
 
-    LOG.info("Perform a datacube dataset search, returning only the specified fields.")
+    LOG.info(f"Perform a datacube dataset search returning only the specified fields, {field_names}.")
     ds_records = dc.index.datasets.search_returning(field_names=tuple(field_names), **query)
 
     search_results = False
@@ -202,8 +206,8 @@ def get_dataset_values(product_name, time_range=None, datacube_env=None):
         yield check_prefix_from_query_result(ds_rec, CFG['products'][product_name])
 
     if not search_results:
-        LOG.warning(f"Datacube product query is empty for {product_name} product with query args, {time_range}")
-        return "", ""
+        LOG.warning(f"Datacube product query is empty for {product_name} product with time-range, {time_range}")
+        return "", "", ""
 
 
 def get_field_names(product_config):
@@ -238,7 +242,8 @@ def get_param_names(template_str):
         A regular expression on `name_template` would return `['x', 'y', 'time', 'time', 'time', 'x', 'y']`
         Hence, set operation on the return value will give us unique values of the list.
     """
-    return set(re.findall(r'{([\w_]+)[:Ymd\-%]*}', template_str))
+    # Greedy match any word within flower braces and match single character from the list [:YmdHMSf%]
+    return set(re.findall(r'{([\w]+)[:YmdHMSf%]*}', template_str))
 
 
 def check_prefix_from_query_result(result, product_config):
@@ -318,7 +323,7 @@ def convert_cog(product_name, config, output_dir, filelist, filenames):
     if filelist:
         try:
             with open(filelist) as fl:
-                file_list = np.genfromtxt(fl, dtype='str')
+                file_list = np.genfromtxt(fl, dtype='str', delimiter=",")
             tasks = file_list.size
         except FileNotFoundError:
             LOG.error(f'No input file for the COG conversion found in the specified path')
@@ -331,17 +336,23 @@ def convert_cog(product_name, config, output_dir, filelist, filenames):
         file_list = list(filenames)
 
     LOG.info("Run with single process")
-    for filename in file_list:
-        cog_convert(filename, output_dir)
+    try:
+        # We have file path and s3 output prefix in the file list
+        for in_filepath, _ in file_list:
+            cog_convert(in_filepath, Path(output_dir))
+    except ValueError:
+        # We have only file path in the file list
+        for in_filepath in file_list:
+            cog_convert(in_filepath, Path(output_dir))
 
 
-@cli.command(name='store-s3-inventory', help="Store S3 inventory list in a pickle file")
+@cli.command(name='save-s3-inventory', help="Save S3 inventory list in a pickle file")
 @product_options
 @config_file_options
 @output_dir_options
 @s3_inv_options
 @aws_profile_options
-def store_s3_inventory(product_name, config, output_dir, inventory_manifest, aws_profile):
+def save_s3_inventory(product_name, config, output_dir, inventory_manifest, aws_profile):
     """
     Scan through S3 bucket for the specified product and fetch the file path of the uploaded files.
     Save those file into a pickle file for further processing.
@@ -362,7 +373,7 @@ def store_s3_inventory(product_name, config, output_dir, inventory_manifest, aws
            Path(result.Key).name.endswith('.yaml'):
             # Store only metadata configuration files for `set` operation
             s3_inv_list_file.append(result.Key)
-    pickle_out = open(Path(output_dir) / product_name + PICKLE_FILE_EXT, "wb")
+    pickle_out = open(Path(output_dir) / (product_name + PICKLE_FILE_EXT), "wb")
     pickle.dump(set(s3_inv_list_file), pickle_out)
     pickle_out.close()
 
@@ -389,7 +400,7 @@ def generate_work_list(product_name, time_range, config, output_dir, datacube_en
         CFG = yaml.load(config_file)
 
     if not pickle_file:
-        # Use pickle file generated by store_s3_inventory function
+        # Use pickle file generated by save_s3_inventory function
         pickle_in_fl = open(Path(output_dir) / product_name + PICKLE_FILE_EXT, "rb")
         s3_file_list = pickle.load(pickle_in_fl)
     else:
@@ -457,7 +468,8 @@ def mpi_cog_convert(product_name, config, output_dir, filelist):
     try:
         with open(filelist) as fl:
             file_list = np.genfromtxt(fl, dtype='str', delimiter=",")
-        tasks = int(file_list.size / 2)  # Since we have two columns in a numpy array
+        # Divide by 2, since we have two columns (in_filepath and s3_dirsuffix) in a numpy array
+        tasks = int(file_list.size / 2)
     except FileNotFoundError:
         LOG.error(f'MPI Worker ({MPI_JOB_RANK}): Task file consisting of file URIs for COG Conversion '
                   f'is not found in the input path')
@@ -485,8 +497,8 @@ def mpi_cog_convert(product_name, config, output_dir, filelist):
         if tasks == 1:
             job_args = [(product_config, str(file_list), output_dir)]
         elif tasks > 1:
-            for in_filepath, s3_out_suffix in file_list:
-                job_args.extend([(product_config, in_filepath, Path(output_dir) / s3_out_suffix.strip())])
+            for in_filepath, s3_dirsuffix in file_list:
+                job_args.extend([(product_config, in_filepath, Path(output_dir) / s3_dirsuffix.strip())])
 
         while closed_workers < num_workers:
             MPI_COMM.recv(source=MPI.ANY_SOURCE, tag=MPI.ANY_TAG, status=MPI_JOB_STATUS)
@@ -642,13 +654,16 @@ def qsub_cog_convert(product_name, time_range, config, output_dir, queue, projec
     """
     task_file = str(Path(output_dir) / product_name) + TASK_FILE_EXT
 
+    # Make output directory specific to the a product (if it does not exists)
+    (Path(output_dir) / product_name).mkdir(parents=True, exist_ok=True)
+
     # language=bash
-    prep = 'qsub -q copyq -N store_s3_list_%(product)s -P %(project)s ' \
-           '-l wd,walltime=5:00:00,mem=31GB,jobfs=5GB -W umask=33 ' \
+    prep = 'qsub -q copyq -N save_s3_list_%(product)s -P %(project)s ' \
+           '-l wd,walltime=10:00:00,mem=31GB,jobfs=5GB -W umask=33 ' \
            '-- /bin/bash -l -c "source $HOME/.bashrc; ' \
            'module use /g/data/v10/public/modules/modulefiles/; ' \
            'module load dea; ' \
-           'python3 %(cog_converter_file)s inventory-store -c %(yaml_file)s ' \
+           'python3 %(cog_converter_file)s save-s3-inventory -c %(yaml_file)s ' \
            '--inventory-manifest %(s3_inventory)s --aws-profile %(aws_profile)s --product-name %(product)s ' \
            '--output-dir %(output_dir)s"'
     cmd = prep % dict(product=product_name, project=project, cog_converter_file=COG_FILE_PATH,
@@ -663,11 +678,11 @@ def qsub_cog_convert(product_name, time_range, config, output_dir, queue, projec
            '-- /bin/bash -l -c "source $HOME/.bashrc; ' \
            '%(generate_script)s --dea-module %(dea_module)s --cog-file %(cog_converter_file)s ' \
            '--config-file %(yaml_file)s --product-name %(product)s --output-dir %(output_dir)s ' \
-           '--datacube-env %(dc_env)s --s3-list %(pickle_file)s --time-range \'%(time_range)s\'"'
+           '--datacube-env %(dc_env)s --pickle-file %(pickle_file)s --time-range \'%(time_range)s\'"'
     cmd = prep % dict(queue=queue, product=product_name, project=project, s3_inv_job=s3_inv_job.split('.')[0],
                       generate_script=GENERATE_FILE_PATH, dea_module=digitalearthau.MODULE_NAME,
                       cog_converter_file=COG_FILE_PATH, yaml_file=config, output_dir=output_dir,
-                      dc_env=datacube_env, pickle_file=Path(output_dir) / product_name + PICKLE_FILE_EXT,
+                      dc_env=datacube_env, pickle_file=Path(output_dir) / (product_name + PICKLE_FILE_EXT),
                       time_range=time_range)
 
     file_list_job = run_command(cmd)
