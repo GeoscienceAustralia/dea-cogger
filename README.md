@@ -70,19 +70,19 @@
 #### Usage
 
 ```
-> $python3 converter/cog_conv_app.py --help
+>  [COG-Conversion]$ python3 converter/cog_conv_app.py --help
 Usage: cog_conv_app.py [OPTIONS] COMMAND [ARGS]...
 
 Options:
   --help  Show this message and exit.
 
 Commands:
-  cog-convert       Convert a single/list of NetCDF files into COG format
-  inventory-store   Store S3 inventory list in a pickle file
-  list-datasets     Generate task list for COG conversion
-  mpi-cog-convert   Parallelise COG convert using MPI
-  qsub-cog-convert  Kick off four stage COG Conversion PBS job
-  verify-cog-files  Verify the converted GeoTIFF are Cloud Optimised GeoTIFF
+  cog-convert         Convert a single/list of files into COG format
+  generate-work-list  Generate task list for COG conversion
+  mpi-cog-convert     Parallelise COG convert using MPI Example: mpirun...
+  qsub-cog-convert    Kick off four stage COG Conversion PBS job
+  save-s3-inventory   Save S3 inventory list in a pickle file
+  verify-cog-files    Verify the converted GeoTIFF are Cloud Optimised...
 
 ```
 
@@ -102,7 +102,7 @@ where,
       product_name:              A unique user defined string (required)
       prefix:                    Define the cogs folder structure and name (required)
       name_template:             Define how to decipher the input file names (required)
-      stacked_name_template:     Define how to decipher the stacked input file names (required)
+      stacked_name_template:     Define how to decipher the stacked input file names (required only for FC percentile)
       default_rsp:               Define the resampling method of pyramid view (default: average)
       predictor:                 Define the predictor in COG convert (default: 2)
       nonpym_list:               A list of keywords of bands which don't require resampling(optional)
@@ -148,27 +148,26 @@ Before using cog conversion command options, run the following:
 
 #### Usage
 ```
-> $python3 converter/cog_conv_app.py cog-convert --help
+> [COG-Conversion]$ python3 converter/cog_conv_app.py cog-convert --help
 Usage: cog_conv_app.py cog-convert [OPTIONS] [FILENAMES]...
 
-  Convert a single/list of NetCDF files into COG format
+  Convert a single/list of files into COG format
 
 Options:
   -p, --product-name TEXT  Product name as defined in product configuration file  [required]
+  -o, --output-dir PATH    Output destination directory  [required]
   -c, --config TEXT        Product configuration file (Optional)
-  -o, --output-dir TEXT    Output work directory (Optional)
-  -l, --filelist TEXT      List of netcdf file names (Optional)
+  -l, --filelist TEXT      List of input file names (Optional)
   --help                   Show this message and exit.
-
 ```
 
 #### Example
-`` python3 converter/cog_conv_app.py cog-convert -p wofs_albers /-1_-12/test_-1_-12_2018100_v1546165254.nc
+`` python3 converter/cog_conv_app.py cog-convert -p wofs_albers -o /temp/output/dir /-1_-12/test_2018100_v1546165254.nc
                 OR
-   python3 converter/cog_conv_app.py cog-convert -p wofs_albers -l /tmp/wofs_albers_nc_file_list.txt``
+   python3 converter/cog_conv_app.py cog-convert -p wofs_albers -o /temp/output/dir -l /tmp/wofs_albers_nc_fllist.txt``
 
 
-### Command: `inventory-store`
+### Command: `save-s3-inventory`
 
     Scan through S3 bucket for the specified product and fetch the file path of the uploaded files.
     Save those file into a pickle file for further processing.
@@ -176,15 +175,15 @@ Options:
 
 #### Usage
 ```
-> $python3 converter/cog_conv_app.py inventory-store --help
-Usage: cog_conv_app.py inventory-store [OPTIONS]
+> [COG-Conversion]$ python3 converter/cog_conv_app.py save-s3-inventory --help
+Usage: cog_conv_app.py save-s3-inventory [OPTIONS]
 
-  Store S3 inventory list in a pickle file
+  Save S3 inventory list in a pickle file
 
 Options:
   -p, --product-name TEXT        Product name as defined in product configuration file  [required]
+  -o, --output-dir PATH          Output destination directory  [required]
   -c, --config TEXT              Product configuration file (Optional)
-  -o, --output-dir TEXT          Output work directory (Optional)
   -i, --inventory-manifest TEXT  The manifest of AWS S3 bucket inventory URL (Optional)
   --aws-profile TEXT             AWS profile name (Optional)
   --help                         Show this message and exit.
@@ -192,10 +191,10 @@ Options:
 ```
 
 #### Example
-`` python3 converter/cog_conv_app.py inventory-store -p wofs_albers --aws-profile tempProfile -o /tmp/``
+`` python3 converter/cog_conv_app.py save-s3-inventory -p wofs_albers -o /outdir/ --aws-profile tempProfile -o /tmp/``
 
 
-### Command: `list-datasets`
+### Command: `generate-work-list`
 
     Compares datacube file uri's against S3 bucket (file names within pickle file) and writes the list of datasets
     for cog conversion into the task file.
@@ -203,29 +202,27 @@ Options:
 
 #### Usage
 ```
-> $python3 converter/cog_conv_app.py list-datasets --help
-Usage: cog_conv_app.py list-datasets [OPTIONS]
+> [COG-Conversion]$ python3 converter/cog_conv_app.py generate-work-list --help
+Usage: cog_conv_app.py generate-work-list [OPTIONS]
 
   Generate task list for COG conversion
 
 Options:
-  -p, --product-name TEXT        Product name as defined in product configuration file  [required]
-  --time-range TEXT              The time range:
-                                 '2018-01-01 < time < 2018-12-31'  OR
-                                 'time in 2018-12-31'  OR
-                                 'time=2018-12-31'  [required]
-  -c, --config TEXT              Product configuration file (Optional)
-  -o, --output-dir TEXT          Output work directory (Optional)
-  -E, --datacube-env TEXT        Datacube environment (Optional)
-  -i, --inventory-manifest TEXT  The manifest of AWS S3 bucket inventory URL (Optional)
-  --aws-profile TEXT             AWS profile name (Optional)
-  --s3-list TEXT                 Pickle file containing the list of s3 bucket inventory (Optional)
-  --help                         Show this message and exit.
+  -p, --product-name TEXT  Product name as defined in product configuration file  [required]
+  --time-range TEXT        The time range:
+                             '2018-01-01 < time < 2018-12-31'  OR
+                             'time in 2018-12-31'  OR
+                             'time=2018-12-31'  [required]
+  -o, --output-dir PATH    Output destination directory  [required]
+  -c, --config TEXT        Product configuration file (Optional)
+  -E, --datacube-env TEXT  Datacube environment (Optional)
+  --pickle-file TEXT       Pickle file containing the list of s3 bucket inventory (Optional)
+  --help                   Show this message and exit.
 
 ```
 
 #### Example
-``python3 converter/cog_conv_app.py list-datasets -p wofs_albers --time-range '2018-11-30 < time < 2018-12-01'``
+``python3 converter/cog_conv_app.py generate-work-list -p wofs_albers -o /outdir/ --time-range 'time in 2018-12'``
 
 
 ### Command: `mpi-cog-convert`
@@ -245,15 +242,15 @@ Options:
 
 #### Usage
 ```
-> $python3 converter/cog_conv_app.py mpi-cog-convert --help
+> [COG-Conversion]$ python3 converter/cog_conv_app.py mpi-cog-convert --help
 Usage: cog_conv_app.py mpi-cog-convert [OPTIONS] FILELIST
 
   Parallelise COG convert using MPI
 
 Options:
   -p, --product-name TEXT  Product name as defined in product configuration file  [required]
+  -o, --output-dir PATH    Output destination directory  [required]
   -c, --config TEXT        Product configuration file (Optional)
-  -o, --output-dir TEXT    Output work directory (Optional)
   --help                   Show this message and exit.
 
 ```
@@ -311,7 +308,7 @@ mpi-cog-convert -c aws_products_config.yaml --output-dir /tmp/wofls_cog/ -p wofs
 
 #### Usage
 ```
-> $python3 converter/cog_conv_app.py qsub-cog-convert --help
+> [COG-Conversion]$ python3 converter/cog_conv_app.py qsub-cog-convert --help
 Usage: cog_conv_app.py qsub-cog-convert [OPTIONS]
 
   Kick off four stage COG Conversion PBS job
@@ -322,8 +319,8 @@ Options:
                                   '2018-01-01 < time < 2018-12-31'  OR
                                   'time in 2018-12-31'  OR
                                   'time=2018-12-31'  [required]
+  -o, --output-dir PATH           Output destination directory  [required]
   -c, --config TEXT               Product configuration file (Optional)
-  -o, --output-dir TEXT           Output work directory (Optional)
   -q, --queue                     [normal|express]
   -P, --project TEXT              Project Name
   -t, --walltime INTEGER RANGE    Number of hours (range: 1-48hrs) to request (Optional)
@@ -342,7 +339,7 @@ Options:
 
 #### Example
 ``python3 converter/cog_conv_app.py qsub-cog-convert -q normal -P v10 -M temp@email.com -p wofs_albers 
---time-range '2018-11-30 < time < 2018-12-01'``
+--time-range '2018-11-30 < time < 2018-12-01' --output-dir /tmp/wofls_cog/``
 
 
 ### Command: `verify-cog-files`
@@ -352,7 +349,7 @@ Options:
 
 #### Usage
 ```
-> $python3 converter/cog_conv_app.py verify-cog-files --help
+> [COG-Conversion]$ python3 converter/cog_conv_app.py verify-cog-files --help
 Usage: cog_conv_app.py verify-cog-files [OPTIONS]
 
   Verify the converted GeoTIFF are Cloud Optimised GeoTIFF

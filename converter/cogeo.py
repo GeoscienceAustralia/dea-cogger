@@ -50,8 +50,8 @@ class COGConvert:
             self.default_rsp = default_rsp
 
     def __call__(self, input_fname, dest_dir):
-        os.makedirs(Path(dest_dir).parent, exist_ok=True)
-        dst_prefix_path = Path(dest_dir).parent / basename(input_fname).split('.')[0]
+        Path(dest_dir).mkdir(parents=True, exist_ok=True)
+        dst_prefix_path = Path(dest_dir) / basename(input_fname).split('.')[0]
         self.generate_cog_files(input_fname, str(dst_prefix_path))
 
     def generate_cog_files(self, input_file, dst_prefix_path):

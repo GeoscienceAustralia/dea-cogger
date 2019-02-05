@@ -22,7 +22,7 @@ while [[ "$#" -gt 0 ]]; do
         --datacube-env )        shift
                                 DATACUBE_ENV="$1"
                                 ;;
-        --s3-list )             shift
+        --pickle-file )         shift
                                 PICKLE_FILE="$1"
                                 ;;
         --time-range )          shift
@@ -46,5 +46,5 @@ cd "$OUTPUT_DIR" || {
   exit 1
 }
 
-python3 "$COG_CONV_FILE" list-datasets -c "$YAML_FILE" --product-name "$PRODUCT_NAME" \
---output-dir "$OUTPUT_DIR" -E "$DATACUBE_ENV" --s3-list "$PICKLE_FILE" --time-range "$TIME_RANGE"
+python3 "$COG_CONV_FILE" generate-work-list -c "$YAML_FILE" --product-name "$PRODUCT_NAME" \
+--output-dir "$OUTPUT_DIR" -E "$DATACUBE_ENV" --pickle-file "$PICKLE_FILE" --time-range "$TIME_RANGE"
