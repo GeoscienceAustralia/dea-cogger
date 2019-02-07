@@ -72,27 +72,37 @@ class COGNetCDF:
         r = re.compile(r"(?<=_)[-\d.]+")
         indices = r.findall(prefix_name)
         r = re.compile(r"(?<={)\w+")
-        keys = sorted(set(r.findall(self.name_template)))
+        all_keys = r.findall(self.name_template)
 
+        #the order of keys needs to be kept
+        keys = []
+        for key in all_keys:
+            if key not in keys:
+                keys.append(key)
+        
         if len(indices) > len(keys):
             indices = indices[-len(keys):]
-
-        indices += [None] * (3 - len(indices))
-        x_index, y_index, date_time = indices
+        elif len(indices) < len(keys):
+            indices += [None] * (len(keys) - len(indices))
 
         if indices == [None] * len(indices):
             out_dir, prefix_name = self._make_s1_outprefix(input_fname, dest_dir)
         else:
-            dest_dict = {keys[1]: x_index, keys[2]: y_index}
+            dest_dict = dict()
+            for val, key in zip(indices, keys):
+                dest_dict[key] = val 
 
-            if date_time is not None:
-                try:
-                    dest_dict[keys[0]] = datetime.strptime(date_time, '%Y%m%d%H%M%S%f')
-                except ValueError:
-                    dest_dict[keys[0]] = datetime.strptime(date_time, '%Y')  # Stacked netCDF file
-            else:
-                self.name_template = '/'.join(self.name_template.split('/')[0:2])
+            # keys[2:] should be time
+            for key in keys[2:]:
+                if dest_dict.get(key, None) is not None:
+                    date_time = dest_dict[key]
+                    if len(date_time) < len('19010101000000'):
+                        date_time += '1' * (len('19010101000000') - len(date_time))
+                        dest_dict[key] = datetime.strptime(date_time, '%Y%m%d%H%M%S%f')
+                else:
+                    self.name_template = '/'.join(self.name_template.split('/')[0:2])
 
+                
             out_dir = Path(pjoin(dest_dir, self.name_template.format(**dest_dict))).parents[0]
 
         os.makedirs(out_dir, exist_ok=True)
