@@ -102,6 +102,14 @@ mail_options = click.option('--email-options', '-m', default='abe',
 mail_id = click.option('--email-id', '-M', default='nci.monitor@dea.ga.gov.au',
                        help='Email recipient id (Optional)')
 
+# pylint: disable=invalid-name
+sat_row_options = click.option('--sat-row', default=0, type=click.INT,
+                               help='Image satellite row (Optional)')
+
+# pylint: disable=invalid-name
+sat_path_options = click.option('--sat-path', default=0, type=click.INT,
+                                help='Image satellite path (Optional)')
+
 with open(ROOT_DIR / 'aws_products_config.yaml') as fd:
     CFG = yaml.load(fd)
 
@@ -183,22 +191,21 @@ def validate_time_range(context, param, value):
                                  '\n\ttime=1996-12-31')
 
 
-def get_dataset_values(product_name, time_range=None, datacube_env='datacube'):
+def get_dataset_values(product_name, sat_row, sat_path, time_range, datacube_env='datacube'):
     """
     Extract the file list corresponding to a product for the given year and month using datacube API.
     """
-    try:
-        query = {**dict(product=product_name), **time_range}
-    except TypeError:
-        # Time range is None
-        query = {**dict(product=product_name)}
-
     dc = Datacube(app='cog-worklist query', env=datacube_env)
+
+    if sat_row and sat_path:
+        query = dict(product=product_name, sat_row=sat_row, sat_path=sat_path, **time_range)
+    else:
+        query = dict(product=product_name, **time_range)
 
     field_names = get_field_names(CFG['products'][product_name])
 
     LOG.info(f"Perform a datacube dataset search returning only the specified fields, {field_names}.")
-    ds_records = dc.index.datasets.search_returning(field_names=tuple(field_names), **query)
+    ds_records = dc.index.datasets.search_returning(field_names=field_names, **query)
 
     search_results = False
     for ds_rec in ds_records:
@@ -385,7 +392,10 @@ def save_s3_inventory(product_name, config, output_dir, inventory_manifest, aws_
 @output_dir_options
 @dc_env_options
 @s3_pickle_file_options
-def generate_work_list(product_name, time_range, config, output_dir, datacube_env, pickle_file):
+@sat_row_options
+@sat_path_options
+def generate_work_list(product_name, time_range, config, output_dir, datacube_env, pickle_file,
+                       sat_row, sat_path):
     """
     Compares datacube file uri's against S3 bucket (file names within pickle file) and writes the list of datasets
     for cog conversion into the task file
@@ -411,6 +421,7 @@ def generate_work_list(product_name, time_range, config, output_dir, datacube_en
     dc_workgen_list = dict()
 
     for uri, dest_dir, dc_yamlfile_path in get_dataset_values(product_name,
+                                                              sat_row, sat_path,
                                                               parse_expressions(time_range),
                                                               datacube_env):
         if uri:
@@ -620,8 +631,11 @@ def verify_cog_files(path):
 @s3_output_dir_options
 @aws_profile_options
 @dc_env_options
+@sat_row_options
+@sat_path_options
 def qsub_cog_convert(product_name, time_range, config, output_dir, queue, project, walltime, nodes,
-                     email_options, email_id, inventory_manifest, s3_output_url, aws_profile, datacube_env):
+                     email_options, email_id, inventory_manifest, s3_output_url, aws_profile, datacube_env,
+                     sat_row, sat_path):
     """
     Submits an COG conversion job, using a four stage PBS job submission.
     Uses a configuration file to define the file naming schema.
@@ -678,10 +692,12 @@ def qsub_cog_convert(product_name, time_range, config, output_dir, queue, projec
            '-- /bin/bash -l -c "source $HOME/.bashrc; ' \
            '%(generate_script)s --dea-module %(dea_module)s --cog-file %(cog_converter_file)s ' \
            '--config-file %(yaml_file)s --product-name %(product)s --output-dir %(output_dir)s ' \
+           '--sat-row %(sat_row)s --sat-path %(sat_path)s ' \
            '--datacube-env %(dc_env)s --pickle-file %(pickle_file)s --time-range \'%(time_range)s\'"'
     cmd = prep % dict(queue=queue, product=product_name, project=project, s3_inv_job=s3_inv_job.split('.')[0],
                       generate_script=GENERATE_FILE_PATH, dea_module=digitalearthau.MODULE_NAME,
                       cog_converter_file=COG_FILE_PATH, yaml_file=config, output_dir=output_dir,
+                      sat_row=sat_row, sat_path=sat_path,
                       dc_env=datacube_env, pickle_file=Path(output_dir) / (product_name + PICKLE_FILE_EXT),
                       time_range=time_range)
 
@@ -694,7 +710,7 @@ def qsub_cog_convert(product_name, time_range, config, output_dir, queue, projec
            '-- /bin/bash -l -c "source $HOME/.bashrc; ' \
            'module use /g/data/v10/public/modules/modulefiles/; ' \
            'module load dea/20181015; ' \
-           'module load openmpi/3.1.2;' \
+           'module load openmpi/3.1.2; ' \
            'mpirun --tag-output --report-bindings ' \
            'python3 %(cog_converter_file)s mpi-cog-convert ' \
            '-c %(yaml_file)s --output-dir %(output_dir)s --product-name %(product)s %(file_list)s"'

@@ -49,10 +49,10 @@ class COGConvert:
         else:
             self.default_rsp = default_rsp
 
-    def __call__(self, input_fname, dest_dir):
+    def __call__(self, in_filepath, dest_dir):
         Path(dest_dir).mkdir(parents=True, exist_ok=True)
-        dst_prefix_path = Path(dest_dir) / basename(input_fname).split('.')[0]
-        self.generate_cog_files(input_fname, str(dst_prefix_path))
+        dst_prefix_path = Path(dest_dir) / basename(in_filepath).split('.')[0]
+        self.generate_cog_files(in_filepath, str(dst_prefix_path))
 
     def generate_cog_files(self, input_file, dst_prefix_path):
         """
@@ -62,6 +62,47 @@ class COGConvert:
 
         The directory names will look like 'LS_WATER_3577_9_-39_20180506102018'
         """
+        if input_file.endswith('.yaml'):
+            print("Processing level 2 scenes")
+            for fpath, subdirs, files in os.walk(Path(input_file).parent):
+                for fname in files:
+                    if fname.endswith('.tif'):
+                        geotif_in_flpath = os.path.join(fpath, fname)
+                        print(f"Cog Convert {basename(geotif_in_flpath)} file")
+                        # Strip /tiff_filename/input_filename from the destination prefix path. Hence path.parents[1]
+                        cogtif_out_flpath = Path(dst_prefix_path).parents[0] / fname
+
+                        # Extract each band from the input file and write to individual GeoTIFF files
+                        self._tif_to_cogtiff(geotif_in_flpath, str(cogtif_out_flpath))
+
+            with open(input_file) as stream:
+                dataset = yaml.load(stream, Loader=Loader)
+
+            invalid_band = []
+            # Update band urls
+            for key, value in dataset['image']['bands'].items():
+                if self.black_list is not None:
+                    if re.search(self.black_list, key) is not None:
+                        invalid_band.append(key)
+                        continue
+
+                if self.white_list is not None:
+                    if re.search(self.white_list, key) is None:
+                        invalid_band.append(key)
+                        continue
+
+            # Strip /product/cog_filename from the output path. Hence path.parents[1]
+            yaml_out_fpath = Path(cogtif_out_flpath).parents[1] / basename(input_file)
+
+            for band in invalid_band:
+                dataset['image']['bands'].pop(band)
+
+            dataset['format'] = {'name': 'GeoTIFF'}
+            with open(yaml_out_fpath, 'w') as fp:
+                yaml.dump(dataset, fp, default_flow_style=False, Dumper=Dumper)
+                print(f"Created yaml file, {yaml_out_fpath}")
+            return
+
         try:
             dataset = gdal.Open(input_file, gdal.GA_ReadOnly)
         except Exception as exp:
@@ -74,7 +115,51 @@ class COGConvert:
         subdatasets = dataset.GetSubDatasets()
 
         # Extract each band from the input file and write to individual GeoTIFF files
-        self._dataset_to_cog(dst_prefix_path, subdatasets, input_file)
+        rastercount = self._dataset_to_cog(dst_prefix_path, subdatasets)
+
+        dataset_array = xarray.open_dataset(input_file)
+
+        # Create a single yaml file for a sub-dataset (consolidated one for a band group)
+        self._dataset_to_yaml(dst_prefix_path, dataset_array, rastercount)
+        # Clean up XML files from GDAL
+        # GDAL creates extra XML files which we don't want
+
+    def _tif_to_cogtiff(self, in_fpath, out_fpath):
+        """ Convert the Geotiff to COG using gdal commands
+            Blocksize is 512
+            TILED <boolean>: Switch to tiled format
+            COPY_SRC_OVERVIEWS <boolean>: Force copy of overviews of source dataset
+            COMPRESS=[NONE/DEFLATE]: Set the compression to use. DEFLATE is only available if NetCDF has been compiled with
+                      NetCDF-4 support. NC4C format is the default if DEFLATE compression is used.
+            ZLEVEL=[1-9]: Set the level of compression when using DEFLATE compression. A value of 9 is best,
+                          and 1 is least compression. The default is 1, which offers the best time/compression ratio.
+            BLOCKXSIZE <int>: Tile Width
+            BLOCKYSIZE <int>: Tile/Strip Height
+            PREDICTOR <int>: Predictor Type (1=default, 2=horizontal differencing, 3=floating point prediction)
+            PROFILE <string-select>: possible values: GDALGeoTIFF,GeoTIFF,BASELINE,
+        """
+        os.environ['GDAL_DISABLE_READDIR_ON_OPEN'] = 'YES'
+        os.environ['CPL_VSIL_CURL_ALLOWED_EXTENSIONS'] = '.tif'
+
+        # Note: DEFLATE compression while more efficient than LZW can cause compatibility issues
+        #       with some software packages
+        #       DEFLATE or LZW can be used for lossless compression, or
+        #       JPEG for lossy compression
+        default_profile = {'driver': 'GTiff',
+                           'interleave': 'pixel',
+                           'tiled': True,
+                           'blockxsize': 512,  # 256 or 512 pixels
+                           'blockysize': 512,  # 256 or 512 pixels
+                           'compress': 'DEFLATE',
+                           'predictor': self.predictor,
+                           'copy_src_overviews': True,
+                           'zlevel': 9}
+        cog_translate(in_fpath, out_fpath,
+                      default_profile,
+                      indexes=[1],
+                      overview_resampling='average',
+                      overview_level=6,
+                      config=DEFAULT_GDAL_CONFIG)
 
     def _dataset_to_yaml(self, dst_prefix_path, dataset_array: xarray.Dataset, rastercount):
         """
@@ -126,7 +211,7 @@ class COGConvert:
                 yaml.dump(dataset, fp, default_flow_style=False, Dumper=Dumper)
                 print(f"Created yaml file, {yaml_fname}")
 
-    def _dataset_to_cog(self, dst_prefix_path, subdatasets, input_file):
+    def _dataset_to_cog(self, dst_prefix_path, subdatasets):
         """
         Write the datasets to separate cog files
         """
@@ -188,19 +273,13 @@ class COGConvert:
                                    'predictor': self.predictor,
                                    'copy_src_overviews': True,
                                    'zlevel': 9}
-
                 cog_translate(dts[0], out_fname,
                               default_profile,
                               indexes=[i + 1],
                               overview_resampling=resampling_method,
                               config=DEFAULT_GDAL_CONFIG)
 
-        dataset_array = xarray.open_dataset(input_file)
-
-        # Create a single yaml file for a sub-dataset (consolidated one for a band group)
-        self._dataset_to_yaml(dst_prefix_path, dataset_array, rastercount)
-        # Clean up XML files from GDAL
-        # GDAL creates extra XML files which we don't want
+        return rastercount
 
     def _check_tif(self, fname):
         try:
@@ -242,6 +321,7 @@ def cog_translate(
         Raster band indexes to copy.
     overview_level : int, optional (default: 6)
         COGEO overview (decimation) level
+    overview_resampling : str, [average, nearest, mode]
     config : dict
         Rasterio Env options.
 
