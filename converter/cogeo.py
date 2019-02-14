@@ -69,7 +69,6 @@ class COGConvert:
                     if fname.endswith('.tif'):
                         geotif_in_flpath = os.path.join(fpath, fname)
                         print(f"Cog Convert {basename(geotif_in_flpath)} file")
-                        # Strip /tiff_filename/input_filename from the destination prefix path. Hence path.parents[1]
                         cogtif_out_flpath = Path(dst_prefix_path).parents[0] / fname
 
                         # Extract each band from the input file and write to individual GeoTIFF files
@@ -125,7 +124,7 @@ class COGConvert:
         # GDAL creates extra XML files which we don't want
 
     def _tif_to_cogtiff(self, in_fpath, out_fpath):
-        """ Convert the Geotiff to COG using gdal commands
+        """ Convert the Geotiff to COG using cogeo cog_translate module
             Blocksize is 512
             TILED <boolean>: Switch to tiled format
             COPY_SRC_OVERVIEWS <boolean>: Force copy of overviews of source dataset
