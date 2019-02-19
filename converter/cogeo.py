@@ -44,7 +44,7 @@ class NetCDFCOGConverter:
     """
 
     def __init__(self, black_list=None, white_list=None, no_overviews_list=None, default_resampling='average',
-                 bands_rsp=None, name_template=None, prefix=None, predictor=2, stacked_name_template=None):
+                 bands_rsp=None, name_template=None, prefix=None, predictor=2):
         # A list of keywords of bands which don't require resampling
         self.no_overviews_list = no_overviews_list
 
@@ -57,18 +57,16 @@ class NetCDFCOGConverter:
         self.bands_rsp = bands_rsp
         self.name_template = name_template
         self.s3_prefix_path = prefix
-        self.stacked_name_template = stacked_name_template
 
         self.predictor = predictor
 
         self.default_resampling = default_resampling
 
-    def __call__(self, input_fname, dest_dir):
-        Path(dest_dir).mkdir(parents=True, exist_ok=True)
-        dst_prefix_path = Path(dest_dir) / basename(input_fname).split('.')[0]
-        self.generate_cog_files(input_fname, str(dst_prefix_path))
+    def __call__(self, input_fname, output_prefix):
+        Path(output_prefix).parent.mkdir(parents=True, exist_ok=True)
+        self.generate_cog_files(input_fname, output_prefix)
 
-    def generate_cog_files(self, input_file, dst_prefix_path):
+    def generate_cog_files(self, input_file, output_prefix):
         """
         Convert the datasets from the input file to COG format and save them in the 'dest_dir'
 
@@ -88,17 +86,17 @@ class NetCDFCOGConverter:
             raise Exception("COG Converter only works with NetCDF datasets.")
 
         # Extract each band from the input file and write to individual GeoTIFF files
-        self._netcdf_to_cogs(input_file, part_index, dst_prefix_path)
+        self._netcdf_to_cogs(input_file, part_index, output_prefix)
 
         # Create a single yaml file for a sub-dataset (consolidated one for a band group)
-        self._netcdf_to_yaml(input_file, part_index, dst_prefix_path)
+        self._netcdf_to_yaml(input_file, part_index, output_prefix)
 
-    def _netcdf_to_yaml(self, input_file: Union[str, Path], part_index, dst_prefix_path):
+    def _netcdf_to_yaml(self, input_file: Union[str, Path], part_index, output_prefix):
         """
         Write the datasets to separate yaml files
         """
 
-        yaml_fname = dst_prefix_path + '.yaml'
+        yaml_fname = output_prefix + '.yaml'
 
         if Path(yaml_fname).exists():
             LOG.info(f'Dataset Document {yaml_fname} already exists.')
@@ -112,7 +110,7 @@ class NetCDFCOGConverter:
 
         dataset = yaml.load(dataset_object, Loader=Loader)
         if dataset is None:
-            LOG.info(f'No YAML section {dst_prefix_path}')
+            LOG.info(f'No YAML section {output_prefix}')
             return
 
         invalid_band = []
@@ -129,7 +127,7 @@ class NetCDFCOGConverter:
                     invalid_band.append(band_name)
                     continue
 
-            tif_path = basename(dst_prefix_path + '_' + band_name + '.tif')
+            tif_path = basename(output_prefix + '_' + band_name + '.tif')
 
             band_definition.pop('layer', None)
             band_definition['path'] = tif_path
@@ -144,7 +142,7 @@ class NetCDFCOGConverter:
             yaml.dump(dataset, fp, default_flow_style=False, Dumper=Dumper)
             print(f"Created yaml file, {yaml_fname}")
 
-    def _netcdf_to_cogs(self, input_file, part_index, dst_prefix_path):
+    def _netcdf_to_cogs(self, input_file, part_index, output_prefix):
         """
         Write the datasets to separate cog files
         """
@@ -180,7 +178,7 @@ class NetCDFCOGConverter:
                 if re.search(self.white_list, band_name) is None:
                     continue
 
-            out_fname = dst_prefix_path + '_' + band_name + '.tif'
+            out_fname = output_prefix + '_' + band_name + '.tif'
 
             # Check the done files might need a force option later
             if Path(out_fname).exists():

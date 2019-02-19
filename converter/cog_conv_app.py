@@ -137,13 +137,13 @@ def _submit_qsub_job(command):
         raise
 
 
-def _convert_cog(product_config, in_filepath, output_dir):
+def _convert_cog(product_config, in_filepath, output_prefix):
     """
     Convert a list of input files into Cloud Optimise GeoTIFF format using MPI
     Uses a configuration file to define the file naming schema.
     """
     convert_to_cog = NetCDFCOGConverter(**product_config)
-    convert_to_cog(in_filepath, output_dir.parent)
+    convert_to_cog(in_filepath, output_prefix)
 
 
 def validate_time_range(context, param, value):
@@ -190,7 +190,6 @@ def get_dataset_values(product_name, product_config, time_range=None):
 
     if not search_results:
         LOG.warning(f"Datacube product query is empty for {product_name} product with time-range, {time_range}")
-        return "", "", ""
 
 
 def get_field_names(product_config):
@@ -275,7 +274,7 @@ time_range_options = click.option('--time-range', callback=validate_time_range, 
 
 
 @click.group(help=__doc__,
-             context_settings=dict(max_content_width=120))
+             context_settings=dict(max_content_width=200)) # Should shrink to screen width
 def cli():
     pass
 
@@ -393,7 +392,7 @@ def generate_work_list(product_name, time_range, config, output_dir, pickle_file
                                                               CFG['products'][product_name],
                                                               parse_expressions(time_range)):
         if uri:
-            dc_workgen_list[dc_yamlfile_path] = [uri.split('file://')[1], dest_dir]
+            dc_workgen_list[dc_yamlfile_path] = (uri.split('file://')[1], dest_dir)
 
     work_list = set(dc_workgen_list.keys()) - set(s3_file_list)
     out_file = Path(output_dir) / (product_name + TASK_FILE_EXT)

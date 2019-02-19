@@ -26,21 +26,18 @@ products:
   ls5_fc_albers:
     prefix: fractional-cover/fc/v2.2.0/ls5
     name_template: x_{x}/y_{y}/{time:%Y}/{time:%m}/{time:%d}/LS5_TM_FC_3577_{x}_{y}_{time:%Y%m%d%H%M%S%f}
-    stacked_name_template: LS5_TM_FC_3577_{x}_{y}_{time:%Y}_
     predictor: 2
     default_resampling: average
 
   ls7_fc_albers:
     prefix: fractional-cover/fc/v2.2.0/ls7
     name_template: x_{x}/y_{y}/{time:%Y}/{time:%m}/{time:%d}/LS7_ETM_FC_3577_{x}_{y}_{time:%Y%m%d%H%M%S%f}
-    stacked_name_template: LS7_ETM_FC_3577_{x}_{y}_{time:%Y}_
     predictor: 2
     default_resampling: average
 
   ls8_fc_albers:
     prefix: fractional-cover/fc/v2.2.0/ls8
     name_template: x_{x}/y_{y}/{time:%Y}/{time:%m}/{time:%d}/LS8_OLI_FC_3577_{x}_{y}_{time:%Y%m%d%H%M%S%f}
-    stacked_name_template: LS8_OLI_FC_3577_{x}_{y}_{time:%Y}_
     predictor: 2
     default_resampling: average
 
