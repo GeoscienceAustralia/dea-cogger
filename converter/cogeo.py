@@ -43,8 +43,8 @@ class NetCDFCOGConverter:
     Convert the input files to COG style GeoTIFFs
     """
 
-    def __init__(self, black_list=None, white_list=None, no_overviews_list=None, default_resampling=None,
-                 bands_rsp=None, name_template=None, prefix=None, predictor=None, stacked_name_template=None):
+    def __init__(self, black_list=None, white_list=None, no_overviews_list=None, default_resampling='average',
+                 bands_rsp=None, name_template=None, prefix=None, predictor=2, stacked_name_template=None):
         # A list of keywords of bands which don't require resampling
         self.no_overviews_list = no_overviews_list
 
@@ -59,15 +59,9 @@ class NetCDFCOGConverter:
         self.s3_prefix_path = prefix
         self.stacked_name_template = stacked_name_template
 
-        if predictor is None:
-            self.predictor = 2
-        else:
-            self.predictor = predictor
+        self.predictor = predictor
 
-        if default_resampling is None:
-            self.default_resampling = 'average'
-        else:
-            self.default_resampling = default_resampling
+        self.default_resampling = default_resampling
 
     def __call__(self, input_fname, dest_dir):
         Path(dest_dir).mkdir(parents=True, exist_ok=True)
@@ -95,6 +89,8 @@ class NetCDFCOGConverter:
 
         # Extract each band from the input file and write to individual GeoTIFF files
         self._netcdf_to_cogs(input_file, part_index, dst_prefix_path)
+
+        # Create a single yaml file for a sub-dataset (consolidated one for a band group)
         self._netcdf_to_yaml(input_file, part_index, dst_prefix_path)
 
     def _netcdf_to_yaml(self, input_file: Union[str, Path], part_index, dst_prefix_path):
@@ -209,9 +205,6 @@ class NetCDFCOGConverter:
                           indexes=[part_index + 1],
                           overview_resampling=resampling_method,
                           config=DEFAULT_GDAL_CONFIG)
-
-        # Create a single yaml file for a sub-dataset (consolidated one for a band group)
-        self._netcdf_to_yaml(dataset_array, part_index, dst_prefix_path)
 
     def _check_tif(self, fname):
         try:

@@ -43,11 +43,11 @@ if [[ -s ~/.aws/credentials ]]; then
     do
         for word in "${line[@]}";
         do
-            [ "$word" = "[$AWS_PROFILE]" ] && exists="$word"
+            [[ "$word" = "[$AWS_PROFILE]" ]] && exists="$word"
         done;
     done < "$filename"
 
-    if [ -n "$exists" ]
+    if [[ -n "$exists" ]]
     then
         aws configure list --profile "$AWS_PROFILE"
 
