@@ -17,7 +17,7 @@ import yaml
 
 from aws_inventory import list_inventory
 from aws_s3_client import make_s3_client
-from cogeo import COGConvert
+from cogeo import NetCDFCOGConverter
 from datacube import Datacube
 from datacube.ui.expression import parse_expressions
 
@@ -142,7 +142,7 @@ def _convert_cog(product_config, in_filepath, output_dir):
     Convert a list of input files into Cloud Optimise GeoTIFF format using MPI
     Uses a configuration file to define the file naming schema.
     """
-    convert_to_cog = COGConvert(**product_config)
+    convert_to_cog = NetCDFCOGConverter(**product_config)
     convert_to_cog(in_filepath, output_dir.parent)
 
 
@@ -300,7 +300,7 @@ def convert(product_name, config, output_dir, filelist, filenames):
 
     product_config = CFG['products'][product_name]
 
-    cog_convert = COGConvert(**product_config)
+    cog_convert = NetCDFCOGConverter(**product_config)
 
     # Preference is give to file list over argument list
     if filelist:
