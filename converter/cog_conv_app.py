@@ -6,15 +6,14 @@ import re
 import subprocess
 import sys
 from enum import IntEnum
-from pathlib import Path
 from os.path import split, basename
+from pathlib import Path
 
 import click
 import dateutil.parser
 import digitalearthau
 import numpy as np
 import yaml
-from mpi4py import MPI
 
 from aws_inventory import list_inventory
 from aws_s3_client import make_s3_client
@@ -29,16 +28,12 @@ stdout_hdlr.setFormatter(formatter)
 LOG.addHandler(stdout_hdlr)
 LOG.setLevel(logging.DEBUG)
 
-MPI_COMM = MPI.COMM_WORLD  # Get MPI communicator object
-MPI_JOB_SIZE = MPI_COMM.size  # Total number of processes
-MPI_JOB_RANK = MPI_COMM.rank  # Rank of this process
-MPI_JOB_STATUS = MPI.Status()  # Get MPI status object
 ROOT_DIR = Path(__file__).absolute().parent
 COG_FILE_PATH = ROOT_DIR / 'cog_conv_app.py'
 YAMLFILE_PATH = ROOT_DIR / 'aws_products_config.yaml'
 GENERATE_FILE_PATH = ROOT_DIR / 'generate_work_list.sh'
 AWS_SYNC_PATH = ROOT_DIR / 'aws_sync.sh'
-VALIDATE_GEOTIFF_PATH = ROOT_DIR.parent / 'validate_cloud_optimized_geotiff.py'
+VALIDATE_GEOTIFF_CMD = ROOT_DIR.parent / 'validate_cloud_optimized_geotiff.py'
 PICKLE_FILE_EXT = '_s3_inv_list.pickle'
 TASK_FILE_EXT = '_file_list.txt'
 
@@ -59,51 +54,48 @@ product_option = click.option('--product-name', '-p', required=True,
                               help="Product name as defined in product configuration file")
 
 # pylint: disable=invalid-name
-s3_output_dir_option = click.option('--s3-output-url', default=None,
-                                    help="S3 URL for uploading the converted files (Required)")
+s3_output_dir_option = click.option('--s3-output-url', default=None, required=True,
+                                    help="S3 URL for uploading the converted files")
 
 # pylint: disable=invalid-name
 s3_inv_option = click.option('--inventory-manifest', '-i',
                              default='s3://dea-public-data-inventory/dea-public-data/dea-public-data-csv-inventory/',
-                             help="The manifest of AWS S3 bucket inventory URL (Optional)")
+                             help="The manifest of AWS S3 bucket inventory URL")
 
 # pylint: disable=invalid-name
-aws_profile_option = click.option('--aws-profile', default='default', help='AWS profile name (Optional)')
+aws_profile_option = click.option('--aws-profile', default='default', help='AWS profile name')
 
 # pylint: disable=invalid-name
 s3_pickle_file_option = click.option('--pickle-file', default=None,
-                                     help='Pickle file containing the list of s3 bucket inventory (Optional)')
+                                     help='Pickle file containing the list of s3 bucket inventory')
 
 # pylint: disable=invalid-name
 config_file_option = click.option('--config', '-c', default=YAMLFILE_PATH,
-                                  help='Product configuration file (Optional)')
+                                  help='Product configuration file')
 
 # pylint: disable=invalid-name
 # https://cs.anu.edu.au/courses/distMemHPC/sessions/MF1.html
 num_nodes_option = click.option('--nodes', default=5,
-                                help='Number of raijin nodes (range: 1-3592) to request (Optional)',
+                                help='Number of raijin nodes (range: 1-3592) to request',
                                 type=click.IntRange(1, 3592))
 
 # pylint: disable=invalid-name
 walltime_option = click.option('--walltime', '-t', default=10,
-                               help='Number of hours (range: 1-48hrs) to request (Optional)',
+                               help='Number of hours (range: 1-48hrs) to request',
                                type=click.IntRange(1, 48))
 
 # pylint: disable=invalid-name
 mail_option = click.option('--email-options', '-m', default='abe',
                            type=click.Choice(['a', 'b', 'e', 'n', 'ae', 'ab', 'be', 'abe']),
                            help='Send email when execution is, \n'
-                                 '[a = aborted | b = begins | e = ends | n = do not send email]')
+                                '[a = aborted | b = begins | e = ends | n = do not send email]')
 
 # pylint: disable=invalid-name
 mail_id_option = click.option('--email-id', '-M', default='nci.monitor@dea.ga.gov.au',
-                              help='Email recipient id (Optional)')
-
-with open(ROOT_DIR / 'aws_products_config.yaml') as fd:
-    CFG = yaml.load(fd)
+                              help='Email recipient id')
 
 
-class TagStatus(IntEnum):
+class MPITagStatus(IntEnum):
     """
     MPI message tag status
     """
@@ -114,10 +106,8 @@ class TagStatus(IntEnum):
     ERROR = 5
 
 
-def run_command(command):
-    """
-    A simple utility to execute a subprocess command.
-    """
+def _submit_qsub_job(command):
+    # TODO WTF
     try:
         LOG.info('Running command: %s', command)
         proc_output = subprocess.run(command, shell=True, check=True,
@@ -147,17 +137,13 @@ def run_command(command):
         raise
 
 
-def cog_converter(product_config, in_filepath, output_dir):
+def _convert_cog(product_config, in_filepath, output_dir):
     """
     Convert a list of input files into Cloud Optimise GeoTIFF format using MPI
     Uses a configuration file to define the file naming schema.
     """
     convert_to_cog = COGConvert(**product_config)
     convert_to_cog(in_filepath, output_dir.parent)
-
-
-def _raise_value_err(exp):
-    raise ValueError(exp)
 
 
 def validate_time_range(context, param, value):
@@ -180,7 +166,7 @@ def validate_time_range(context, param, value):
                                  '\n\ttime=1996-12-31')
 
 
-def get_dataset_values(product_name, time_range=None):
+def get_dataset_values(product_name, product_config, time_range=None):
     """
     Extract the file list corresponding to a product for the given year and month using datacube API.
     """
@@ -288,18 +274,19 @@ time_range_options = click.option('--time-range', callback=validate_time_range, 
                                        " 'time=2018-12-31'")
 
 
-@click.group(help=__doc__)
+@click.group(help=__doc__,
+             context_settings=dict(max_content_width=120))
 def cli():
     pass
 
 
-@cli.command(name='cog-convert', help="Convert a single/list of files into COG format")
+@cli.command(name='convert', help="Convert a single/list of files into COG format")
 @product_option
 @config_file_option
 @output_dir_option
-@click.option('--filelist', '-l', help='List of input file names (Optional)', default=None)
+@click.option('--filelist', '-l', help='List of input file names', default=None)
 @click.argument('filenames', nargs=-1, type=click.Path())
-def convert_cog(product_name, config, output_dir, filelist, filenames):
+def convert(product_name, config, output_dir, filelist, filenames):
     """
     Convert a single or list of input files into Cloud Optimise GeoTIFF format
     Uses a configuration file to define the file naming schema.
@@ -308,7 +295,6 @@ def convert_cog(product_name, config, output_dir, filelist, filenames):
       $ module use /g/data/v10/public/modules/modulefiles/
       $ module load dea
     """
-    global CFG
     with open(config) as config_file:
         CFG = yaml.load(config_file)
 
@@ -360,14 +346,13 @@ def save_s3_inventory(product_name, config, output_dir, inventory_manifest, aws_
       $ module load dea
     """
     s3_inv_list_file = set()
-    global CFG
     with open(config) as config_file:
         CFG = yaml.load(config_file)
 
     for result in list_inventory(inventory_manifest, s3=make_s3_client(profile=aws_profile), aws_profile=aws_profile):
         # Get the list for the product we are interested
         if CFG['products'][product_name]['prefix'] in result.Key and \
-           Path(result.Key).name.endswith('.yaml'):
+                Path(result.Key).name.endswith('.yaml'):
             # Store only metadata configuration files for `set` operation
             s3_inv_list_file.add(result.Key)
 
@@ -391,7 +376,6 @@ def generate_work_list(product_name, time_range, config, output_dir, pickle_file
       $ module use /g/data/v10/public/modules/modulefiles/
       $ module load dea
     """
-    global CFG
     with open(config) as config_file:
         CFG = yaml.load(config_file)
 
@@ -405,6 +389,7 @@ def generate_work_list(product_name, time_range, config, output_dir, pickle_file
     dc_workgen_list = dict()
 
     for uri, dest_dir, dc_yamlfile_path in get_dataset_values(product_name,
+                                                              CFG['products'][product_name],
                                                               parse_expressions(time_range)):
         if uri:
             dc_workgen_list[dc_yamlfile_path] = [uri.split('file://')[1], dest_dir]
@@ -424,17 +409,19 @@ def generate_work_list(product_name, time_range, config, output_dir, pickle_file
         LOG.info(f"No tasks found")
 
 
-@cli.command(name='mpi-cog-convert')
+@cli.command(name='mpi-convert', help="Bulk COG conversion using MPI")
 @product_option
 @config_file_option
 @output_dir_option
 @click.argument('filelist', nargs=1, required=True)
-def mpi_cog_convert(product_name, config, output_dir, filelist):
+def mpi_convert(product_name, config, output_dir, filelist):
     """
+    Bulk COG conversion using MPI
+
     \b
-    Parallelise COG convert using MPI
     Example: mpirun python3 cog_conv_app.py mpi-cog-convert -c aws_products_config.yaml
              --output-dir /tmp/wofls_cog/ -p wofs_albers /tmp/wofs_albers_file_list
+
     \f
     Convert input files to COG format using parallelisation by MPI tool.
     Iterate over the file list and assign MPI worker for COG conversion.
@@ -453,7 +440,11 @@ def mpi_cog_convert(product_name, config, output_dir, filelist):
       $ module use /g/data/v10/public/modules/modulefiles/
       $ module load dea
     """
-    global MPI_COMM, MPI_JOB_SIZE, MPI_JOB_RANK, CFG
+    from mpi4py import MPI
+    MPI_COMM = MPI.COMM_WORLD  # Get MPI communicator object
+    MPI_JOB_SIZE = MPI_COMM.size  # Total number of processes
+    MPI_JOB_RANK = MPI_COMM.rank  # Rank of this process
+    MPI_JOB_STATUS = MPI.Status()  # Get MPI status object
 
     with open(config) as cfg_file:
         CFG = yaml.load(cfg_file)
@@ -473,8 +464,11 @@ def mpi_cog_convert(product_name, config, output_dir, filelist):
             sys.exit(1)
 
     product_config = CFG['products'][product_name]
-    num_workers = MPI_JOB_SIZE - 1 if MPI_JOB_SIZE > 1 else _raise_value_err(
-        f"MPI Worker ({MPI_JOB_RANK}): Number of required processes has to be greater than 1")
+    if MPI_JOB_SIZE > 1:
+        num_workers = MPI_JOB_SIZE - 1
+    else:
+        raise ValueError(
+            f"MPI Worker ({MPI_JOB_RANK}): Number of required processes has to be greater than 1")
 
     exit_flag = False
     # Ensure all errors/exceptions are handled before this, else master-worker processes
@@ -498,107 +492,108 @@ def mpi_cog_convert(product_name, config, output_dir, filelist):
             source = MPI_JOB_STATUS.Get_source()
             tag = MPI_JOB_STATUS.Get_tag()
 
-            if tag == TagStatus.READY:
+            if tag == MPITagStatus.READY:
                 # Worker is ready, so assign a task
                 if task_index < tasks:
-                    MPI_COMM.send(job_args[task_index], dest=source, tag=TagStatus.START)
-                    LOG.debug("MPI Master (%d) assigning task to worker (%d): Process %r file" % (MPI_JOB_RANK,
-                                                                                                  source,
-                                                                                                  job_args[task_index]))
+                    MPI_COMM.send(job_args[task_index], dest=source, tag=MPITagStatus.START)
+                    LOG.debug("MPI Master (%d) assigning task to worker (%d): Process %r file",
+                              MPI_JOB_RANK,
+                              source,
+                              job_args[task_index])
                     task_index += 1
                 else:
                     # Completed assigning all the tasks, signal workers to exit
-                    MPI_COMM.send((None, None, None), dest=source, tag=TagStatus.EXIT)
-            elif tag == TagStatus.DONE:
+                    MPI_COMM.send((None, None, None), dest=source, tag=MPITagStatus.EXIT)
+            elif tag == MPITagStatus.DONE:
                 LOG.debug(f"MPI Worker ({source}) completed the assigned task")
-            elif tag == TagStatus.EXIT:
+            elif tag == MPITagStatus.EXIT:
                 LOG.debug(f"MPI Worker ({source}) exited")
                 closed_workers += 1
-            elif tag == TagStatus.ERROR:
+            elif tag == MPITagStatus.ERROR:
                 LOG.debug(f"MPI Worker ({source}) error detected during processing")
                 exit_flag = True
                 closed_workers += 1
 
         if exit_flag:
-            LOG.error("Error occurred during cog conversion, hence stop everything and do not proceed")
+            LOG.error("Error occurred during cog conversion. Stop everything and do not proceed")
             sys.exit(1)
         else:
             LOG.debug("Batch processing completed")
     else:
-        worker_node_name = MPI.Get_processor_name()
-
-        while True:
-            # Indicate master that the worker is ready for processing task
-            MPI_COMM.send(None, dest=0, tag=TagStatus.READY)
-
-            # Fetch task information from the master
-            product_config, in_filepath, out_dir = MPI_COMM.recv(source=0, tag=MPI.ANY_TAG, status=MPI_JOB_STATUS)
-
-            # Get the tag status from the master
-            tag = MPI_JOB_STATUS.Get_tag()
-
-            if tag == TagStatus.START:
-                LOG.debug(f"MPI Worker ({MPI_JOB_RANK}) on {worker_node_name} node started COG conversion")
-                try:
-                    cog_converter(product_config, in_filepath, out_dir)
-                except Exception as exp:
-                    LOG.error(f"Unexpected error occurred during cog conversion: {exp}")
-                    MPI_COMM.send(None, dest=0, tag=TagStatus.ERROR)
-                    raise
-                MPI_COMM.send(None, dest=0, tag=TagStatus.DONE)
-            elif tag == TagStatus.EXIT:
-                break
-
-        LOG.debug(f"MPI Worker ({MPI_JOB_RANK}) on {worker_node_name} node did not receive any task, hence sending "
-                  f"exit status to the master")
-        MPI_COMM.send(None, dest=0, tag=TagStatus.EXIT)
+        _mpi_worker_loop(MPI, MPI_JOB_STATUS, MPI_JOB_RANK)
 
 
-@cli.command(name='verify-cog-files',
-             help="Verify the converted GeoTIFF are Cloud Optimised GeoTIFF")
+def _mpi_worker_loop(MPI, status, rank):
+    MPI_COMM = MPI.COMM_WORLD  # Get MPI communicator object
+    worker_node_name = MPI.Get_processor_name()
+    while True:
+        # Indicate master that the worker is ready for processing task
+        MPI_COMM.send(None, dest=0, tag=MPITagStatus.READY)
+
+        # Fetch task information from the master
+        product_config, in_filepath, out_dir = MPI_COMM.recv(source=0, tag=MPI.ANY_TAG, status=status)
+
+        # Get the tag status from the master
+        tag = status.Get_tag()
+
+        if tag == MPITagStatus.START:
+            LOG.debug(f"MPI Worker ({rank}) on {worker_node_name} node started COG conversion")
+            try:
+                _convert_cog(product_config, in_filepath, out_dir)
+            except Exception as exp:
+                LOG.error(f"Unexpected error occurred during cog conversion: {exp}")
+                MPI_COMM.send(None, dest=0, tag=MPITagStatus.ERROR)
+                raise
+            MPI_COMM.send(None, dest=0, tag=MPITagStatus.DONE)
+        elif tag == MPITagStatus.EXIT:
+            break
+    LOG.debug(f"MPI Worker ({rank}) on {worker_node_name} node did not receive any task, sending "
+              "exit status to the master")
+    MPI_COMM.send(None, dest=0, tag=MPITagStatus.EXIT)
+
+
+@cli.command(name='verify',
+             help="Verify GeoTIFFs are Cloud Optimised GeoTIFF")
 @click.option('--path', '-p', required=True, help="Validate the GeoTIFF files from this folder",
               type=click.Path(exists=True))
-def verify_cog_files(path):
+def verify(path):
     """
     Verify converted GeoTIFF files are (Geo)TIFF with cloud optimized compatible structure.
 
-    Mandatory Requirement: `validate_cloud_optimized_geotiff.py` gdal file
+    Delete any directories (and their content) that contain broken GeoTIFFs
+
     :param path: Cog Converted files directory path
     :return:
     """
-    invalid_geotiff_files = list()
-    remove_root_geotiff_dir = list()
+    invalid_geotiff_files = set()
+    broken_directories = set()
 
-    gtiff_file_list = sorted(Path(path).rglob("*.tif"))
-    count = 0
-    for file_path in gtiff_file_list:
-        count += 1
-        command = f"python3 {VALIDATE_GEOTIFF_PATH} {file_path}"
-        output = subprocess.getoutput(command)
-        valid_output = output.split('/')[-1]
+    gtiff_file_list = Path(path).rglob("*.tif")
+    for geotiff_file in gtiff_file_list:
+        command = f"python3 {VALIDATE_GEOTIFF_CMD} {geotiff_file}"
+        exitcode, output = subprocess.getstatusoutput(command)
+        validator_output = output.split('/')[-1]
 
-        if 'is a valid cloud' in valid_output:
-            LOG.info(f"{count}: {valid_output}")
+        if exitcode == 0:
+            LOG.info(validator_output)
         else:
-            LOG.error(f"{count}: {valid_output}")
-
-            # List erroneous *.tif file path
-            LOG.error(f"\tErroneous GeoTIFF filepath: {file_path}")
-            remove_root_geotiff_dir.append(file_path.parent)
-            for files in file_path.parent.rglob('*.*'):
+            # Broken COG path
+            LOG.error(f"\tInvalid GeoTIFF file ({validator_output}): {geotiff_file}")
+            broken_directories.add(geotiff_file.parent)
+            for files in geotiff_file.parent.rglob('*.*'):
                 # List all files associated with erroneous *.tif file and remove them
-                invalid_geotiff_files.append(files)
+                invalid_geotiff_files.add(files)
 
-    for rm_files in set(invalid_geotiff_files):
-        LOG.error(f"\tDelete {rm_files} file")
-        rm_files.unlink()
+    for invalid_file in invalid_geotiff_files:
+        LOG.error(f"\tDeleting broken file: {invalid_file}")
+        invalid_file.unlink()
 
-    for rm_dir in set(remove_root_geotiff_dir):
+    for rm_dir in broken_directories:
         LOG.error(f"\tDelete {rm_dir} directory")
         rm_dir.rmdir()
 
 
-@cli.command(name='qsub-cog-convert', help="Kick off four stage COG Conversion PBS job")
+@cli.command(name='qsub', help="Kick off four stage COG Conversion PBS job")
 @product_option
 @time_range_options
 @config_file_option
@@ -612,9 +607,8 @@ def verify_cog_files(path):
 @s3_inv_option
 @s3_output_dir_option
 @aws_profile_option
-@dc_env_option
-def qsub_cog_convert(product_name, time_range, config, output_dir, queue, project, walltime, nodes,
-                     email_options, email_id, inventory_manifest, s3_output_url, aws_profile):
+def qsub(product_name, time_range, config, output_dir, queue, project, walltime, nodes,
+         email_options, email_id, inventory_manifest, s3_output_url, aws_profile):
     """
     Submits an COG conversion job, using a four stage PBS job submission.
     Uses a configuration file to define the file naming schema.
@@ -645,6 +639,8 @@ def qsub_cog_convert(product_name, time_range, config, output_dir, queue, projec
       $ module use /g/data/v10/public/modules/modulefiles/
       $ module load dea
     """
+    with open(ROOT_DIR / 'aws_products_config.yaml') as fd:
+        CFG = yaml.load(fd)
     task_file = str(Path(output_dir) / product_name) + TASK_FILE_EXT
 
     # Make output directory specific to the a product (if it does not exists)
@@ -663,22 +659,16 @@ def qsub_cog_convert(product_name, time_range, config, output_dir, queue, projec
                       yaml_file=config, s3_inventory=inventory_manifest, aws_profile=aws_profile,
                       output_dir=output_dir)
 
-    s3_inv_job = run_command(cmd)
+    s3_inv_job = _submit_qsub_job(cmd)
 
-    # language=bash
-    prep = 'qsub -q %(queue)s -N generate_work_list_%(product)s -P %(project)s ' \
-           '-W depend=afterok:%(s3_inv_job)s: -l wd,walltime=10:00:00,mem=31GB,jobfs=5GB -W umask=33 ' \
-           '-- /bin/bash -l -c "source $HOME/.bashrc; ' \
-           '%(generate_script)s --dea-module %(dea_module)s --cog-file %(cog_converter_file)s ' \
-           '--config-file %(yaml_file)s --product-name %(product)s --output-dir %(output_dir)s ' \
-           '--pickle-file %(pickle_file)s --time-range \'%(time_range)s\'"'
-    cmd = prep % dict(queue=queue, product=product_name, project=project, s3_inv_job=s3_inv_job.split('.')[0],
-                      generate_script=GENERATE_FILE_PATH, dea_module=digitalearthau.MODULE_NAME,
-                      cog_converter_file=COG_FILE_PATH, yaml_file=config, output_dir=output_dir,
-                      pickle_file=Path(output_dir) / (product_name + PICKLE_FILE_EXT),
-                      time_range=time_range)
-
-    file_list_job = run_command(cmd)
+    pickle_file = Path(output_dir) / (product_name + PICKLE_FILE_EXT),
+    file_list_job = _submit_qsub_job(
+        f'qsub -q {queue} -N generate_work_list_{product_name} -P {project} '
+        f'-W depend=afterok:{s3_inv_job}: -l wd,walltime=10:00:00,mem=31GB,jobfs=5GB -W umask=33 '
+        f'-- /bin/bash -l -c "source $HOME/.bashrc; '
+        f'{GENERATE_FILE_PATH} --dea-module {digitalearthau.MODULE_NAME} --cog-file {COG_FILE_PATH} '
+        f'--config-file {config} --product-name {product_name} --output-dir {output_dir} '
+        f'--pickle-file {pickle_file} --time-range \'{time_range}\'"')
 
     # language=bash
     qsub = 'qsub -q %(queue)s -N mpi_cog_convert_%(product)s -P %(project)s ' \
@@ -691,20 +681,22 @@ def qsub_cog_convert(product_name, time_range, config, output_dir, queue, projec
            'mpirun --tag-output --report-bindings ' \
            'python3 %(cog_converter_file)s mpi-cog-convert ' \
            '-c %(yaml_file)s --output-dir %(output_dir)s --product-name %(product)s %(file_list)s"'
+    _RAM_PER_NODE = 62
+    _CPUS_PER_NODE = 16
     cmd = qsub % dict(queue=queue,
                       project=project,
                       file_list_job=file_list_job.split('.')[0],
                       email_options=email_options,
                       email_id=email_id,
-                      ncpus=nodes * 16,
-                      mem=nodes * 62,
+                      ncpus=nodes * _CPUS_PER_NODE,
+                      mem=nodes * _RAM_PER_NODE,
                       walltime=walltime,
                       cog_converter_file=COG_FILE_PATH,
                       yaml_file=config,
                       output_dir=Path(output_dir) / product_name,
                       product=product_name,
                       file_list=task_file)
-    cog_conversion_job = run_command(cmd)
+    cog_conversion_job = _submit_qsub_job(cmd)
 
     if s3_output_url:
         s3_output = s3_output_url
@@ -724,7 +716,7 @@ def qsub_cog_convert(product_name, time_range, config, output_dir, queue, projec
                       aws_sync_script=AWS_SYNC_PATH, dea_module=digitalearthau.MODULE_NAME,
                       s3_output_url=s3_output, cog_converter_file=COG_FILE_PATH, aws_profile=aws_profile,
                       output_dir=Path(output_dir) / product_name)
-    run_command(cmd)
+    _submit_qsub_job(cmd)
 
 
 if __name__ == '__main__':
