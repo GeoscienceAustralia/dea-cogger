@@ -102,6 +102,7 @@ sat_row_options = click.option('--sat-row', default=0, type=click.INT,
 sat_path_options = click.option('--sat-path', default=0, type=click.INT,
                                 help='Image satellite path (Optional)')
 
+
 class MPITagStatus(IntEnum):
     """
     MPI message tag status
@@ -463,10 +464,10 @@ def mpi_convert2(product_name, config, output_dir, filelist):
             in_filepath = future_to_url[future]
             try:
                 data = future.result()
-            except Exception as exc:
-                print('%r generated an exception: %s' % (in_filepath, exc))
+            except Exception:
+                logging.exception(f'Worker processing {in_filepath} generated an exception')
             else:
-                print(f'Successfully converted {in_filepath}')
+                logging.info(f'Successfully converted {in_filepath}')
 
 
 @cli.command(name='mpi-convert', help="Bulk COG conversion using MPI")
@@ -734,7 +735,7 @@ def qsub(product_name, time_range, config, output_dir, queue, project, walltime,
         f'{GENERATE_FILE_PATH} --dea-module {digitalearthau.MODULE_NAME} --cog-file {COG_FILE_PATH} '
         f'--config-file {config} --product-name {product_name} --output-dir {output_dir} '
         f'--sat-row {sat_row} --sat-path {sat_path} ' \
-        f'--pickle-file {pickle_file} --time-range \'{time_range}\'"')
+            f'--pickle-file {pickle_file} --time-range \'{time_range}\'"')
 
     # language=bash
     qsub = 'qsub -q %(queue)s -N mpi_cog_convert_%(product)s -P %(project)s ' \
