@@ -413,8 +413,15 @@ def generate_work_list(product_name, time_range, config, output_dir, pickle_file
 @output_dir_option
 @click.argument('filelist', nargs=1, required=True)
 def mpi_convert2(product_name, config, output_dir, filelist):
+    import os
     from mpi4py import MPI
     MPI_JOB_RANK = MPI.COMM_WORLD.rank  # Rank of this process
+    MPI_JOB_SIZE = MPI.COMM_WORLD.size  # Total number of processes
+    LOG.info(f'Starting up MPI. Rank: {MPI_JOB_RANK}, Job Size: {MPI_JOB_SIZE}')
+    universe_size = MPI.COMM_WORLD.Get_attr(MPI.UNIVERSE_SIZE)
+    LOG.info(f'Apparent MPI Universe size is {universe_size}')
+    LOG.info(f'PBS says number of CPUs is {os.environ["PBS_NCPUS"]}')
+    import ipdb; ipdb.set_trace()
     with open(config) as cfg_file:
         CFG = yaml.load(cfg_file)
 
@@ -431,12 +438,15 @@ def mpi_convert2(product_name, config, output_dir, filelist):
         if tasks == 0:
             LOG.warning(f'MPI Worker ({MPI_JOB_RANK}): Task file is empty')
             sys.exit(1)
+    LOG.info(f'Successfully loaded configuration file {config}')
 
     product_config = CFG['products'][product_name]
 
+    LOG.info('Attempting to fire up the MPIPoolExecutor')
     from mpi4py.futures import MPIPoolExecutor
     from concurrent.futures import as_completed
     with MPIPoolExecutor() as executor:
+        LOG.info('Executor started: submitting jobs')
         future_to_url = {executor.submit(_convert_cog,
                                          product_config,
                                          in_filepath,
