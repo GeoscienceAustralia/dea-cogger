@@ -177,7 +177,7 @@ class NetCDFCOGConverter:
             if band_name in self.no_overviews_list:
                 resampling_method = None
 
-            cog_translate(dts[0], out_fname,
+            cog_translate(dts[0], str(out_fname),
                           profile,
                           indexes=[part_index + 1],
                           overview_resampling=resampling_method,
