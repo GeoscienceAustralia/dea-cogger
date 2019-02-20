@@ -179,10 +179,6 @@ def get_dataset_values(product_name, product_config, time_range=None):
     """
     Extract the file list corresponding to a product for the given year and month using datacube API.
     """
-    if sat_row and sat_path:
-        query = dict(product=product_name, sat_row=sat_row, sat_path=sat_path, **time_range)
-    else:
-        query = dict(product=product_name, **time_range)
     try:
         query = {**dict(product=product_name), **time_range}
     except TypeError:
@@ -368,10 +364,7 @@ def save_s3_inventory(product_name, config, output_dir, inventory_manifest, aws_
 @config_file_option
 @output_dir_option
 @s3_pickle_file_option
-@sat_row_options
-@sat_path_options
-def generate_work_list(product_name, time_range, config, output_dir, pickle_file,
-                       sat_row, sat_path):
+def generate_work_list(product_name, time_range, config, output_dir, pickle_file):
     """
     Compares datacube file uri's against S3 bucket (file names within pickle file) and writes the list of datasets
     for cog conversion into the task file
@@ -394,7 +387,6 @@ def generate_work_list(product_name, time_range, config, output_dir, pickle_file
     dc_workgen_list = dict()
 
     for uri, dest_dir, dc_yamlfile_path in get_dataset_values(product_name,
-                                                              sat_row, sat_path,
                                                               CFG['products'][product_name],
                                                               parse_expressions(time_range)):
         if uri:
