@@ -327,7 +327,7 @@ def convert(product_name, config, output_dir, filelist, filenames):
     LOG.info("Running with single process")
 
     for in_filepath, out_prefix in tasks:
-        cog_converter(in_filepath, out_prefix)
+        cog_converter(in_filepath, Path(output_dir) / out_prefix)
 
 
 @cli.command(name='save-s3-inventory', help="Save S3 inventory list in a pickle file")
