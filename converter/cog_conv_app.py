@@ -94,6 +94,13 @@ mail_option = click.option('--email-options', '-m', default='abe',
 mail_id_option = click.option('--email-id', '-M', default='nci.monitor@dea.ga.gov.au',
                               help='Email recipient id')
 
+# pylint: disable=invalid-name
+sat_row_options = click.option('--sat-row', default=0, type=click.INT,
+                               help='Image satellite row (Optional)')
+
+# pylint: disable=invalid-name
+sat_path_options = click.option('--sat-path', default=0, type=click.INT,
+                                help='Image satellite path (Optional)')
 
 class MPITagStatus(IntEnum):
     """
@@ -170,6 +177,10 @@ def get_dataset_values(product_name, product_config, time_range=None):
     """
     Extract the file list corresponding to a product for the given year and month using datacube API.
     """
+    if sat_row and sat_path:
+        query = dict(product=product_name, sat_row=sat_row, sat_path=sat_path, **time_range)
+    else:
+        query = dict(product=product_name, **time_range)
     try:
         query = {**dict(product=product_name), **time_range}
     except TypeError:
@@ -274,7 +285,7 @@ time_range_options = click.option('--time-range', callback=validate_time_range, 
 
 
 @click.group(help=__doc__,
-             context_settings=dict(max_content_width=200)) # Should shrink to screen width
+             context_settings=dict(max_content_width=200))  # Will still shrink to screen width
 def cli():
     pass
 
@@ -366,7 +377,10 @@ def save_s3_inventory(product_name, config, output_dir, inventory_manifest, aws_
 @config_file_option
 @output_dir_option
 @s3_pickle_file_option
-def generate_work_list(product_name, time_range, config, output_dir, pickle_file):
+@sat_row_options
+@sat_path_options
+def generate_work_list(product_name, time_range, config, output_dir, pickle_file,
+                       sat_row, sat_path):
     """
     Compares datacube file uri's against S3 bucket (file names within pickle file) and writes the list of datasets
     for cog conversion into the task file
@@ -389,6 +403,7 @@ def generate_work_list(product_name, time_range, config, output_dir, pickle_file
     dc_workgen_list = dict()
 
     for uri, dest_dir, dc_yamlfile_path in get_dataset_values(product_name,
+                                                              sat_row, sat_path,
                                                               CFG['products'][product_name],
                                                               parse_expressions(time_range)):
         if uri:
@@ -654,8 +669,11 @@ def verify(path):
 @s3_inv_option
 @s3_output_dir_option
 @aws_profile_option
+@sat_row_options
+@sat_path_options
 def qsub(product_name, time_range, config, output_dir, queue, project, walltime, nodes,
-         email_options, email_id, inventory_manifest, s3_output_url, aws_profile):
+         email_options, email_id, inventory_manifest, s3_output_url, aws_profile,
+         sat_row, sat_path):
     """
     Submits an COG conversion job, using a four stage PBS job submission.
     Uses a configuration file to define the file naming schema.
@@ -715,6 +733,7 @@ def qsub(product_name, time_range, config, output_dir, queue, project, walltime,
         f'-- /bin/bash -l -c "source $HOME/.bashrc; '
         f'{GENERATE_FILE_PATH} --dea-module {digitalearthau.MODULE_NAME} --cog-file {COG_FILE_PATH} '
         f'--config-file {config} --product-name {product_name} --output-dir {output_dir} '
+        f'--sat-row {sat_row} --sat-path {sat_path} ' \
         f'--pickle-file {pickle_file} --time-range \'{time_range}\'"')
 
     # language=bash

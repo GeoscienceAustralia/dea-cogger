@@ -217,6 +217,8 @@ Options:
   -c, --config TEXT        Product configuration file (Optional)
   -E, --datacube-env TEXT  Datacube environment (Optional)
   --pickle-file TEXT       Pickle file containing the list of s3 bucket inventory (Optional)
+  --sat-row INTEGER        Image satellite row (Optional)
+  --sat-path INTEGER       Image satellite path (Optional)
   --help                   Show this message and exit.
 
 ```
@@ -246,6 +248,8 @@ Options:
 Usage: cog_conv_app.py mpi-cog-convert [OPTIONS] FILELIST
 
   Parallelise COG convert using MPI
+  Example: mpirun python3 cog_conv_app.py mpi-cog-convert -c aws_products_config.yaml
+           --output-dir /tmp/wofls_cog/ -p wofs_albers /tmp/wofs_albers_file_list
 
 Options:
   -p, --product-name TEXT  Product name as defined in product configuration file  [required]
@@ -267,14 +271,14 @@ Options:
 module use /g/data/v10/public/modules/modulefiles/
 module load dea/20181015
 module load openmpi/3.1.2
-mpirun --tag-output --report-bindings --rank-by core python3 converter/cog_conv_app.py
+mpirun --tag-output --report-bindings python3 converter/cog_conv_app.py
 mpi-cog-convert -c aws_products_config.yaml --output-dir /tmp/wofls_cog/ -p wofs_albers /tmp/wofs_albers_file_list
 
        OR
 
 qsub -q express -N mpi_cog_convert_product -l ncpus=80,mem=155gb,jobfs=32GB,walltime=05:00:00,wd -- /bin/bash -l -c
 "module use /g/data/v10/public/modules/modulefiles/; module load dea; module load openmpi/3.1.2;
-mpirun --tag-output --report-bindings --rank-by core python3 converter/cog_conv_app.py
+mpirun --tag-output --report-bindings python3 converter/cog_conv_app.py
 mpi-cog-convert -c aws_products_config.yaml --output-dir /tmp/wofls_cog/ -p wofs_albers /tmp/wofs_albers_file_list"
 ```
 
@@ -333,6 +337,8 @@ Options:
   --s3-output-url TEXT            S3 URL for uploading the converted files (Optional)
   --aws-profile TEXT              AWS profile name (Optional)
   -E, --datacube-env TEXT         Datacube environment (Optional)
+  --sat-row INTEGER               Image satellite row (Optional)
+  --sat-path INTEGER              Image satellite path (Optional)
   --help                          Show this message and exit.
 
 ```

@@ -19,6 +19,12 @@ while [[ "$#" -gt 0 ]]; do
         --output-dir )          shift
                                 OUTPUT_DIR="$1"
                                 ;;
+        --sat-row )             shift
+                                SAT_ROW="$1"
+                                ;;
+        --sat-path )            shift
+                                SAT_PATH="$1"
+                                ;;
         --datacube-env )        shift
                                 DATACUBE_ENV="$1"
                                 ;;
@@ -47,4 +53,5 @@ cd "$OUTPUT_DIR" || {
 }
 
 python3 "$COG_CONV_FILE" generate-work-list -c "$YAML_FILE" --product-name "$PRODUCT_NAME" \
---output-dir "$OUTPUT_DIR" -E "$DATACUBE_ENV" --pickle-file "$PICKLE_FILE" --time-range "$TIME_RANGE"
+--output-dir "$OUTPUT_DIR" -E "$DATACUBE_ENV" --pickle-file "$PICKLE_FILE" --sat-row "$SAT_ROW" \
+--sat-path "$SAT_PATH" --time-range "$TIME_RANGE"

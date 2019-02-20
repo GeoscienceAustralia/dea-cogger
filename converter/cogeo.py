@@ -244,6 +244,7 @@ def cog_translate(
         Raster band indexes to copy.
     overview_level : int, optional (default: 6)
         COGEO overview (decimation) level
+    overview_resampling : str, [average, nearest, mode]
     config : dict
         Rasterio Env options.
 
