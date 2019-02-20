@@ -1,4 +1,5 @@
 #!/usr/bin/env python
+import csv
 import logging
 import os
 import pickle
@@ -311,33 +312,22 @@ def convert(product_name, config, output_dir, filelist, filenames):
 
     product_config = CFG['products'][product_name]
 
-    cog_convert = NetCDFCOGConverter(**product_config)
-
-    # Preference is give to file list over argument list
-    if filelist:
-        try:
-            with open(filelist) as fl:
-                file_list = np.genfromtxt(fl, dtype='str', delimiter=",", comments=None)
-            tasks = file_list.size
-        except FileNotFoundError:
-            LOG.error('No input file for the COG conversion found in the specified path')
-            raise
-        else:
-            if tasks == 0:
-                LOG.warning('Task file is empty')
-                sys.exit(1)
-    else:
-        file_list = list(filenames)
-
-    LOG.info("Run with single process")
     try:
-        # We have file path and s3 output prefix in the file list
-        for in_filepath, _ in file_list:
-            cog_convert(in_filepath, Path(output_dir))
-    except ValueError:
-        # We have only file path in the file list
-        for in_filepath in file_list:
-            cog_convert(in_filepath, Path(output_dir))
+        with open(filelist) as fl:
+            reader = csv.reader(fl)
+            tasks = list(reader)
+    except FileNotFoundError:
+        LOG.error('No input file for the COG conversion found in the specified path')
+        sys.exit(1)
+    if len(tasks) == 0:
+        LOG.warning('Task file is empty')
+        sys.exit(1)
+
+    cog_converter = NetCDFCOGConverter(**product_config)
+    LOG.info("Running with single process")
+
+    for in_filepath, out_prefix in tasks:
+        cog_converter(in_filepath, out_prefix)
 
 
 @cli.command(name='save-s3-inventory', help="Save S3 inventory list in a pickle file")
