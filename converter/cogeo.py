@@ -43,7 +43,7 @@ class NetCDFCOGConverter:
     Convert the input files to COG style GeoTIFFs
     """
 
-    def __init__(self, black_list=None, white_list=None, no_overviews_list=None, default_resampling='average',
+    def __init__(self, black_list=None, white_list=None, no_overviews_list=[], default_resampling='average',
                  bands_rsp=None, name_template=None, prefix=None, predictor=2):
         # A list of keywords of bands which don't require resampling
         self.no_overviews_list = no_overviews_list
@@ -54,7 +54,7 @@ class NetCDFCOGConverter:
         # A list of keywords of bands to be converted
         self.white_list = white_list
 
-        self.bands_rsp = bands_rsp
+        self.bands_rsp = bands_rsp if bands_rsp is not None else {}
         self.name_template = name_template
         self.s3_prefix_path = prefix
 
@@ -96,9 +96,9 @@ class NetCDFCOGConverter:
         Write the datasets to separate yaml files
         """
 
-        yaml_fname = output_prefix + '.yaml'
+        yaml_fname = output_prefix.with_suffix('.yaml')
 
-        if Path(yaml_fname).exists():
+        if yaml_fname.exists():
             LOG.info(f'Dataset Document {yaml_fname} already exists.')
             return
 
@@ -127,7 +127,7 @@ class NetCDFCOGConverter:
                     invalid_band.append(band_name)
                     continue
 
-            tif_path = basename(output_prefix + '_' + band_name + '.tif')
+            tif_path = f'{output_prefix.name}_{band_name}.tif'
 
             band_definition.pop('layer', None)
             band_definition['path'] = tif_path
@@ -157,46 +157,26 @@ class NetCDFCOGConverter:
 
         subdatasets = dataset.GetSubDatasets()
 
-        if self.white_list is not None:
-            self.white_list = "|".join(self.white_list)
-        if self.black_list is not None:
-            self.black_list = "|".join(self.black_list)
-        if self.no_overviews_list is not None:
-            self.no_overviews_list = "|".join(self.no_overviews_list)
+        profile = DEFAULT_PROFILE.copy()
+        profile['predictor'] = self.predictor
 
         for dts in subdatasets[:-1]:  # Skip the last dataset, since that is the metadata doc
 
             # Band Name is the last of the colon separate elements in GDAL
             band_name = dts[0].split(':')[-1]
 
-            # Only do specified bands if specified
-            if self.black_list is not None:
-                if re.search(self.black_list, band_name) is not None:
-                    continue
-
-            if self.white_list is not None:
-                if re.search(self.white_list, band_name) is None:
-                    continue
-
-            out_fname = output_prefix + '_' + band_name + '.tif'
+            out_fname = output_prefix.parent / f'{output_prefix.name}_{band_name}.tif'
 
             # Check the done files might need a force option later
-            if Path(out_fname).exists():
+            if out_fname.exists():
                 if self._check_tif(out_fname):
                     continue
 
             # Resampling method of this band
-            resampling_method = None
-            if self.bands_rsp is not None:
-                resampling_method = self.bands_rsp.get(band_name)
-            if resampling_method is None:
-                resampling_method = self.default_resampling
-            if self.no_overviews_list is not None:
-                if re.search(self.no_overviews_list, band_name) is not None:
-                    resampling_method = None
+            resampling_method = self.bands_rsp.get(band_name, self.default_resampling)
 
-            profile = DEFAULT_PROFILE.copy()
-            profile['predictor'] = self.predictor
+            if band_name in self.no_overviews_list:
+                resampling_method = None
 
             cog_translate(dts[0], out_fname,
                           profile,
