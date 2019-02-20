@@ -2,7 +2,6 @@
 import logging
 import os
 import re
-import sys
 from pathlib import Path
 from typing import Union
 
@@ -139,7 +138,7 @@ class NetCDFCOGConverter:
 
         with open(yaml_fname, 'w') as fp:
             yaml.dump(dataset, fp, default_flow_style=False, Dumper=Dumper)
-            print(f"Created yaml file, {yaml_fname}")
+            LOG.info(f"Created yaml file, {yaml_fname}")
 
     def _netcdf_to_cogs(self, input_file, part_index, output_prefix):
         """
@@ -148,7 +147,7 @@ class NetCDFCOGConverter:
         try:
             dataset = gdal.Open(input_file, gdal.GA_ReadOnly)
         except Exception as exp:
-            print(f"GDAL input file error {input_file}: \n{exp}", file=sys.stderr)
+            LOG.exception(f"GDAL input file error {input_file}: \n{exp}")
             return
 
         if dataset is None:
@@ -188,8 +187,8 @@ class NetCDFCOGConverter:
             cog_tif = gdal.Open(fname, gdal.GA_ReadOnly)
             srcband = cog_tif.GetRasterBand(1)
             t_stats = srcband.GetStatistics(True, True)
-        except Exception as exp:
-            print(f"Exception: {exp}", file=sys.stderr)
+        except Exception:
+            LOG.exception(f"Exception opening {fname}")
             return False
 
         if t_stats > [0.] * 4:
@@ -274,8 +273,7 @@ def cog_translate(
 
                     try:
                         copy(mem, dst_path, **dst_kwargs)
-                        print(f"Created a cloud optimized GeoTIFF file, {dst_path}")
-                    except Exception as exp:
-                        print(f"Error while creating a cloud optimized GeoTIFF file, {dst_path}\n\t{exp}",
-                              file=sys.stderr)
+                        LOG.info(f"Created a cloud optimized GeoTIFF file, {dst_path}")
+                    except Exception:
+                        LOG.exception(f"Error while creating a cloud optimized GeoTIFF file, {dst_path}")
                         raise
