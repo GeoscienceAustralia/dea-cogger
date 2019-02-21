@@ -479,40 +479,51 @@ def mpi_convert2(product_name, config, output_dir, filelist):
 @output_dir_option
 @click.argument('filelist', nargs=1, required=True)
 def mpi_convert3(product_name, config, output_dir, filelist):
-    import os
-    from mpi4py import MPI
-    MPI_JOB_RANK = MPI.COMM_WORLD.rank  # Rank of this process
-    MPI_JOB_SIZE = MPI.COMM_WORLD.size  # Total number of processes
-    universe_size = MPI.COMM_WORLD.Get_attr(MPI.UNIVERSE_SIZE)
-    pbs_ncpus = os.environ.get('PBS_NCPUS', None)
-    LOG.info(
-        f'Starting up MPI. Rank: {MPI_JOB_RANK} Job Size: {MPI_JOB_SIZE} Universe size: {universe_size} PBS_NCPUS: {pbs_ncpus}')
+    job_rank, job_size = _mpi_init()
+
     with open(config) as cfg_file:
         CFG = yaml.load(cfg_file)
 
     try:
         with open(filelist) as fl:
-            file_list = np.genfromtxt(fl, dtype='str', delimiter=",", comments=None)
-        # Divide by 2, since we have two columns (in_filepath and s3_dirsuffix) in a numpy array
-        tasks = int(file_list.size / 2)
+            reader = csv.reader(fl)
+            tasks = list(reader)
     except FileNotFoundError:
-        LOG.error(f'MPI Worker ({MPI_JOB_RANK}): Task file consisting of file URIs for COG Conversion '
-                  f'is not found in the input path')
-        raise
-    else:
-        if tasks == 0:
-            LOG.warning(f'MPI Worker ({MPI_JOB_RANK}): Task file is empty')
-            sys.exit(1)
-    LOG.info(f'Successfully loaded configuration file {config}')
+        LOG.error(f'MPI Worker ({job_rank}): Task file {filelist} was not found. Aborting.')
+        sys.exit(1)
+    if len(tasks) == 0:
+        LOG.warning('Task file is empty. Aborting.')
+        sys.exit(1)
+
+    LOG.info(f'Successfully loaded configuration file {config} and tasks file {filelist}')
 
     product_config = CFG['products'][product_name]
 
-    LOG.info('Starting Parallel Processing')
-    for i, (in_filepath, s3_dirsuffix) in enumerate(file_list):
-        if i % MPI_JOB_SIZE == MPI_JOB_RANK:
-            _convert_cog(product_config, in_filepath,
-                         Path(output_dir) / s3_dirsuffix.strip())
-            LOG.info(f'Successfully converted {in_filepath}')
+    for i, (in_filepath, s3_dirsuffix) in enumerate(tasks):
+        if i % job_size == job_rank:
+            try:
+                _convert_cog(product_config, in_filepath,
+                             Path(output_dir) / s3_dirsuffix.strip())
+                LOG.info(f'Successfully converted {in_filepath}')
+            except Exception:
+                LOG.exception(f'Unable to convert {in_filepath}')
+
+
+def _mpi_init():
+    """
+    Ensure we're running within a good MPI environment, and find out the number of processes we have.
+    """
+    from mpi4py import MPI
+    job_rank = MPI.COMM_WORLD.rank  # Rank of this process
+    job_size = MPI.COMM_WORLD.size  # Total number of processes
+    universe_size = MPI.COMM_WORLD.Get_attr(MPI.UNIVERSE_SIZE)
+    pbs_ncpus = os.environ.get('PBS_NCPUS', None)
+    if pbs_ncpus is not None and int(universe_size) != int(pbs_ncpus):
+        LOG.error('Running within PBS and not using all available resources. Abort!')
+        sys.exit(1)
+    LOG.info(f'MPI Info. Rank: {job_rank} Job Size: {job_size} '
+             f'Universe size: {universe_size} PBS_NCPUS: {pbs_ncpus}')
+    return job_rank, job_size
 
 
 @cli.command(name='mpi-convert', help="Bulk COG conversion using MPI")
