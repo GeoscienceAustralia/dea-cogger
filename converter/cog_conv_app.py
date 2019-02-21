@@ -4,9 +4,9 @@ import logging
 import os
 import pickle
 import re
+import socket
 import subprocess
 import sys
-import socket
 from enum import IntEnum
 from os.path import split, basename
 from pathlib import Path
@@ -23,12 +23,14 @@ from cogeo import NetCDFCOGConverter
 from datacube import Datacube
 from datacube.ui.expression import parse_expressions
 
+
 class ContextFilter(logging.Filter):
     hostname = socket.gethostname()
 
     def filter(self, record):
         record.hostname = ContextFilter.hostname
         return True
+
 
 LOG = logging.getLogger('cog-converter')
 stdout_hdlr = logging.StreamHandler(sys.stdout)
@@ -404,13 +406,14 @@ def generate_work_list(product_name, time_range, config, output_dir, pickle_file
     work_list = set(dc_workgen_list.keys()) - set(s3_file_list)
     out_file = Path(output_dir) / (product_name + TASK_FILE_EXT)
 
-    with open(out_file, 'w') as fp:
+    with open(out_file, 'w', newline='') as fp:
+        csvwriter = csv.writer(fp, quoting=csv.QUOTE_MINIMAL)
         for s3_filepath in work_list:
             # dict_value shall contain uri value and s3 output directory path template
             input_file, dest_dir = dc_workgen_list.get(s3_filepath, (None, None))
             if input_file:
                 LOG.info(f"File does not exists in S3, add to work gen list: {input_file}")
-                fp.write(f"{input_file},{dest_dir}\n")
+                csvwriter.writerow((input_file, dest_dir))
 
     if not work_list:
         LOG.info(f"No tasks found")
@@ -428,7 +431,8 @@ def mpi_convert2(product_name, config, output_dir, filelist):
     MPI_JOB_SIZE = MPI.COMM_WORLD.size  # Total number of processes
     universe_size = MPI.COMM_WORLD.Get_attr(MPI.UNIVERSE_SIZE)
     pbs_ncpus = os.environ.get('PBS_NCPUS', None)
-    LOG.info(f'Starting up MPI. Rank: {MPI_JOB_RANK} Job Size: {MPI_JOB_SIZE} Universe size: {universe_size} PBS_NCPUS: {pbs_ncpus}')
+    LOG.info(
+        f'Starting up MPI. Rank: {MPI_JOB_RANK} Job Size: {MPI_JOB_SIZE} Universe size: {universe_size} PBS_NCPUS: {pbs_ncpus}')
     with open(config) as cfg_file:
         CFG = yaml.load(cfg_file)
 
@@ -468,6 +472,7 @@ def mpi_convert2(product_name, config, output_dir, filelist):
             else:
                 logging.info(f'Successfully converted {in_filepath}')
 
+
 @cli.command(name='mpi-convert-3', help="Bulk COG conversion using MPI")
 @product_option
 @config_file_option
@@ -480,7 +485,8 @@ def mpi_convert3(product_name, config, output_dir, filelist):
     MPI_JOB_SIZE = MPI.COMM_WORLD.size  # Total number of processes
     universe_size = MPI.COMM_WORLD.Get_attr(MPI.UNIVERSE_SIZE)
     pbs_ncpus = os.environ.get('PBS_NCPUS', None)
-    LOG.info(f'Starting up MPI. Rank: {MPI_JOB_RANK} Job Size: {MPI_JOB_SIZE} Universe size: {universe_size} PBS_NCPUS: {pbs_ncpus}')
+    LOG.info(
+        f'Starting up MPI. Rank: {MPI_JOB_RANK} Job Size: {MPI_JOB_SIZE} Universe size: {universe_size} PBS_NCPUS: {pbs_ncpus}')
     with open(config) as cfg_file:
         CFG = yaml.load(cfg_file)
 
