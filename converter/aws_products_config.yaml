@@ -23,30 +23,30 @@ products:
     prefix: fractional-cover/fc/v2.2.0/ls5
     name_template: x_{x}/y_{y}/{time:%Y}/{time:%m}/{time:%d}/LS5_TM_FC_3577_{x}_{y}_{time:%Y%m%d%H%M%S}
     default_resampling: average
-    no_overview: ['UE']
+    no_overviews: ['UE']
 
   ls7_fc_albers:
     prefix: fractional-cover/fc/v2.2.0/ls7
     name_template: x_{x}/y_{y}/{time:%Y}/{time:%m}/{time:%d}/LS7_ETM_FC_3577_{x}_{y}_{time:%Y%m%d%H%M%S}
     default_resampling: average
-    no_overview: ['UE']
+    no_overviews: ['UE']
 
   ls8_fc_albers:
     prefix: fractional-cover/fc/v2.2.0/ls8
     name_template: x_{x}/y_{y}/{time:%Y}/{time:%m}/{time:%d}/LS8_OLI_FC_3577_{x}_{y}_{time:%Y%m%d%H%M%S}
     default_resampling: average
-    no_overview: ['UE']
+    no_overviews: ['UE']
 
   fc_percentile_albers_annual:
     prefix: fractional-cover/fc-percentile/annual/v2.1.0/combined
     name_template: x_{x}/y_{y}/{time:%Y}/LS_FC_PC_3577_{x}_{y}_{time:%Y%m%d}
-    no_overview: ["source", "observed"]
+    no_overviews: ["source", "observed"]
     default_resampling: average
 
   fc_percentile_seasonal:  # fc_percentile_seasonal product is not found in ODC datacube
     prefix: fractional-cover/fc-percentile/seasonal/v2.1.0/combined
     name_template: x_{x}/y_{y}/LS_FC_PC_3577_{x}_{y}_{start_time:%Y%m%d}_{end_time:%Y%m%d}
-    no_overview: ["source", "observed"]
+    no_overviews: ["source", "observed"]
     default_resampling: average
 
   ls8_barest_earth_mosaic:

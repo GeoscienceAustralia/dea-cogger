@@ -41,10 +41,10 @@ class NetCDFCOGConverter:
     Convert the input files to COG style GeoTIFFs
     """
 
-    def __init__(self, black_list=None, white_list=None, no_overviews_list=[], default_resampling='average',
+    def __init__(self, black_list=None, white_list=None, no_overviews=None, default_resampling='average',
                  bands_rsp=None, name_template=None, prefix=None, predictor=2):
         # A list of keywords of bands which don't require resampling
-        self.no_overviews_list = no_overviews_list
+        self.no_overviews = no_overviews if no_overviews is not None else []
 
         # A list of keywords of bands excluded in cog convert
         self.black_list = black_list
@@ -173,7 +173,7 @@ class NetCDFCOGConverter:
             # Resampling method of this band
             resampling_method = self.bands_rsp.get(band_name, self.default_resampling)
 
-            if band_name in self.no_overviews_list:
+            if band_name in self.no_overviews:
                 resampling_method = None
 
             cog_translate(dts[0], str(out_fname),
