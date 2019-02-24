@@ -36,6 +36,10 @@ os.environ['CPL_VSIL_CURL_ALLOWED_EXTENSIONS'] = '.tif'
 gdal.UseExceptions()
 
 
+class COGException(Exception):
+    pass
+
+
 class NetCDFCOGConverter:
     """
     Convert the input files to COG style GeoTIFFs
@@ -81,7 +85,12 @@ class NetCDFCOGConverter:
             part_index = int(part_index)
 
         if not input_file.endswith('.nc'):
-            raise Exception("COG Converter only works with NetCDF datasets.")
+            raise COGException("COG Converter only works with NetCDF datasets.")
+
+        yaml_fname = output_prefix.with_suffix('.yaml')
+
+        if yaml_fname.exists():
+            raise COGException(f'Dataset Document {yaml_fname} already exists.')
 
         # Extract each band from the input file and write to individual GeoTIFF files
         self._netcdf_to_cogs(input_file, part_index, output_prefix)
@@ -96,9 +105,6 @@ class NetCDFCOGConverter:
 
         yaml_fname = output_prefix.with_suffix('.yaml')
 
-        if yaml_fname.exists():
-            LOG.info(f'Dataset Document {yaml_fname} already exists.')
-            return
 
         dataset_array = xarray.open_dataset(input_file)
         if len(dataset_array.dataset) == 1:

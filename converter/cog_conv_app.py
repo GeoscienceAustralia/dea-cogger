@@ -19,7 +19,7 @@ import yaml
 
 from aws_inventory import list_inventory
 from aws_s3_client import make_s3_client
-from cogeo import NetCDFCOGConverter
+from cogeo import NetCDFCOGConverter, COGException
 from datacube import Datacube
 from datacube.ui.expression import parse_expressions
 
@@ -505,6 +505,8 @@ def mpi_convert3(product_name, config, output_dir, filelist):
                 _convert_cog(product_config, in_filepath,
                              Path(output_dir) / s3_dirsuffix.strip())
                 LOG.info(f'Successfully converted {in_filepath}')
+            except COGException as exc:
+                LOG.error(f'Error converting: {exc}')
             except Exception:
                 LOG.exception(f'Unable to convert {in_filepath}')
 
@@ -790,8 +792,8 @@ def qsub(product_name, time_range, config, output_dir, queue, project, walltime,
         f'-- /bin/bash -l -c "source $HOME/.bashrc; '
         f'{GENERATE_FILE_PATH} --dea-module {digitalearthau.MODULE_NAME} --cog-file {COG_FILE_PATH} '
         f'--config-file {config} --product-name {product_name} --output-dir {output_dir} '
-        f'--sat-row {sat_row} --sat-path {sat_path} ' \
-            f'--pickle-file {pickle_file} --time-range \'{time_range}\'"')
+        f'--sat-row {sat_row} --sat-path {sat_path} '
+        f'--pickle-file {pickle_file} --time-range \'{time_range}\'"')
 
     # language=bash
     qsub = 'qsub -q %(queue)s -N mpi_cog_convert_%(product)s -P %(project)s ' \
