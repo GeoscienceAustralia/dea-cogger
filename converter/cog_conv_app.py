@@ -15,6 +15,7 @@ import click
 import dateutil.parser
 import digitalearthau
 import numpy as np
+import structlog
 import yaml
 
 from aws_inventory import list_inventory
@@ -39,6 +40,11 @@ formatter = logging.Formatter('[%(asctime)s.%(msecs)03d - %(levelname)s - %(host
 stdout_hdlr.setFormatter(formatter)
 LOG.addHandler(stdout_hdlr)
 LOG.setLevel(logging.DEBUG)
+
+LOG = structlog.get_logger()
+
+
+
 
 ROOT_DIR = Path(__file__).absolute().parent
 COG_FILE_PATH = ROOT_DIR / 'cog_conv_app.py'
@@ -686,11 +692,12 @@ def verify(path):
     :param path: Cog Converted files directory path
     :return:
     """
+    from tqdm import tqdm
     invalid_geotiff_files = set()
     broken_directories = set()
 
     gtiff_file_list = Path(path).rglob("*.tif")
-    for geotiff_file in gtiff_file_list:
+    for geotiff_file in tqdm(gtiff_file_list):
         command = f"python3 {VALIDATE_GEOTIFF_CMD} {geotiff_file}"
         exitcode, output = subprocess.getstatusoutput(command)
         validator_output = output.split('/')[-1]
