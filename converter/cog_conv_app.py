@@ -43,9 +43,6 @@ LOG.setLevel(logging.DEBUG)
 
 LOG = structlog.get_logger()
 
-
-
-
 ROOT_DIR = Path(__file__).absolute().parent
 COG_FILE_PATH = ROOT_DIR / 'cog_conv_app.py'
 YAMLFILE_PATH = ROOT_DIR / 'aws_products_config.yaml'
@@ -681,9 +678,10 @@ def _mpi_worker_loop(MPI, status, rank):
 
 @cli.command(name='verify',
              help="Verify GeoTIFFs are Cloud Optimised GeoTIFF")
-@click.option('--path', '-p', required=True, help="Validate the GeoTIFF files from this folder",
-              type=click.Path(exists=True))
-def verify(path):
+@click.argument('--path', '-p', help="Validate the GeoTIFF files from this folder",
+                type=click.Path(exists=True))
+@click.option('--rm-broken', type=bool, default=False)
+def verify(path, rm_broken):
     """
     Verify converted GeoTIFF files are (Geo)TIFF with cloud optimized compatible structure.
 
@@ -712,13 +710,14 @@ def verify(path):
                 # List all files associated with erroneous *.tif file and remove them
                 invalid_geotiff_files.add(files)
 
-    for invalid_file in invalid_geotiff_files:
-        LOG.error(f"\tDeleting broken file: {invalid_file}")
-        invalid_file.unlink()
+    if rm_broken:
+        for invalid_file in invalid_geotiff_files:
+            LOG.error(f"\tDeleting broken file: {invalid_file}")
+            invalid_file.unlink()
 
-    for rm_dir in broken_directories:
-        LOG.error(f"\tDelete {rm_dir} directory")
-        rm_dir.rmdir()
+        for rm_dir in broken_directories:
+            LOG.error(f"\tDelete {rm_dir} directory")
+            rm_dir.rmdir()
 
 
 @cli.command(name='qsub', help="Kick off four stage COG Conversion PBS job")
