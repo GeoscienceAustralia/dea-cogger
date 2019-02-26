@@ -1,9 +1,10 @@
-#!/usr/bin/env python
+#!/usr/bin/env python3
 import csv
 import logging
 import os
 import pickle
 import re
+import shutil
 import socket
 import subprocess
 import sys
@@ -14,23 +15,15 @@ from pathlib import Path
 import click
 import dateutil.parser
 import digitalearthau
-import numpy as np
 import structlog
 import yaml
+from datacube import Datacube
+from datacube.ui.expression import parse_expressions
+from tqdm import tqdm
 
 from aws_inventory import list_inventory
 from aws_s3_client import make_s3_client
 from cogeo import NetCDFCOGConverter, COGException
-from datacube import Datacube
-from datacube.ui.expression import parse_expressions
-
-
-class ContextFilter(logging.Filter):
-    hostname = socket.gethostname()
-
-    def filter(self, record):
-        record.hostname = ContextFilter.hostname
-        return True
 
 LOG = structlog.get_logger()
 
@@ -153,8 +146,9 @@ def _submit_qsub_job(command):
 
 def _convert_cog(product_config, in_filepath, output_prefix):
     """
-    Convert a list of input files into Cloud Optimise GeoTIFF format using MPI
-    Uses a configuration file to define the file naming schema.
+    Convert a NetCDF file into a set of Cloud Optimise GeoTIFF files
+
+    Uses a configuration dictionary to define the file naming schema.
     """
     convert_to_cog = NetCDFCOGConverter(**product_config)
     convert_to_cog(in_filepath, output_prefix)
@@ -238,7 +232,7 @@ def get_param_names(template_str):
         A regular expression on `name_template` would return `['x', 'y', 'time', 'time', 'time', 'x', 'y']`
         Hence, set operation on the return value will give us unique values of the list.
     """
-    # Greedy match any word within flower braces and match single character from the list [:YmdHMSf%]
+    # Greedy match any word within curly braces and match a single character from the list [:YmdHMSf%]
     return set(re.findall(r'{([\w]+)[:YmdHMSf%]*}', template_str))
 
 
@@ -290,74 +284,54 @@ time_range_options = click.option('--time-range', callback=validate_time_range, 
 @click.group(help=__doc__,
              context_settings=dict(max_content_width=200))  # Will still shrink to screen width
 def cli():
-
-#    stdout_hdlr = logging.StreamHandler(sys.stdout)
-#    stdout_hdlr.addFilter(ContextFilter())
-#    formatter = logging.Formatter('[%(asctime)s.%(msecs)03d - %(levelname)s - %(hostname)s:%(process)d] %(message)s')
-#    stdout_hdlr.setFormatter(formatter)
-#    LOG.addHandler(stdout_hdlr)
-#    LOG.setLevel(logging.DEBUG)
     from tqdm import tqdm
-# See https://github.com/tqdm/tqdm/issues/313
-    class TqdmHandler(logging.StreamHandler):
-        def __init__(self):
-            logging.StreamHandler.__init__(self)
 
-        def emit(self, record):
-            msg = self.format(record)
-            tqdm.write(msg)
-    class TqdmStream(object):
-        @classmethod
-        def write(_, msg):
-            tqdm.write(msg, end='')
-    logging.basicConfig(
-#        format="[%(asctime)s.%(msecs)03d - %(levelname)s - %(hostname)s:%(process)d] %(message)s",
-#        format="[%(asctime)s.%(msecs)03d - %(levelname)s - %(process)d] %(message)s",
-        format="%(message)s",
-#        stream=sys.stdout,
-        stream=TqdmStream,
-        level=logging.INFO
-    )
-
+    # See https://github.com/tqdm/tqdm/issues/313
     hostname = socket.gethostname()
     proc_id = os.getpid()
-    def add_proc_info(logger, log_method, event_dict):
+
+    def add_proc_info(_, _, event_dict):
         event_dict["hostname"] = hostname
         event_dict["pid"] = proc_id
         return event_dict
 
-    class TQDMLoggerFactory:
-        def __init__(self, file=None):
-            self._file = file
+    from mpi4py import MPI
+    mpi_rank = MPI.COMM_WORLD.rank  # Rank of this process
+    mpi_size = MPI.COMM_WORLD.size  # Rank of this process
 
-        def __call__(self, *args):
-            return TQDMLogger()
+    def add_mpi_rank(_, _, event_dict):
+        if mpi_size > 1:
+            event_dict['mpi_rank'] = mpi_rank
+        return event_dict
+
+    def tqdm_logger_factory():
+        return TQDMLogger()
+
     class TQDMLogger:
         def msg(self, message):
-            tqdm.write(msg)
+            tqdm.write(message)
+
         log = debug = info = warm = warning = msg
         fatal = failure = err = error = critical = exception = msg
 
-
     structlog.configure(
         processors=[
-            structlog.stdlib.filter_by_level,
-            structlog.stdlib.add_logger_name,
             structlog.stdlib.add_log_level,
             add_proc_info,
+            add_mpi_rank,
             structlog.stdlib.PositionalArgumentsFormatter(),
             structlog.processors.TimeStamper(fmt="iso"),
             structlog.processors.StackInfoRenderer(),
             structlog.processors.format_exc_info,
             structlog.processors.UnicodeDecoder(),
-            structlog.processors.JSONRenderer()
+            structlog.dev.ConsoleRenderer() if sys.stdout.isatty()
+            else structlog.processors.JSONRenderer(compact=True),
         ],
         context_class=dict,
-        logger_factory=structlog.stdlib.LoggerFactory(),
-#        logger_factory=TQDMLoggerFactory(),
-        wrapper_class=structlog.stdlib.BoundLogger,
+        logger_factory=tqdm_logger_factory,
         cache_logger_on_first_use=True,
     )
+
 
 @cli.command(name='convert', help="Convert a single/list of files into COG format")
 @product_option
@@ -416,11 +390,11 @@ def save_s3_inventory(product_name, config, output_dir, inventory_manifest, aws_
     """
     s3_inv_list_file = set()
     with open(config) as config_file:
-        CFG = yaml.load(config_file)
+        config = yaml.load(config_file)
 
     for result in list_inventory(inventory_manifest, s3=make_s3_client(profile=aws_profile), aws_profile=aws_profile):
         # Get the list for the product we are interested
-        if CFG['products'][product_name]['prefix'] in result.Key and \
+        if config['products'][product_name]['prefix'] in result.Key and \
                 Path(result.Key).name.endswith('.yaml'):
             # Store only metadata configuration files for `set` operation
             s3_inv_list_file.add(result.Key)
@@ -446,7 +420,7 @@ def generate_work_list(product_name, time_range, config, output_dir, pickle_file
       $ module load dea
     """
     with open(config) as config_file:
-        CFG = yaml.load(config_file)
+        config = yaml.load(config_file)
 
     if pickle_file is None:
         # Use pickle file generated by save_s3_inventory function
@@ -458,7 +432,7 @@ def generate_work_list(product_name, time_range, config, output_dir, pickle_file
     dc_workgen_list = dict()
 
     for uri, dest_dir, dc_yamlfile_path in get_dataset_values(product_name,
-                                                              CFG['products'][product_name],
+                                                              config['products'][product_name],
                                                               parse_expressions(time_range)):
         if uri:
             dc_workgen_list[dc_yamlfile_path] = (uri.split('file://')[1], dest_dir)
@@ -467,108 +441,53 @@ def generate_work_list(product_name, time_range, config, output_dir, pickle_file
     out_file = Path(output_dir) / (product_name + TASK_FILE_EXT)
 
     with open(out_file, 'w', newline='') as fp:
-        csvwriter = csv.writer(fp, quoting=csv.QUOTE_MINIMAL)
+        csv_writer = csv.writer(fp, quoting=csv.QUOTE_MINIMAL)
         for s3_filepath in work_list:
             # dict_value shall contain uri value and s3 output directory path template
             input_file, dest_dir = dc_workgen_list.get(s3_filepath, (None, None))
             if input_file:
-                LOG.info(f"File does not exists in S3, add to work gen list: {input_file}")
-                csvwriter.writerow((input_file, dest_dir))
+                LOG.info(f"File does not exists in S3, add to processing list: {input_file}")
+                csv_writer.writerow((input_file, dest_dir))
 
     if not work_list:
         LOG.info(f"No tasks found")
 
 
-@cli.command(name='mpi-convert-2', help="Bulk COG conversion using MPI")
+@cli.command(name='mpi-convert', help="Bulk COG conversion using MPI")
 @product_option
 @config_file_option
 @output_dir_option
 @click.argument('filelist', nargs=1, required=True)
-def mpi_convert2(product_name, config, output_dir, filelist):
-    import os
-    from mpi4py import MPI
-    MPI_JOB_RANK = MPI.COMM_WORLD.rank  # Rank of this process
-    MPI_JOB_SIZE = MPI.COMM_WORLD.size  # Total number of processes
-    universe_size = MPI.COMM_WORLD.Get_attr(MPI.UNIVERSE_SIZE)
-    pbs_ncpus = os.environ.get('PBS_NCPUS', None)
-    LOG.info(
-        f'Starting up MPI. Rank: {MPI_JOB_RANK} Job Size: {MPI_JOB_SIZE} Universe size: {universe_size} PBS_NCPUS: {pbs_ncpus}')
-    with open(config) as cfg_file:
-        CFG = yaml.load(cfg_file)
-
-    try:
-        with open(filelist) as fl:
-            file_list = np.genfromtxt(fl, dtype='str', delimiter=",", comments=None)
-        # Divide by 2, since we have two columns (in_filepath and s3_dirsuffix) in a numpy array
-        tasks = int(file_list.size / 2)
-    except FileNotFoundError:
-        LOG.error(f'MPI Worker ({MPI_JOB_RANK}): Task file consisting of file URIs for COG Conversion '
-                  f'is not found in the input path')
-        raise
-    else:
-        if tasks == 0:
-            LOG.warning(f'MPI Worker ({MPI_JOB_RANK}): Task file is empty')
-            sys.exit(1)
-    LOG.info(f'Successfully loaded configuration file {config}')
-
-    product_config = CFG['products'][product_name]
-
-    LOG.info('Attempting to fire up the MPIPoolExecutor')
-    from mpi4py.futures import MPIPoolExecutor
-    from concurrent.futures import as_completed
-    with MPIPoolExecutor() as executor:
-        LOG.info('Executor started: submitting jobs')
-        future_to_url = {executor.submit(_convert_cog,
-                                         product_config,
-                                         in_filepath,
-                                         Path(output_dir) / s3_dirsuffix.strip()): in_filepath
-                         for in_filepath, s3_dirsuffix in file_list}
-        for future in as_completed(future_to_url):
-            in_filepath = future_to_url[future]
-            try:
-                data = future.result()
-            except Exception:
-                logging.exception(f'Worker processing {in_filepath} generated an exception')
-            else:
-                logging.info(f'Successfully converted {in_filepath}')
-
-
-@cli.command(name='mpi-convert-3', help="Bulk COG conversion using MPI")
-@product_option
-@config_file_option
-@output_dir_option
-@click.argument('filelist', nargs=1, required=True)
-def mpi_convert3(product_name, config, output_dir, filelist):
+def mpi_convert(product_name, config, output_dir, filelist):
     job_rank, job_size = _mpi_init()
 
     with open(config) as cfg_file:
-        CFG = yaml.load(cfg_file)
+        config = yaml.load(cfg_file)
 
     try:
         with open(filelist) as fl:
             reader = csv.reader(fl)
             tasks = list(reader)
     except FileNotFoundError:
-        LOG.error(f'MPI Worker ({job_rank}): Task file {filelist} was not found. Aborting.')
+        LOG.error('Task file not found.', filepath=filelist)
         sys.exit(1)
+
     if len(tasks) == 0:
         LOG.warning('Task file is empty. Aborting.')
         sys.exit(1)
 
-    LOG.info(f'Successfully loaded configuration file {config} and tasks file {filelist}')
+    LOG.info('Successfully loaded configuration file', config=config, taskfile=filelist)
 
-    product_config = CFG['products'][product_name]
+    product_config = config['products'][product_name]
 
     for i, (in_filepath, s3_dirsuffix) in enumerate(tasks):
         if i % job_size == job_rank:
             try:
                 _convert_cog(product_config, in_filepath,
                              Path(output_dir) / s3_dirsuffix.strip())
-                LOG.info(f'Successfully converted {in_filepath}')
-            except COGException as exc:
-                LOG.error(f'Error converting: {exc}')
+                LOG.info(f'Successfully converted', filepath=in_filepath)
             except Exception:
-                LOG.exception(f'Unable to convert {in_filepath}')
+                LOG.exception('Unable to convert', filepath=in_filepath)
 
 
 def _mpi_init():
@@ -588,151 +507,6 @@ def _mpi_init():
     return job_rank, job_size
 
 
-@cli.command(name='mpi-convert', help="Bulk COG conversion using MPI")
-@product_option
-@config_file_option
-@output_dir_option
-@click.argument('filelist', nargs=1, required=True)
-def mpi_convert(product_name, config, output_dir, filelist):
-    """
-    Bulk COG conversion using MPI
-
-    \b
-    Example: mpirun python3 cog_conv_app.py mpi-cog-convert -c aws_products_config.yaml
-             --output-dir /tmp/wofls_cog/ -p wofs_albers /tmp/wofs_albers_file_list
-
-    \f
-    Convert input files to COG format using parallelisation by MPI tool.
-    Iterate over the file list and assign MPI worker for COG conversion.
-    Following details how master and worker interact during MPI cog conversion process:
-       1) Master fetches the file list from the task file
-       2) Master shall then assign tasks to worker with task status as 'READY' for cog conversion
-       3) Worker executes COG conversion algorithm and sends task status as 'START'
-       4) Once worker finishes COG conversion, it sends task status as 'DONE' to the master
-       5) If master has more work, then process continues as defined in steps 2-4
-       6) If no tasks are pending with master, worker sends task status as 'EXIT' and closes the communication
-       7) Finally master closes the communication
-
-    Uses a configuration file to define the file naming schema.
-
-    Before using this command, execute the following:
-      $ module use /g/data/v10/public/modules/modulefiles/
-      $ module load dea
-    """
-    from mpi4py import MPI
-    MPI_COMM = MPI.COMM_WORLD  # Get MPI communicator object
-    MPI_JOB_SIZE = MPI_COMM.size  # Total number of processes
-    MPI_JOB_RANK = MPI_COMM.rank  # Rank of this process
-    MPI_JOB_STATUS = MPI.Status()  # Get MPI status object
-
-    with open(config) as cfg_file:
-        CFG = yaml.load(cfg_file)
-
-    try:
-        with open(filelist) as fl:
-            file_list = np.genfromtxt(fl, dtype='str', delimiter=",", comments=None)
-        # Divide by 2, since we have two columns (in_filepath and s3_dirsuffix) in a numpy array
-        tasks = int(file_list.size / 2)
-    except FileNotFoundError:
-        LOG.error(f'MPI Worker ({MPI_JOB_RANK}): Task file consisting of file URIs for COG Conversion '
-                  f'is not found in the input path')
-        raise
-    else:
-        if tasks == 0:
-            LOG.warning(f'MPI Worker ({MPI_JOB_RANK}): Task file is empty')
-            sys.exit(1)
-
-    product_config = CFG['products'][product_name]
-    if MPI_JOB_SIZE > 1:
-        num_workers = MPI_JOB_SIZE - 1
-    else:
-        raise ValueError(
-            f"MPI Worker ({MPI_JOB_RANK}): Number of required processes has to be greater than 1")
-
-    exit_flag = False
-    # Ensure all errors/exceptions are handled before this, else master-worker processes
-    # will enter a dead-lock situation
-    if MPI_JOB_RANK == 0:
-        master_node_name = MPI.Get_processor_name()
-        task_index = 0
-        closed_workers = 0
-        job_args = []
-        LOG.debug(f"MPI Master ({MPI_JOB_RANK}) on {master_node_name} node, starting with {num_workers} workers")
-
-        # Append the jobs_args list for each filename to be scheduled among all the available workers
-        if tasks == 1:
-            job_args = [(product_config, str(file_list), output_dir)]
-        elif tasks > 1:
-            for in_filepath, s3_dirsuffix in file_list:
-                job_args.extend([(product_config, in_filepath, Path(output_dir) / s3_dirsuffix.strip())])
-
-        while closed_workers < num_workers:
-            MPI_COMM.recv(source=MPI.ANY_SOURCE, tag=MPI.ANY_TAG, status=MPI_JOB_STATUS)
-            source = MPI_JOB_STATUS.Get_source()
-            tag = MPI_JOB_STATUS.Get_tag()
-
-            if tag == MPITagStatus.READY:
-                # Worker is ready, so assign a task
-                if task_index < tasks:
-                    MPI_COMM.send(job_args[task_index], dest=source, tag=MPITagStatus.START)
-                    LOG.debug("MPI Master (%d) assigning task to worker (%d): Process %r file",
-                              MPI_JOB_RANK,
-                              source,
-                              job_args[task_index])
-                    task_index += 1
-                else:
-                    # Completed assigning all the tasks, signal workers to exit
-                    MPI_COMM.send((None, None, None), dest=source, tag=MPITagStatus.EXIT)
-            elif tag == MPITagStatus.DONE:
-                LOG.debug(f"MPI Worker ({source}) completed the assigned task")
-            elif tag == MPITagStatus.EXIT:
-                LOG.debug(f"MPI Worker ({source}) exited")
-                closed_workers += 1
-            elif tag == MPITagStatus.ERROR:
-                LOG.debug(f"MPI Worker ({source}) error detected during processing")
-                exit_flag = True
-                closed_workers += 1
-
-        if exit_flag:
-            LOG.error("Error occurred during cog conversion. Stop everything and do not proceed")
-            sys.exit(1)
-        else:
-            LOG.debug("Batch processing completed")
-    else:
-        _mpi_worker_loop(MPI, MPI_JOB_STATUS, MPI_JOB_RANK)
-
-
-def _mpi_worker_loop(MPI, status, rank):
-    from time import sleep
-    comm = MPI.COMM_WORLD  # Get MPI communicator object
-    worker_node_name = MPI.Get_processor_name()
-    while True:
-        # Indicate master that the worker is ready for processing task
-        comm.send(None, dest=0, tag=MPITagStatus.READY)
-
-        # Fetch task information from the master
-        product_config, in_filepath, out_dir = comm.recv(source=0, tag=MPI.ANY_TAG, status=status)
-
-        # Get the tag status from the master
-        tag = status.Get_tag()
-
-        if tag == MPITagStatus.START:
-            LOG.debug(f"MPI Worker ({rank}) on {worker_node_name} node started COG conversion")
-            try:
-                _convert_cog(product_config, in_filepath, out_dir)
-            except Exception as exp:
-                LOG.error(f"Unexpected error occurred during cog conversion: {exp}")
-                comm.send(None, dest=0, tag=MPITagStatus.ERROR)
-                raise
-            comm.send(None, dest=0, tag=MPITagStatus.DONE)
-        elif tag == MPITagStatus.EXIT:
-            break
-        sleep(1)
-    LOG.debug(f"MPI Worker ({rank}) on {worker_node_name} node did not receive any task, sending "
-              "exit status to the master")
-    comm.send(None, dest=0, tag=MPITagStatus.EXIT)
-
-
 @cli.command(name='verify',
              help="Verify GeoTIFFs are Cloud Optimised GeoTIFF")
 @click.argument('path', type=click.Path(exists=True))
@@ -744,16 +518,23 @@ def verify(path, rm_broken):
 
     Delete any directories (and their content) that contain broken GeoTIFFs
 
-    :param path: Cog Converted files directory path
+    :param path: Cog Converted files directory path, or a file containing a list of files to check
     :return:
     """
-    from tqdm import tqdm
-    invalid_geotiff_files = set()
-    broken_directories = set()
+    broken_files = set()
 
-    gtiff_file_list = Path(path).rglob("*.tif")
-    gtiff_file_list = list(gtiff_file_list)
-    for geotiff_file in tqdm(gtiff_file_list):
+    path = Path(path)
+
+    if path.is_dir():
+        # Non-lazy recursive search for geotiffs
+        gtiff_file_list = Path(path).rglob("*.tif")
+        gtiff_file_list = list(gtiff_file_list)
+    else:
+        # Read filenames to check from a file
+        with path.open() as fin:
+            gtiff_file_list = [line.strip() for line in fin]
+
+    for geotiff_file in tqdm(gtiff_file_list, disable=None, desc='Checked GeoTIFFs', unit='file'):
         command = f"python3 {VALIDATE_GEOTIFF_CMD} {geotiff_file}"
         exitcode, output = subprocess.getstatusoutput(command)
         validator_output = output.split('/')[-1]
@@ -761,21 +542,17 @@ def verify(path, rm_broken):
         if exitcode == 0:
             LOG.debug(validator_output)
         else:
-            # Broken COG path
-            LOG.info(f"\tInvalid GeoTIFF file ({validator_output}): {geotiff_file}")
-            broken_directories.add(geotiff_file.parent)
-            for files in geotiff_file.parent.rglob('*.*'):
-                # List all files associated with erroneous *.tif file and remove them
-                invalid_geotiff_files.add(files)
+            # Log and remember broken COG
+            LOG.info("Invalid GeoTIFF file", error=validator_output, filename=geotiff_file)
+            broken_files.add(geotiff_file)
 
     if rm_broken:
-        for invalid_file in invalid_geotiff_files:
-            LOG.error(f"\tDeleting broken file: {invalid_file}")
-            invalid_file.unlink()
+        # Delete directories containing broken files
+        broken_directories = set(file.parent for file in broken_files)
 
-        for rm_dir in broken_directories:
-            LOG.error(f"\tDelete {rm_dir} directory")
-            rm_dir.rmdir()
+        for directory in broken_directories:
+            LOG.info('Deleting directory', dir=directory)
+            shutil.rmdir(directory)
 
 
 @cli.command(name='qsub', help="Kick off four stage COG Conversion PBS job")

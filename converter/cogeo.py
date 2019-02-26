@@ -1,5 +1,4 @@
 """rio_cogeo.cogeo: translate a file to a cloud optimized geotiff."""
-import logging
 import os
 import re
 from pathlib import Path
@@ -8,6 +7,7 @@ from typing import Union
 import gdal
 import numpy
 import rasterio
+import structlog
 import xarray
 import yaml
 from rasterio.enums import Resampling
@@ -28,7 +28,7 @@ DEFAULT_PROFILE = {'driver': 'GTiff',
                    'compress': 'DEFLATE',
                    'copy_src_overviews': True,
                    'zlevel': 9}
-LOG = logging.getLogger(__name__)
+LOG = structlog.get_logger()
 
 # GDAL Initialisation
 os.environ['GDAL_DISABLE_READDIR_ON_OPEN'] = 'YES'
@@ -104,7 +104,6 @@ class NetCDFCOGConverter:
         """
 
         yaml_fname = output_prefix.with_suffix('.yaml')
-
 
         dataset_array = xarray.open_dataset(input_file)
         if len(dataset_array.dataset) == 1:

@@ -10,5 +10,5 @@ click
 psycopg2
 pyyaml
 boltons
-jinja2
 python-dateutil
+structlog
