@@ -32,15 +32,6 @@ class ContextFilter(logging.Filter):
         record.hostname = ContextFilter.hostname
         return True
 
-
-LOG = logging.getLogger('cog-converter')
-stdout_hdlr = logging.StreamHandler(sys.stdout)
-stdout_hdlr.addFilter(ContextFilter())
-formatter = logging.Formatter('[%(asctime)s.%(msecs)03d - %(levelname)s - %(hostname)s:%(process)d] %(message)s')
-stdout_hdlr.setFormatter(formatter)
-LOG.addHandler(stdout_hdlr)
-LOG.setLevel(logging.DEBUG)
-
 LOG = structlog.get_logger()
 
 ROOT_DIR = Path(__file__).absolute().parent
@@ -299,8 +290,74 @@ time_range_options = click.option('--time-range', callback=validate_time_range, 
 @click.group(help=__doc__,
              context_settings=dict(max_content_width=200))  # Will still shrink to screen width
 def cli():
-    pass
 
+#    stdout_hdlr = logging.StreamHandler(sys.stdout)
+#    stdout_hdlr.addFilter(ContextFilter())
+#    formatter = logging.Formatter('[%(asctime)s.%(msecs)03d - %(levelname)s - %(hostname)s:%(process)d] %(message)s')
+#    stdout_hdlr.setFormatter(formatter)
+#    LOG.addHandler(stdout_hdlr)
+#    LOG.setLevel(logging.DEBUG)
+    from tqdm import tqdm
+# See https://github.com/tqdm/tqdm/issues/313
+    class TqdmHandler(logging.StreamHandler):
+        def __init__(self):
+            logging.StreamHandler.__init__(self)
+
+        def emit(self, record):
+            msg = self.format(record)
+            tqdm.write(msg)
+    class TqdmStream(object):
+        @classmethod
+        def write(_, msg):
+            tqdm.write(msg, end='')
+    logging.basicConfig(
+#        format="[%(asctime)s.%(msecs)03d - %(levelname)s - %(hostname)s:%(process)d] %(message)s",
+#        format="[%(asctime)s.%(msecs)03d - %(levelname)s - %(process)d] %(message)s",
+        format="%(message)s",
+#        stream=sys.stdout,
+        stream=TqdmStream,
+        level=logging.INFO
+    )
+
+    hostname = socket.gethostname()
+    proc_id = os.getpid()
+    def add_proc_info(logger, log_method, event_dict):
+        event_dict["hostname"] = hostname
+        event_dict["pid"] = proc_id
+        return event_dict
+
+    class TQDMLoggerFactory:
+        def __init__(self, file=None):
+            self._file = file
+
+        def __call__(self, *args):
+            return TQDMLogger()
+    class TQDMLogger:
+        def msg(self, message):
+            tqdm.write(msg)
+        log = debug = info = warm = warning = msg
+        fatal = failure = err = error = critical = exception = msg
+
+
+    structlog.configure(
+        processors=[
+            structlog.stdlib.filter_by_level,
+            structlog.stdlib.add_logger_name,
+            structlog.stdlib.add_log_level,
+            add_proc_info,
+            structlog.stdlib.PositionalArgumentsFormatter(),
+            structlog.processors.TimeStamper(fmt="iso"),
+            structlog.processors.StackInfoRenderer(),
+            structlog.processors.format_exc_info,
+            structlog.processors.UnicodeDecoder(),
+            structlog.processors.JSONRenderer()
+        ],
+        context_class=dict,
+        logger_factory=structlog.stdlib.LoggerFactory(),
+#        logger_factory=TQDMLoggerFactory(),
+        wrapper_class=structlog.stdlib.BoundLogger,
+        cache_logger_on_first_use=True,
+    )
 
 @cli.command(name='convert', help="Convert a single/list of files into COG format")
 @product_option
@@ -678,9 +735,9 @@ def _mpi_worker_loop(MPI, status, rank):
 
 @cli.command(name='verify',
              help="Verify GeoTIFFs are Cloud Optimised GeoTIFF")
-@click.argument('--path', '-p', help="Validate the GeoTIFF files from this folder",
-                type=click.Path(exists=True))
-@click.option('--rm-broken', type=bool, default=False)
+@click.argument('path', type=click.Path(exists=True))
+@click.option('--rm-broken', type=bool, default=False, is_flag=True,
+              help="Remove directories with broken files")
 def verify(path, rm_broken):
     """
     Verify converted GeoTIFF files are (Geo)TIFF with cloud optimized compatible structure.
@@ -695,16 +752,17 @@ def verify(path, rm_broken):
     broken_directories = set()
 
     gtiff_file_list = Path(path).rglob("*.tif")
+    gtiff_file_list = list(gtiff_file_list)
     for geotiff_file in tqdm(gtiff_file_list):
         command = f"python3 {VALIDATE_GEOTIFF_CMD} {geotiff_file}"
         exitcode, output = subprocess.getstatusoutput(command)
         validator_output = output.split('/')[-1]
 
         if exitcode == 0:
-            LOG.info(validator_output)
+            LOG.debug(validator_output)
         else:
             # Broken COG path
-            LOG.error(f"\tInvalid GeoTIFF file ({validator_output}): {geotiff_file}")
+            LOG.info(f"\tInvalid GeoTIFF file ({validator_output}): {geotiff_file}")
             broken_directories.add(geotiff_file.parent)
             for files in geotiff_file.parent.rglob('*.*'):
                 # List all files associated with erroneous *.tif file and remove them
