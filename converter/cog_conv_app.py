@@ -1,6 +1,5 @@
 #!/usr/bin/env python3
 import csv
-import logging
 import os
 import pickle
 import re
@@ -9,6 +8,7 @@ import socket
 import subprocess
 import sys
 from enum import IntEnum
+from functools import partial
 from os.path import split, basename
 from pathlib import Path
 
@@ -17,13 +17,12 @@ import dateutil.parser
 import digitalearthau
 import structlog
 import yaml
+from aws_inventory import list_inventory
+from aws_s3_client import make_s3_client
+from cogeo import NetCDFCOGConverter
 from datacube import Datacube
 from datacube.ui.expression import parse_expressions
 from tqdm import tqdm
-
-from aws_inventory import list_inventory
-from aws_s3_client import make_s3_client
-from cogeo import NetCDFCOGConverter, COGException
 
 LOG = structlog.get_logger()
 
@@ -290,7 +289,7 @@ def cli():
     hostname = socket.gethostname()
     proc_id = os.getpid()
 
-    def add_proc_info(_, _, event_dict):
+    def add_proc_info(_, logger, event_dict):
         event_dict["hostname"] = hostname
         event_dict["pid"] = proc_id
         return event_dict
@@ -299,7 +298,7 @@ def cli():
     mpi_rank = MPI.COMM_WORLD.rank  # Rank of this process
     mpi_size = MPI.COMM_WORLD.size  # Rank of this process
 
-    def add_mpi_rank(_, _, event_dict):
+    def add_mpi_rank(_, logger, event_dict):
         if mpi_size > 1:
             event_dict['mpi_rank'] = mpi_rank
         return event_dict
@@ -324,11 +323,11 @@ def cli():
             structlog.processors.StackInfoRenderer(),
             structlog.processors.format_exc_info,
             structlog.processors.UnicodeDecoder(),
-            structlog.dev.ConsoleRenderer() if sys.stdout.isatty()
-            else structlog.processors.JSONRenderer(compact=True),
+            structlog.dev.ConsoleRenderer() if sys.stdout.isatty() else structlog.processors.JSONRenderer(),
+            # structlog.processors.JSONRenderer(),
         ],
         context_class=dict,
-        logger_factory=tqdm_logger_factory,
+        logger_factory=tqdm_logger_factory if sys.stdout.isatty() else structlog.PrintLoggerFactory(),
         cache_logger_on_first_use=True,
     )
 
@@ -502,9 +501,20 @@ def _mpi_init():
     if pbs_ncpus is not None and int(universe_size) != int(pbs_ncpus):
         LOG.error('Running within PBS and not using all available resources. Abort!')
         sys.exit(1)
-    LOG.info(f'MPI Info. Rank: {job_rank} Job Size: {job_size} '
-             f'Universe size: {universe_size} PBS_NCPUS: {pbs_ncpus}')
+    LOG.info('MPI Info', mpi_job_size=job_size, mpi_universe_size=universe_size, pbs_ncpus=pbs_ncpus)
     return job_rank, job_size
+
+
+def _nth_by_mpi(iter):
+    """
+    Use to split an iterator based on MPI pool size and rank of this process
+    """
+    from mpi4py import MPI
+    job_size = MPI.COMM_WORLD.size  # Total number of processes
+    job_rank = MPI.COMM_WORLD.rank  # Rank of this process
+    for i, element in enumerate(iter):
+        if i % job_size == job_rank:
+            yield element
 
 
 @cli.command(name='verify',
@@ -521,6 +531,7 @@ def verify(path, rm_broken):
     :param path: Cog Converted files directory path, or a file containing a list of files to check
     :return:
     """
+    job_rank, job_size = _mpi_init()
     broken_files = set()
 
     path = Path(path)
@@ -534,7 +545,16 @@ def verify(path, rm_broken):
         with path.open() as fin:
             gtiff_file_list = [line.strip() for line in fin]
 
-    for geotiff_file in tqdm(gtiff_file_list, disable=None, desc='Checked GeoTIFFs', unit='file'):
+    if job_size == 1 and sys.stdout.isatty():
+        # Not running in parallel, display a TQDM progress bar
+        iter_wrapper = partial(tqdm, disable=None, desc='Checked GeoTIFFs', unit='file')
+    elif job_size == 1:
+        iter_wrapper = iter
+    else:
+        # Running in parallel, only process every nth file
+        iter_wrapper = _nth_by_mpi
+
+    for geotiff_file in iter_wrapper(gtiff_file_list):
         command = f"python3 {VALIDATE_GEOTIFF_CMD} {geotiff_file}"
         exitcode, output = subprocess.getstatusoutput(command)
         validator_output = output.split('/')[-1]
