@@ -16,5 +16,5 @@ module use /g/data/v10/public/modules/modulefiles/
 module load dea/20181015
 module load openmpi/3.1.2
 
-mpirun  python cog_conv_app.py mpi-convert-3 -p "${PRODUCT}" -o "${OUTPUT_DIR}" "${FILE_LIST}"
+mpirun  python cog_conv_app.py mpi-convert -p "${PRODUCT}" -o "${OUTPUT_DIR}" "${FILE_LIST}"
 # /g/data/v10/work/cog_conversion/development/ls5_fc_albers_file_list.txt
