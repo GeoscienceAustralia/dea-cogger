@@ -313,6 +313,8 @@ def cli():
         log = debug = info = warm = warning = msg
         fatal = failure = err = error = critical = exception = msg
 
+    running_interactively = sys.stdout.isatty() and os.environ.get('PBS_NCPUS', None) is None
+
     structlog.configure(
         processors=[
             structlog.stdlib.add_log_level,
@@ -323,11 +325,10 @@ def cli():
             structlog.processors.StackInfoRenderer(),
             structlog.processors.format_exc_info,
             structlog.processors.UnicodeDecoder(),
-            structlog.dev.ConsoleRenderer() if sys.stdout.isatty() else structlog.processors.JSONRenderer(),
-            # structlog.processors.JSONRenderer(),
+            structlog.dev.ConsoleRenderer() if running_interactively else structlog.processors.JSONRenderer(),
         ],
         context_class=dict,
-        logger_factory=tqdm_logger_factory if sys.stdout.isatty() else structlog.PrintLoggerFactory(),
+        logger_factory=tqdm_logger_factory if running_interactively else structlog.PrintLoggerFactory(),
         cache_logger_on_first_use=True,
     )
 
