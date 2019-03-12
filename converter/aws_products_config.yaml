@@ -23,19 +23,19 @@ products:
     prefix: fractional-cover/fc/v2.2.1/ls5
     name_template: x_{x}/y_{y}/{time:%Y}/{time:%m}/{time:%d}/LS5_TM_FC_3577_{x}_{y}_{time:%Y%m%d%H%M%S}
     default_resampling: average
-    no_overviews: ['UE']
+#    no_overviews: ['UE']
 
   ls7_fc_albers:
     prefix: fractional-cover/fc/v2.2.1/ls7
     name_template: x_{x}/y_{y}/{time:%Y}/{time:%m}/{time:%d}/LS7_ETM_FC_3577_{x}_{y}_{time:%Y%m%d%H%M%S}
     default_resampling: average
-    no_overviews: ['UE']
+#    no_overviews: ['UE']
 
   ls8_fc_albers:
     prefix: fractional-cover/fc/v2.2.1/ls8
     name_template: x_{x}/y_{y}/{time:%Y}/{time:%m}/{time:%d}/LS8_OLI_FC_3577_{x}_{y}_{time:%Y%m%d%H%M%S}
     default_resampling: average
-    no_overviews: ['UE']
+#    no_overviews: ['UE']
 
   fc_percentile_albers_annual:
     prefix: fractional-cover/fc-percentile/annual/v2.1.0/combined
