@@ -77,12 +77,12 @@ Options:
   --help  Show this message and exit.
 
 Commands:
-  cog-convert         Convert a single/list of files into COG format
+  convert             Convert a single/list of files into COG format
   generate-work-list  Generate task list for COG conversion
-  mpi-cog-convert     Parallelise COG convert using MPI Example: mpirun...
-  qsub-cog-convert    Kick off four stage COG Conversion PBS job
+  mpi-convert         Bulk COG conversion using MPI
+  qsub_cog            Kick off five stage COG Conversion PBS job
   save-s3-inventory   Save S3 inventory list in a pickle file
-  verify-cog-files    Verify the converted GeoTIFF are Cloud Optimised...
+  verify              Verify GeoTIFFs are Cloud Optimised GeoTIFF
 
 ```
 
@@ -92,24 +92,22 @@ Commands:
         product_name:
             prefix: WOfS/WOFLs/v2.1.5/combined
             name_template: x_{x}/y_{y}/{time:%Y}/{time:%m}/{time:%d}/LS_WATER_3577_{x}_{y}_{time:%Y%m%d%H%M%S%f}
-            stacked_name_template: x_{x}/y_{y}/{time:%Y}/{time:%m}/{time:%d}/LS_WATER_3577_{x}_{y}_{time:%Y}_
             predictor: 2
-            nonpym_list: ["source", "observed"]
-            default_rsp: average
+            no_overviews: ["source", "observed"]
+            default_resampling: average
             white_list: None
             black_list: None
 where,
       product_name:              A unique user defined string (required)
       prefix:                    Define the cogs folder structure and name (required)
       name_template:             Define how to decipher the input file names (required)
-      stacked_name_template:     Define how to decipher the stacked input file names (required only for FC percentile)
-      default_rsp:               Define the resampling method of pyramid view (default: average)
+      default_resampling:        Define the resampling method of pyramid view (default: average)
       predictor:                 Define the predictor in COG convert (default: 2)
-      nonpym_list:               A list of keywords of bands which don't require resampling(optional)
+      no_overviews:              A list of keywords of bands which don't require resampling (optional)
       white_list:                A list of keywords of bands to be converted (optional)
       black_list:                A list of keywords of bands excluded in cog convert (optional)
 
-Note: `nonpym_list` contains the key words of the band names which one doesn't want to generate overviews.
+Note: `no_overviews` contains the key words of the band names which one doesn't want to generate overviews.
       This element cannot be used with other products as this 'cause it will match as *source*'.
       For most products, this element is not needed. So far, only fractional cover percentile use this.
 ```
@@ -125,7 +123,7 @@ There doesn't seem to be a performance penalty either for writing data with the 
 pretty safe bet for any Float32 data.
 
 Raster Resampling
-*default_rsp* <resampling method> (average, nearest, mode)
+*default_resampling* <resampling method> (average, nearest, mode)
 **nearest**: Nearest neighbor has a tendency to leave artifacts such as stair-stepping and periodic striping in the
             data which may not be apparent when viewing the elevation data but might affect derivative products.
             They are not suitable for continuous data
@@ -141,30 +139,29 @@ Before using cog conversion command options, run the following:
   * $ module use /g/data/v10/public/modules/modulefiles/
   * $ module load dea
 
-### Command: `cog-convert`
+### Command: `convert`
 
      Convert a single or list of NetCDF files into Cloud Optimise GeoTIFF format.
      Uses a configuration file to define the file naming schema.
 
 #### Usage
 ```
-> [COG-Conversion]$ python3 converter/cog_conv_app.py cog-convert --help
-Usage: cog_conv_app.py cog-convert [OPTIONS] [FILENAMES]...
+> [COG-Conversion]$ python3 converter/cog_conv_app.py convert --help
+Usage: cog_conv_app.py convert [OPTIONS]
 
   Convert a single/list of files into COG format
 
 Options:
   -p, --product-name TEXT  Product name as defined in product configuration file  [required]
   -o, --output-dir PATH    Output destination directory  [required]
-  -c, --config TEXT        Product configuration file (Optional)
-  -l, --filelist TEXT      List of input file names (Optional)
+  -c, --config TEXT        Product configuration file
+  -l, --filelist TEXT      List of input file names
   --help                   Show this message and exit.
+
 ```
 
 #### Example
-`` python3 converter/cog_conv_app.py cog-convert -p wofs_albers -o /temp/output/dir /-1_-12/test_2018100_v1546165254.nc
-                OR
-   python3 converter/cog_conv_app.py cog-convert -p wofs_albers -o /temp/output/dir -l /tmp/wofs_albers_nc_fllist.txt``
+``python3 converter/cog_conv_app.py convert -p wofs_albers -o /temp/output/dir -l /tmp/wofs_albers_nc_fllist.txt``
 
 
 ### Command: `save-s3-inventory`
@@ -183,15 +180,15 @@ Usage: cog_conv_app.py save-s3-inventory [OPTIONS]
 Options:
   -p, --product-name TEXT        Product name as defined in product configuration file  [required]
   -o, --output-dir PATH          Output destination directory  [required]
-  -c, --config TEXT              Product configuration file (Optional)
-  -i, --inventory-manifest TEXT  The manifest of AWS S3 bucket inventory URL (Optional)
-  --aws-profile TEXT             AWS profile name (Optional)
+  -c, --config TEXT              Product configuration file
+  -i, --inventory-manifest TEXT  The manifest of AWS S3 bucket inventory URL
+  --aws-profile TEXT             AWS profile name
   --help                         Show this message and exit.
 
 ```
 
 #### Example
-`` python3 converter/cog_conv_app.py save-s3-inventory -p wofs_albers -o /outdir/ --aws-profile tempProfile -o /tmp/``
+`` python3 converter/cog_conv_app.py save-s3-inventory -p wofs_albers -o /outdir/ --aws-profile tempProfile``
 
 
 ### Command: `generate-work-list`
@@ -209,52 +206,42 @@ Usage: cog_conv_app.py generate-work-list [OPTIONS]
 
 Options:
   -p, --product-name TEXT  Product name as defined in product configuration file  [required]
-  --time-range TEXT        The time range:
-                             '2018-01-01 < time < 2018-12-31'  OR
-                             'time in 2018-12-31'  OR
-                             'time=2018-12-31'  [required]
   -o, --output-dir PATH    Output destination directory  [required]
-  -c, --config TEXT        Product configuration file (Optional)
-  -E, --datacube-env TEXT  Datacube environment (Optional)
-  --pickle-file TEXT       Pickle file containing the list of s3 bucket inventory (Optional)
-  --sat-row INTEGER        Image satellite row (Optional)
-  --sat-path INTEGER       Image satellite path (Optional)
+  --pickle-file TEXT       Pickle file containing the list of s3 bucket inventory  [required]
+  --time-range TEXT        The time range:
+                           '2018-01-01 < time < 2018-12-31'  OR
+                           'time in 2018-12-31'  OR
+                           'time=2018-12-31'  [required]
+  -c, --config TEXT        Product configuration file
   --help                   Show this message and exit.
 
 ```
 
 #### Example
-``python3 converter/cog_conv_app.py generate-work-list -p wofs_albers -o /outdir/ --time-range 'time in 2018-12'``
+``python3 converter/cog_conv_app.py generate-work-list -p wofs_albers -o /outdir/ 
+--pickle-file /dir/ls7_fc_albers_s3_inv_list.pickle --time-range 'time in 2018-12'``
 
 
-### Command: `mpi-cog-convert`
+### Command: `mpi-convert`
 
-    Convert netcdf files to COG format using parallelisation by MPI tool.
+    Bulk COG Convert netcdf files to COG format using MPI tool.
     Iterate over the file list and assign MPI worker for processing.
-    Following details how master and worker interact during MPI cog conversion process:
-        1) Master fetches the file list from the task file.
-        2) Master shall then assign tasks to worker with task status as 'READY' for cog conversion.
-        3) Worker executes COG conversion algorithm and sends task status as 'START'.
-        4) Once worker finishes COG conversion, it sends task status as 'DONE' to the master.
-        5) If master has more work, then process continues as defined in steps 2-4.
-        6) If no tasks are pending with master, worker sends task status as 'EXIT' and closes the communication.
-        7) Finally master closes the communication.
+    Split the input file by the number of workers, each MPI worker completes every nth task.
+    Also, detect and fail early if not using full resources in an MPI job.
 
-    Uses a configuration file to define the file naming schema.
+    File naming schema is read from the configuration file.
 
 #### Usage
 ```
-> [COG-Conversion]$ python3 converter/cog_conv_app.py mpi-cog-convert --help
-Usage: cog_conv_app.py mpi-cog-convert [OPTIONS] FILELIST
+> [COG-Conversion]$ python3 converter/cog_conv_app.py mpi-convert --help
+Usage: cog_conv_app.py mpi-convert [OPTIONS] FILELIST
 
-  Parallelise COG convert using MPI
-  Example: mpirun python3 cog_conv_app.py mpi-cog-convert -c aws_products_config.yaml
-           --output-dir /tmp/wofls_cog/ -p wofs_albers /tmp/wofs_albers_file_list
+  Bulk COG conversion using MPI
 
 Options:
   -p, --product-name TEXT  Product name as defined in product configuration file  [required]
   -o, --output-dir PATH    Output destination directory  [required]
-  -c, --config TEXT        Product configuration file (Optional)
+  -c, --config TEXT        Product configuration file
   --help                   Show this message and exit.
 
 ```
@@ -262,112 +249,118 @@ Options:
 #### Example
 ```
 #!/bin/bash
+#PBS -l wd,walltime=5:00:00,mem=6200GB,ncpus=1600
+#PBS -P v10
 #PBS -q normal
-#PBS -l walltime=20:00:00
-#PBS -l ncpus=80
-#PBS -l mem=155GB
-#PBS -l jobfs=1GB
-#PBS -l wd
+#PBS -lother=gdata1:gdata2
+#PBS -W umask=33
+#PBS -m abe -M nci.monitor@dea.ga.gov.au
+
+## specify PRODUCT, OUTPUT_DIR, and FILE_LIST using qsub -v option
+## eg qsub -v PRODUCT=ls7_fc_albers,OUTPUT_DIR=/outdir/ls7,FILE_LIST=/outdir/ls7_fc_albers.txt run_cogger.sh
+
+set -xe
+
+source "$HOME/.bashrc"
 module use /g/data/v10/public/modules/modulefiles/
-module load dea/20181015
+module load dea
 module load openmpi/3.1.2
-mpirun --tag-output --report-bindings python3 converter/cog_conv_app.py
-mpi-cog-convert -c aws_products_config.yaml --output-dir /tmp/wofls_cog/ -p wofs_albers /tmp/wofs_albers_file_list
 
-       OR
+mpirun --tag-output python3 cog_conv_app.py mpi-convert -p "${PRODUCT}" -o "${OUTPUT_DIR}" "${FILE_LIST}"
 
-qsub -q express -N mpi_cog_convert_product -l ncpus=80,mem=155gb,jobfs=32GB,walltime=05:00:00,wd -- /bin/bash -l -c
-"module use /g/data/v10/public/modules/modulefiles/; module load dea; module load openmpi/3.1.2;
-mpirun --tag-output --report-bindings python3 converter/cog_conv_app.py
-mpi-cog-convert -c aws_products_config.yaml --output-dir /tmp/wofls_cog/ -p wofs_albers /tmp/wofs_albers_file_list"
 ```
 
 
-### Command: `qsub-cog-convert`
+### Command: `qsub-cog`
 
-    Submits an COG conversion job, using a four stage PBS job submission.
+    Submits an COG conversion job, using a five stage PBS job submission.
     Uses a configuration file to define the file naming schema.
 
     Stage 1 (Store S3 inventory list to a pickle file):
-        1) Scan through S3 inventory list and fetch the uploaded file names of the desired product.
-        2) Save those file names in a pickle file.
+        1) Scan through S3 inventory list and fetch the uploaded file names of the desired product
+        2) Save those file names in a pickle file
 
     Stage 2 (Generate work list for COG conversion):
-           1) Compares datacube file uri's against S3 bucket (file names within pickle file).
-           2) Write the list of datasets not found in S3 to the task file.
-           3) Repeat until all the datasets are compared against those found in S3.
+           1) Compares datacube file uri's against S3 bucket (file names within pickle file)
+           2) Write the list of datasets not found in S3 to the task file
+           3) Repeat until all the datasets are compared against those found in S3
 
-    Stage 3 (COG convert using MPI runs):
-           1) Master fetches the file list from the task file.
-           2) Master shall then assign tasks to worker with task status as 'READY' for cog conversion.
-           3) Worker executes COG conversion algorithm and sends task status as 'START'.
-           4) Once worker finishes COG conversion, it sends task status as 'DONE' to the master.
-           5) If master has more work, then process continues as defined in steps 2-4.
-           6) If no tasks are pending with master, worker sends task status as 'EXIT' and closes the communication.
-           7) Finally master closes the communication.
+    Stage 3 (Bulk COG convert using MPI):
+           1) Iterate over the file list and assign MPI worker for processing.
+           2) Split the input file by the number of workers, each MPI worker completes every nth task.
 
-    Stage 4 (Validate GeoTIFF files and run AWS sync to upload files to AWS S3):
-            1) Validate GeoTIFF files and if valid then upload to S3 bucket.
-            2) Using aws sync command line tool, sync newly COG converted files to S3 bucket.
+    Stage 4 (Validate COG GeoTIFF files):
+            1) Validate GeoTIFF files and if valid then upload to S3 bucket
+
+    Stage 5 (Run AWS sync to upload files to AWS S3):
+            1) Using aws sync command line tool, sync newly COG converted files to S3 bucket
 
 #### Usage
 ```
-> [COG-Conversion]$ python3 converter/cog_conv_app.py qsub-cog-convert --help
-Usage: cog_conv_app.py qsub-cog-convert [OPTIONS]
+> [COG-Conversion]$ python3 converter/cog_conv_app.py qsub-cog --help
+Usage: cog_conv_app.py qsub-cog [OPTIONS]
 
-  Kick off four stage COG Conversion PBS job
+  Kick off five stage COG Conversion PBS job
 
 Options:
-  -p, --product-name TEXT         Product name as defined in product configuration file  [required]
-  --time-range TEXT               The time range:
-                                  '2018-01-01 < time < 2018-12-31'  OR
-                                  'time in 2018-12-31'  OR
-                                  'time=2018-12-31'  [required]
-  -o, --output-dir PATH           Output destination directory  [required]
-  -c, --config TEXT               Product configuration file (Optional)
-  -q, --queue                     [normal|express]
-  -P, --project TEXT              Project Name
-  -t, --walltime INTEGER RANGE    Number of hours (range: 1-48hrs) to request (Optional)
-  --nodes INTEGER RANGE           Number of raijin nodes (range: 1-3592) to request (Optional)
-  -m, --email-options             [a|b|e|n|ae|ab|be|abe]
-                                  Send email when execution is, 
-                                  [a = aborted | b = begins | e = ends | n = do not send email]
-  -M, --email-id TEXT             Email recipient id (Optional)
-  -i, --inventory-manifest TEXT   The manifest of AWS S3 bucket inventory URL (Optional)
-  --s3-output-url TEXT            S3 URL for uploading the converted files (Optional)
-  --aws-profile TEXT              AWS profile name (Optional)
-  -E, --datacube-env TEXT         Datacube environment (Optional)
-  --sat-row INTEGER               Image satellite row (Optional)
-  --sat-path INTEGER              Image satellite path (Optional)
-  --help                          Show this message and exit.
+  -p, --product-name TEXT        Product name as defined in product configuration file  [required]
+  --s3-output-url TEXT           S3 URL for uploading the converted files  [required]
+  -o, --output-dir PATH          Output destination directory  [required]
+  --time-range TEXT              The time range:
+                                 '2018-01-01 < time < 2018-12-31'  OR
+                                 'time in 2018-12-31'  OR
+                                 'time=2018-12-31'  [required]
+  -i, --inventory-manifest TEXT  The manifest of AWS S3 bucket inventory URL
+  --aws-profile TEXT             AWS profile name
+  --help                         Show this message and exit.
 
 ```
 
 #### Example
-``python3 converter/cog_conv_app.py qsub-cog-convert -q normal -P v10 -M temp@email.com -p wofs_albers 
+``python3 converter/cog_conv_app.py qsub-cog --s3-output-url 's3://dea-public-data/' -p wofs_albers 
 --time-range '2018-11-30 < time < 2018-12-01' --output-dir /tmp/wofls_cog/``
 
 
-### Command: `verify-cog-files`
+### Command: `verify`
 
     Verify converted GeoTIFF files are (Geo)TIFF with cloud optimized compatible structure.
     Mandatory Requirement: `validate_cloud_optimized_geotiff.py` gdal file.
 
 #### Usage
 ```
-> [COG-Conversion]$ python3 converter/cog_conv_app.py verify-cog-files --help
-Usage: cog_conv_app.py verify-cog-files [OPTIONS]
+> [COG-Conversion]$ python3 converter/cog_conv_app.py verify --help
+Usage: cog_conv_app.py verify [OPTIONS] PATH
 
-  Verify the converted GeoTIFF are Cloud Optimised GeoTIFF
+  Verify GeoTIFFs are Cloud Optimised GeoTIFF
 
 Options:
-  -p, --path PATH  Validate the GeoTIFF files from this folder  [required]
-  --help           Show this message and exit.
+  --rm-broken  Remove directories with broken files
+  --help       Show this message and exit.
 
 ```
 
 #### Example
-`` python3 converter/cog_conv_app.py verify-cog-files --path /tmp/wofls_cog``
+```
+#!/bin/bash
+#PBS -l wd,walltime=5:00:00,mem=186GB,ncpus=48
+#PBS -P v10
+#PBS -q normal
+#PBS -lother=gdata1:gdata2
+#PBS -W umask=33
+#PBS -m abe -M nci.monitor@dea.ga.gov.au
+
+## specify OUTPUT_DIR using qsub -v option
+## eg qsub -v OUTPUT_DIR=/outdir/ls7 run_verify.sh
+
+set -xe
+
+source "$HOME/.bashrc"
+module use /g/data/v10/public/modules/modulefiles/
+module load dea
+module load openmpi/3.1.2
+
+mpirun --tag-output python3 cog_conv_app.py verify --rm-broken "${OUTPUT_DIR}"
+```
 
 
 ### Validate Cog Files

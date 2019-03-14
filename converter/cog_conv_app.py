@@ -7,14 +7,12 @@ import shutil
 import socket
 import subprocess
 import sys
-from enum import IntEnum
 from functools import partial
 from os.path import split, basename
 from pathlib import Path
 
 import click
 import dateutil.parser
-import digitalearthau
 import structlog
 import yaml
 from aws_inventory import list_inventory
@@ -27,20 +25,10 @@ from tqdm import tqdm
 LOG = structlog.get_logger()
 
 ROOT_DIR = Path(__file__).absolute().parent
-COG_FILE_PATH = ROOT_DIR / 'cog_conv_app.py'
 YAMLFILE_PATH = ROOT_DIR / 'aws_products_config.yaml'
-GENERATE_FILE_PATH = ROOT_DIR / 'generate_work_list.sh'
-AWS_SYNC_PATH = ROOT_DIR / 'aws_sync.sh'
 VALIDATE_GEOTIFF_CMD = ROOT_DIR.parent / 'validate_cloud_optimized_geotiff.py'
 PICKLE_FILE_EXT = '_s3_inv_list.pickle'
 TASK_FILE_EXT = '_file_list.txt'
-
-# pylint: disable=invalid-name
-queue_option = click.option('--queue', '-q', default='normal',
-                            type=click.Choice(['normal', 'express']))
-
-# pylint: disable=invalid-name
-project_option = click.option('--project', '-P', default='v10')
 
 # pylint: disable=invalid-name
 output_dir_option = click.option('--output-dir', '-o', required=True,
@@ -64,58 +52,17 @@ s3_inv_option = click.option('--inventory-manifest', '-i',
 aws_profile_option = click.option('--aws-profile', default='default', help='AWS profile name')
 
 # pylint: disable=invalid-name
-s3_pickle_file_option = click.option('--pickle-file', default=None,
+s3_pickle_file_option = click.option('--pickle-file', default=None, required=True,
                                      help='Pickle file containing the list of s3 bucket inventory')
 
 # pylint: disable=invalid-name
 config_file_option = click.option('--config', '-c', default=YAMLFILE_PATH,
                                   help='Product configuration file')
 
-# pylint: disable=invalid-name
-# https://cs.anu.edu.au/courses/distMemHPC/sessions/MF1.html
-num_nodes_option = click.option('--nodes', default=5,
-                                help='Number of raijin nodes (range: 1-3592) to request',
-                                type=click.IntRange(1, 3592))
-
-# pylint: disable=invalid-name
-walltime_option = click.option('--walltime', '-t', default=10,
-                               help='Number of hours (range: 1-48hrs) to request',
-                               type=click.IntRange(1, 48))
-
-# pylint: disable=invalid-name
-mail_option = click.option('--email-options', '-m', default='abe',
-                           type=click.Choice(['a', 'b', 'e', 'n', 'ae', 'ab', 'be', 'abe']),
-                           help='Send email when execution is, \n'
-                                '[a = aborted | b = begins | e = ends | n = do not send email]')
-
-# pylint: disable=invalid-name
-mail_id_option = click.option('--email-id', '-M', default='nci.monitor@dea.ga.gov.au',
-                              help='Email recipient id')
-
-# pylint: disable=invalid-name
-sat_row_options = click.option('--sat-row', default=0, type=click.INT,
-                               help='Image satellite row (Optional)')
-
-# pylint: disable=invalid-name
-sat_path_options = click.option('--sat-path', default=0, type=click.INT,
-                                help='Image satellite path (Optional)')
-
-
-class MPITagStatus(IntEnum):
-    """
-    MPI message tag status
-    """
-    READY = 1
-    START = 2
-    DONE = 3
-    EXIT = 4
-    ERROR = 5
-
 
 def _submit_qsub_job(command):
-    # TODO WTF
     try:
-        LOG.info('Running command: %s', command)
+        LOG.info(f'Running command: {command}')
         proc_output = subprocess.run(command, shell=True, check=True,
                                      stdout=subprocess.PIPE,
                                      stderr=subprocess.STDOUT,
@@ -123,6 +70,7 @@ def _submit_qsub_job(command):
                                      encoding='utf-8',
                                      errors='replace')
 
+        # Extract the pbs job id
         for line in proc_output.stdout.split(os.linesep):
             try:
                 log_value = line.encode('ascii').decode('utf-8')
@@ -133,12 +81,9 @@ def _submit_qsub_job(command):
         LOG.error("No qsub job submitted, hence exiting")
         sys.exit(1)
     except subprocess.CalledProcessError as suberror:
+        # If there are any error while qsub job submission, log them
         for line in suberror.stdout.split(os.linesep):
-            try:
-                log_value = line.encode('ascii').decode('utf-8')
-                LOG.error(log_value)
-            except UnicodeEncodeError:
-                LOG.warning("UnicodeEncodeError : %s", line.encode('ascii', 'replace'))
+            LOG.error(line.encode('ascii').decode('utf-8'))
         LOG.error("Subprocess call error, hence exiting")
         raise
 
@@ -335,11 +280,10 @@ def cli():
 
 @cli.command(name='convert', help="Convert a single/list of files into COG format")
 @product_option
-@config_file_option
 @output_dir_option
+@config_file_option
 @click.option('--filelist', '-l', help='List of input file names', default=None)
-@click.argument('filenames', nargs=-1, type=click.Path())
-def convert(product_name, config, output_dir, filelist, filenames):
+def convert(product_name, output_dir, config, filelist):
     """
     Convert a single or list of input files into Cloud Optimise GeoTIFF format
     Uses a configuration file to define the file naming schema.
@@ -349,9 +293,9 @@ def convert(product_name, config, output_dir, filelist, filenames):
       $ module load dea
     """
     with open(config) as config_file:
-        CFG = yaml.load(config_file)
+        _CFG = yaml.load(config_file)
 
-    product_config = CFG['products'][product_name]
+    product_config = _CFG['products'][product_name]
 
     try:
         with open(filelist) as fl:
@@ -373,17 +317,17 @@ def convert(product_name, config, output_dir, filelist, filenames):
 
 @cli.command(name='save-s3-inventory', help="Save S3 inventory list in a pickle file")
 @product_option
-@config_file_option
 @output_dir_option
+@config_file_option
 @s3_inv_option
 @aws_profile_option
-def save_s3_inventory(product_name, config, output_dir, inventory_manifest, aws_profile):
+def save_s3_inventory(product_name, output_dir, config, inventory_manifest, aws_profile):
     """
     Scan through S3 bucket for the specified product and fetch the file path of the uploaded files.
 
     Save those file into a pickle file for further processing.
     Uses a configuration file to define the file naming schema.
-    \b
+
     Before using this command, execute the following:
       $ module use /g/data/v10/public/modules/modulefiles/
       $ module load dea
@@ -405,11 +349,11 @@ def save_s3_inventory(product_name, config, output_dir, inventory_manifest, aws_
 
 @cli.command(name='generate-work-list', help="Generate task list for COG conversion")
 @product_option
-@time_range_options
-@config_file_option
 @output_dir_option
 @s3_pickle_file_option
-def generate_work_list(product_name, time_range, config, output_dir, pickle_file):
+@time_range_options
+@config_file_option
+def generate_work_list(product_name, output_dir, pickle_file, time_range, config):
     """
     Compares datacube file uri's against S3 bucket (file names within pickle file) and writes the list of datasets
     for cog conversion into the task file
@@ -453,12 +397,22 @@ def generate_work_list(product_name, time_range, config, output_dir, pickle_file
         LOG.info(f"No tasks found")
 
 
-@cli.command(name='mpi-convert', help="Bulk COG conversion using MPI")
+@cli.command(name='mpi-convert', help='Bulk COG conversion using MPI')
 @product_option
-@config_file_option
 @output_dir_option
+@config_file_option
 @click.argument('filelist', nargs=1, required=True)
-def mpi_convert(product_name, config, output_dir, filelist):
+def mpi_convert(product_name, output_dir, config, filelist):
+    """
+    Iterate over the file list and assign MPI worker for processing.
+    Split the input file by the number of workers, each MPI worker completes every nth task.
+    Also, detect and fail early if not using full resources in an MPI job.
+
+    Before using this command, execute the following:
+      $ module use /g/data/v10/public/modules/modulefiles/
+      $ module load dea
+      $ module load openmpi/3.1.2
+    """
     job_rank, job_size = _mpi_init()
 
     with open(config) as cfg_file:
@@ -506,14 +460,14 @@ def _mpi_init():
     return job_rank, job_size
 
 
-def _nth_by_mpi(iter):
+def _nth_by_mpi(iterator):
     """
     Use to split an iterator based on MPI pool size and rank of this process
     """
     from mpi4py import MPI
     job_size = MPI.COMM_WORLD.size  # Total number of processes
     job_rank = MPI.COMM_WORLD.rank  # Rank of this process
-    for i, element in enumerate(iter):
+    for i, element in enumerate(iterator):
         if i % job_size == job_rank:
             yield element
 
@@ -530,7 +484,8 @@ def verify(path, rm_broken):
     Delete any directories (and their content) that contain broken GeoTIFFs
 
     :param path: Cog Converted files directory path, or a file containing a list of files to check
-    :return:
+    :param rm_broken: Remove broken (directories with corrupted cog files or without yaml file) directories
+    :return: None
     """
     job_rank, job_size = _mpi_init()
     broken_files = set()
@@ -560,11 +515,16 @@ def verify(path, rm_broken):
         exitcode, output = subprocess.getstatusoutput(command)
         validator_output = output.split('/')[-1]
 
+        # If no metadata file does not exists after cog conversion then add the tiff file to the broken files set
+        if not list(geotiff_file.parent.rglob('*.yaml')):
+            LOG.error("No YAML file created for GeoTIFF file", error=validator_output, filename=geotiff_file)
+            broken_files.add(geotiff_file)
+
         if exitcode == 0:
             LOG.debug(validator_output)
         else:
             # Log and remember broken COG
-            LOG.info("Invalid GeoTIFF file", error=validator_output, filename=geotiff_file)
+            LOG.error("Invalid GeoTIFF file", error=validator_output, filename=geotiff_file)
             broken_files.add(geotiff_file)
 
     if rm_broken:
@@ -573,30 +533,19 @@ def verify(path, rm_broken):
 
         for directory in broken_directories:
             LOG.info('Deleting directory', dir=directory)
-            shutil.rmdir(directory)
+            shutil.rmtree(directory)
 
 
-@cli.command(name='qsub', help="Kick off four stage COG Conversion PBS job")
+@cli.command(name='qsub-cog', help="Kick off five stage COG Conversion PBS job")
 @product_option
-@time_range_options
-@config_file_option
-@output_dir_option
-@queue_option
-@project_option
-@walltime_option
-@num_nodes_option
-@mail_option
-@mail_id_option
-@s3_inv_option
 @s3_output_dir_option
+@output_dir_option
+@time_range_options
+@s3_inv_option
 @aws_profile_option
-@sat_row_options
-@sat_path_options
-def qsub(product_name, time_range, config, output_dir, queue, project, walltime, nodes,
-         email_options, email_id, inventory_manifest, s3_output_url, aws_profile,
-         sat_row, sat_path):
+def qsub_cog(product_name, s3_output_url, output_dir, time_range, inventory_manifest, aws_profile):
     """
-    Submits an COG conversion job, using a four stage PBS job submission.
+    Submits an COG conversion job, using a five stage PBS job submission.
     Uses a configuration file to define the file naming schema.
 
     Stage 1 (Store S3 inventory list to a pickle file):
@@ -608,102 +557,68 @@ def qsub(product_name, time_range, config, output_dir, queue, project, walltime,
            2) Write the list of datasets not found in S3 to the task file
            3) Repeat until all the datasets are compared against those found in S3
 
-    Stage 3 (COG convert using MPI runs):
-           1) Master fetches the file list from the task file
-           2) Master shall then assign tasks to worker with task status as 'READY' for cog conversion
-           3) Worker executes COG conversion algorithm and sends task status as 'START'
-           4) Once worker finishes COG conversion, it sends task status as 'DONE' to the master
-           5) If master has more work, then process continues as defined in steps 2-4
-           6) If no tasks are pending with master, worker sends task status as 'EXIT' and closes the communication
-           7) Finally master closes the communication
+    Stage 3 (Bulk COG convert using MPI):
+           1) Iterate over the file list and assign MPI worker for processing.
+           2) Split the input file by the number of workers, each MPI worker completes every nth task.
 
-    Stage 4 (Validate GeoTIFF files and run AWS sync to upload files to AWS S3):
+    Stage 4 (Validate COG GeoTIFF files):
             1) Validate GeoTIFF files and if valid then upload to S3 bucket
-            2) Using aws sync command line tool, sync newly COG converted files to S3 bucket
+
+    Stage 5 (Run AWS sync to upload files to AWS S3):
+            1) Using aws sync command line tool, sync newly COG converted files to S3 bucket
 
     Before using this command, execute the following:
       $ module use /g/data/v10/public/modules/modulefiles/
       $ module load dea
     """
     with open(ROOT_DIR / 'aws_products_config.yaml') as fd:
-        CFG = yaml.load(fd)
+        _CFG = yaml.load(fd)
     task_file = str(Path(output_dir) / product_name) + TASK_FILE_EXT
 
     # Make output directory specific to the a product (if it does not exists)
     (Path(output_dir) / product_name).mkdir(parents=True, exist_ok=True)
 
+    # Fetch S3 inventory list and save it in a pickle file
     # language=bash
-    prep = 'qsub -q copyq -N save_s3_list_%(product)s -P %(project)s ' \
-           '-l wd,walltime=10:00:00,mem=31GB,jobfs=5GB -W umask=33 ' \
-           '-- /bin/bash -l -c "source $HOME/.bashrc; ' \
-           'module use /g/data/v10/public/modules/modulefiles/; ' \
-           'module load dea; ' \
-           'python3 %(cog_converter_file)s save-s3-inventory -c %(yaml_file)s ' \
-           '--inventory-manifest %(s3_inventory)s --aws-profile %(aws_profile)s --product-name %(product)s ' \
-           '--output-dir %(output_dir)s"'
-    cmd = prep % dict(product=product_name, project=project, cog_converter_file=COG_FILE_PATH,
-                      yaml_file=config, s3_inventory=inventory_manifest, aws_profile=aws_profile,
-                      output_dir=output_dir)
+    s3_inv_job = _submit_qsub_job(
+        f'qsub -N save_s3_list_{product_name} -v PRODUCT={product_name},OUT_DIR={output_dir},'
+        f'S3_INV={inventory_manifest} run_save_task.sh'
+    )
 
-    s3_inv_job = _submit_qsub_job(cmd)
-
-    pickle_file = Path(output_dir) / (product_name + PICKLE_FILE_EXT),
+    pickle_file = Path(output_dir) / (product_name + PICKLE_FILE_EXT)
+    # Generate work list from S3 inventory and ODC database
+    # language=bash
     file_list_job = _submit_qsub_job(
-        f'qsub -q {queue} -N generate_work_list_{product_name} -P {project} '
-        f'-W depend=afterok:{s3_inv_job}: -l wd,walltime=10:00:00,mem=31GB,jobfs=5GB -W umask=33 '
-        f'-- /bin/bash -l -c "source $HOME/.bashrc; '
-        f'{GENERATE_FILE_PATH} --dea-module {digitalearthau.MODULE_NAME} --cog-file {COG_FILE_PATH} '
-        f'--config-file {config} --product-name {product_name} --output-dir {output_dir} '
-        f'--sat-row {sat_row} --sat-path {sat_path} '
-        f'--pickle-file {pickle_file} --time-range \'{time_range}\'"')
+        f'qsub -N generate_work_list_{product_name} -W depend=afterok:{s3_inv_job}: '
+        f'-v PRODUCT_NAME={product_name},OUTPUT_DIR={output_dir},ROOT_DIR={ROOT_DIR},'
+        f'TIME_RANGE=\'{time_range}\',PICKLE_FILE={pickle_file.as_posix()} run_generate_work_list.sh'
+    )
 
+    # Run cogger
     # language=bash
-    qsub = 'qsub -q %(queue)s -N mpi_cog_convert_%(product)s -P %(project)s ' \
-           '-W depend=afterok:%(file_list_job)s: -m %(email_options)s -M %(email_id)s ' \
-           '-l ncpus=%(ncpus)d,mem=%(mem)dgb,jobfs=32GB,walltime=%(walltime)d:00:00,wd ' \
-           '-- /bin/bash -l -c "source $HOME/.bashrc; ' \
-           'module use /g/data/v10/public/modules/modulefiles/; ' \
-           'module load dea/20181015; ' \
-           'module load openmpi/3.1.2;' \
-           'mpirun --tag-output --report-bindings ' \
-           'python3 %(cog_converter_file)s mpi-cog-convert ' \
-           '-c %(yaml_file)s --output-dir %(output_dir)s --product-name %(product)s %(file_list)s"'
-    _RAM_PER_NODE = 62
-    _CPUS_PER_NODE = 16
-    cmd = qsub % dict(queue=queue,
-                      project=project,
-                      file_list_job=file_list_job.split('.')[0],
-                      email_options=email_options,
-                      email_id=email_id,
-                      ncpus=nodes * _CPUS_PER_NODE,
-                      mem=nodes * _RAM_PER_NODE,
-                      walltime=walltime,
-                      cog_converter_file=COG_FILE_PATH,
-                      yaml_file=config,
-                      output_dir=Path(output_dir) / product_name,
-                      product=product_name,
-                      file_list=task_file)
-    cog_conversion_job = _submit_qsub_job(cmd)
+    cogger_job = _submit_qsub_job(
+        f'qsub -N mpi_{product_name} -W depend=afterok:{file_list_job}: '
+        f'-v PRODUCT={product_name},OUTPUT_DIR={(Path(output_dir) / product_name).as_posix()},'
+        f'FILE_LIST={task_file} run_cogger.sh'
+    )
 
     if s3_output_url:
         s3_output = s3_output_url
     else:
-        s3_output = 's3://dea-public-data/' + CFG['products'][product_name]['prefix']
+        s3_output = 's3://dea-public-data/' + _CFG['products'][product_name]['prefix']
 
+    # Verify the converted cog files are in correct format
     # language=bash
-    prep = 'qsub -q copyq -N s3_sync_%(product)s -P %(project)s ' \
-           '-W depend=afterok:%(cog_conversion_job)s: ' \
-           '-l wd,walltime=5:00:00,mem=31GB,jobfs=5GB -W umask=33 ' \
-           '-- /bin/bash -l -c "source $HOME/.bashrc; ' \
-           '%(aws_sync_script)s --dea-module %(dea_module)s ' \
-           '--s3-dir %(s3_output_url)s --aws-profile %(aws_profile)s ' \
-           '--output-dir %(output_dir)s --cog-file %(cog_converter_file)s"'
-    cmd = prep % dict(product=product_name, project=project,
-                      cog_conversion_job=cog_conversion_job.split('.')[0],
-                      aws_sync_script=AWS_SYNC_PATH, dea_module=digitalearthau.MODULE_NAME,
-                      s3_output_url=s3_output, cog_converter_file=COG_FILE_PATH, aws_profile=aws_profile,
-                      output_dir=Path(output_dir) / product_name)
-    _submit_qsub_job(cmd)
+    verify_job = _submit_qsub_job(
+        f'qsub -N verify_{product_name} -W depend=afterany:{cogger_job}: -v OUTPUT_DIR={output_dir} run_verify.sh'
+    )
+
+    # Upload verified cog files to AWS S3
+    # language=bash
+    _submit_qsub_job(
+        f'qsub -N awssync_{product_name} -W depend=afterok:{verify_job}: -v AWS_PROFILE={aws_profile},'
+        f'OUT_DIR={(Path(output_dir) / product_name).as_posix()},S3_BUCKET={s3_output} run_s3_upload.sh'
+    )
 
 
 if __name__ == '__main__':

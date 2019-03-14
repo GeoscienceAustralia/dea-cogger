@@ -189,7 +189,7 @@ class NetCDFCOGConverter:
 
     def _check_tif(self, fname):
         try:
-            cog_tif = gdal.Open(fname, gdal.GA_ReadOnly)
+            cog_tif = gdal.Open(str(fname), gdal.GA_ReadOnly)
             srcband = cog_tif.GetRasterBand(1)
             t_stats = srcband.GetStatistics(True, True)
         except Exception:
