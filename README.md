@@ -266,7 +266,7 @@ module use /g/data/v10/public/modules/modulefiles/
 module load dea
 module load openmpi/3.1.2
 
-mpirun --tag-output python3 cog_conv_app.py mpi-convert -p "${PRODUCT}" -o "${OUTPUT_DIR}" "${FILE_LIST}"
+mpirun --tag-output dea-cogger mpi-convert -p "${PRODUCT}" -o "${OUTPUT_DIR}" "${FILE_LIST}"
 
 ```
 
@@ -359,7 +359,7 @@ module use /g/data/v10/public/modules/modulefiles/
 module load dea
 module load openmpi/3.1.2
 
-mpirun --tag-output python3 cog_conv_app.py verify --rm-broken "${OUTPUT_DIR}"
+mpirun --tag-output dea-cogger verify --rm-broken "${OUTPUT_DIR}"
 ```
 
 

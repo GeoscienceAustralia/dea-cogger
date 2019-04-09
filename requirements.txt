@@ -1,3 +1,6 @@
+mpi4py
+tqdm
+datacube
 # Required modules for Linting and Testing on Travis-CI
 pytest
 pycodestyle

@@ -14,4 +14,4 @@ source "$HOME"/.bashrc
 module use /g/data/v10/public/modules/modulefiles
 module load dea
 
-python3 cog_conv_app.py save-s3-inventory -p "${PRODUCT}" -o "${OUT_DIR}" -c aws_products_config.yaml
+dea-cogger save-s3-inventory -p "${PRODUCT}" -o "${OUT_DIR}" -c aws_products_config.yaml
