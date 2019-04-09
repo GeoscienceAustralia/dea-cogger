@@ -1,33 +1,54 @@
 """rio_cogeo.cogeo: translate a file to a cloud optimized geotiff."""
-from datetime import datetime
-import gdal
-import numpy
 import os
 import re
+from pathlib import Path
+from typing import Union
+
+import gdal
+import numpy
 import rasterio
-import sys
+import structlog
 import xarray
 import yaml
-
-from os.path import join as pjoin, basename, exists, split
-from pathlib import Path
-from rasterio.io import MemoryFile
 from rasterio.enums import Resampling
+from rasterio.io import MemoryFile
 from rasterio.shutil import copy
 from yaml import CSafeLoader as Loader, CSafeDumper as Dumper
 
 DEFAULT_GDAL_CONFIG = {'NUM_THREADS': 1, 'GDAL_TIFF_OVR_BLOCKSIZE': 512}
+# Note: DEFLATE compression while more efficient than LZW can cause compatibility issues
+#       with some software packages
+#       DEFLATE or LZW can be used for lossless compression, or
+#       JPEG for lossy compression
+DEFAULT_PROFILE = {'driver': 'GTiff',
+                   'interleave': 'pixel',
+                   'tiled': True,
+                   'blockxsize': 512,  # 256 or 512 pixels
+                   'blockysize': 512,  # 256 or 512 pixels
+                   'compress': 'DEFLATE',
+                   'copy_src_overviews': True,
+                   'zlevel': 9}
+LOG = structlog.get_logger()
+
+# GDAL Initialisation
+os.environ['GDAL_DISABLE_READDIR_ON_OPEN'] = 'YES'
+os.environ['CPL_VSIL_CURL_ALLOWED_EXTENSIONS'] = '.tif'
+gdal.UseExceptions()
 
 
-class COGNetCDF:
+class COGException(Exception):
+    pass
+
+
+class NetCDFCOGConverter:
     """
-    Convert NetCDF files to COG style GeoTIFFs
+    Convert the input files to COG style GeoTIFFs
     """
 
-    def __init__(self, black_list=None, white_list=None, nonpym_list=None, default_rsp=None,
-                 bands_rsp=None, name_template=None, prefix=None, predictor=None, stacked_name_template=None):
+    def __init__(self, black_list=None, white_list=None, no_overviews=None, default_resampling='average',
+                 bands_rsp=None, name_template=None, prefix=None, predictor=2):
         # A list of keywords of bands which don't require resampling
-        self.nonpym_list = nonpym_list
+        self.no_overviews = no_overviews if no_overviews is not None else []
 
         # A list of keywords of bands excluded in cog convert
         self.black_list = black_list
@@ -35,82 +56,103 @@ class COGNetCDF:
         # A list of keywords of bands to be converted
         self.white_list = white_list
 
-        self.bands_rsp = bands_rsp
+        self.bands_rsp = bands_rsp if bands_rsp is not None else {}
         self.name_template = name_template
-        self.prefix = prefix
-        self.stacked_name_template = stacked_name_template
+        self.s3_prefix_path = prefix
 
-        if predictor is None:
-            self.predictor = 2
-        else:
-            self.predictor = predictor
+        self.predictor = predictor
 
-        if default_rsp is None:
-            self.default_rsp = 'average'
-        else:
-            self.default_rsp = default_rsp
+        self.default_resampling = default_resampling
 
-    def __call__(self, input_fname, dest_dir):
-        prefix_name = self._make_outprefix(input_fname, dest_dir)
-        self.netcdf_to_cog(input_fname, prefix_name)
+    def __call__(self, input_fname, output_prefix):
+        Path(output_prefix).parent.mkdir(parents=True, exist_ok=True)
+        self.generate_cog_files(input_fname, output_prefix)
 
-    def _make_s1_outprefix(self, input_fname, dest_dir):
-        abs_fname = split(input_fname)[0]
-        dirname = basename(abs_fname)
-        coords = basename(split(abs_fname)[0])
-
-        prefix_name = re.search(r"[-\w\d.]*(?=\.\w)", abs_fname).group(0)
-        r = re.compile(r"(?<=_)[-\d.T]+")
-        indices = r.findall(prefix_name)
-
-        dest_dict = {"time": datetime.strptime(indices[1].replace('T', ''), '%Y%m%d%H%M%S'), "coord": coords}
-        return Path(dest_dir).joinpath(self.name_template.format(**dest_dict)).joinpath(dirname), dirname
-
-    def _make_outprefix(self, input_fname, dest_dir):
-        abs_fname = basename(input_fname)
-        prefix_name = re.search(r"[-\w\d.]*(?=\.\w)", abs_fname).group(0)
-        r = re.compile(r"(?<=_)[-\d.]+")
-        indices = r.findall(prefix_name)
-        r = re.compile(r"(?<={)\w+")
-        keys = sorted(set(r.findall(self.name_template)))
-
-        if len(indices) > len(keys):
-            indices = indices[-len(keys):]
-
-        indices += [None] * (3 - len(indices))
-        x_index, y_index, date_time = indices
-
-        if indices == [None] * len(indices):
-            out_dir, prefix_name = self._make_s1_outprefix(input_fname, dest_dir)
-        else:
-            dest_dict = {keys[1]: x_index, keys[2]: y_index}
-
-            if date_time is not None:
-                try:
-                    dest_dict[keys[0]] = datetime.strptime(date_time, '%Y%m%d%H%M%S%f')
-                except ValueError:
-                    dest_dict[keys[0]] = datetime.strptime(date_time, '%Y')  # Stacked netCDF file
-            else:
-                self.name_template = '/'.join(self.name_template.split('/')[0:2])
-
-            out_dir = Path(pjoin(dest_dir, self.name_template.format(**dest_dict))).parents[0]
-
-        os.makedirs(out_dir, exist_ok=True)
-
-        return pjoin(out_dir, prefix_name)
-
-    def netcdf_to_cog(self, input_file, prefix):
+    def generate_cog_files(self, input_file, output_prefix):
         """
-        Convert the datasets in the NetCDF file 'file' into 'dest_dir'
+        Convert the datasets from the input file to COG format and save them in the 'dest_dir'
 
         Each dataset is put in a separate directory.
 
         The directory names will look like 'LS_WATER_3577_9_-39_20180506102018'
         """
+
+        # Extract the #part=?? number if it exists in the filename, as used by ODC
+        part_index = 0
+        if '#' in input_file:
+            input_file, part_no = input_file.split('#')
+            _, part_index = part_no.split('=')
+            part_index = int(part_index)
+
+        if not input_file.endswith('.nc'):
+            raise COGException("COG Converter only works with NetCDF datasets.")
+
+        yaml_fname = output_prefix.with_suffix('.yaml')
+
+        if yaml_fname.exists():
+            raise COGException(f'Dataset Document {yaml_fname} already exists.')
+
+        # Extract each band from the input file and write to individual GeoTIFF files
+        self._netcdf_to_cogs(input_file, part_index, output_prefix)
+
+        # Create a single yaml file for a sub-dataset (consolidated one for a band group)
+        self._netcdf_to_yaml(input_file, part_index, output_prefix)
+
+    def _netcdf_to_yaml(self, input_file: Union[str, Path], part_index, output_prefix):
+        """
+        Write the datasets to separate yaml files
+        """
+
+        yaml_fname = output_prefix.with_suffix('.yaml')
+
+        dataset_array = xarray.open_dataset(input_file)
+        if len(dataset_array.dataset) == 1:
+            dataset_object = dataset_array.dataset.item().decode('utf-8')
+        else:
+            dataset_object = dataset_array.dataset.isel(time=part_index).item().decode('utf-8')
+
+        dataset = yaml.load(dataset_object, Loader=Loader)
+        if dataset is None:
+            LOG.info(f'No YAML section {output_prefix}')
+            return
+
+        invalid_band = []
+        # Update band urls
+        for band_name, band_definition in dataset['image']['bands'].items():
+            if self.black_list is not None:
+                if re.search(self.black_list, band_name) is not None:
+                    invalid_band.append(band_name)
+                    continue
+
+            # TODO WTF
+            if self.white_list is not None:
+                if re.search(self.white_list, band_name) is None:
+                    invalid_band.append(band_name)
+                    continue
+
+            tif_path = f'{output_prefix.name}_{band_name}.tif'
+
+            band_definition.pop('layer', None)
+            band_definition['path'] = tif_path
+
+        for band in invalid_band:
+            dataset['image']['bands'].pop(band, None)
+
+        dataset['format'] = {'name': 'GeoTIFF'}
+        dataset['lineage'] = {'source_datasets': {}}
+
+        with open(yaml_fname, 'w') as fp:
+            yaml.dump(dataset, fp, default_flow_style=False, Dumper=Dumper)
+            LOG.info(f"Created yaml file, {yaml_fname}")
+
+    def _netcdf_to_cogs(self, input_file, part_index, output_prefix):
+        """
+        Write the datasets to separate cog files
+        """
         try:
             dataset = gdal.Open(input_file, gdal.GA_ReadOnly)
         except Exception as exp:
-            print(f"netcdf error {input_file}: \n{exp}", file=sys.stderr)
+            LOG.exception(f"GDAL input file error {input_file}: \n{exp}")
             return
 
         if dataset is None:
@@ -118,142 +160,40 @@ class COGNetCDF:
 
         subdatasets = dataset.GetSubDatasets()
 
-        # Extract each band from the NetCDF and write to individual GeoTIFF files
-        self._dataset_to_cog(prefix, subdatasets, input_file)
+        profile = DEFAULT_PROFILE.copy()
+        profile['predictor'] = self.predictor
 
-    def _dataset_to_yaml(self, prefix, dataset_array: xarray.Dataset, rastercount):
-        """
-        Write the datasets to separate yaml files
-        """
-        for i in range(rastercount):
-            if rastercount == 1:
-                yaml_fname = prefix + '.yaml'
-                dataset_object = (dataset_array.dataset.item()).decode('utf-8')
-            else:
-                yaml_fname = prefix + '_' + str(i + 1) + '.yaml'
-                dataset_object = (dataset_array.dataset.item(i)).decode('utf-8')
+        for dts in subdatasets[:-1]:  # Skip the last dataset, since that is the metadata doc
 
-            if exists(yaml_fname):
-                continue
+            # Band Name is the last of the colon separate elements in GDAL
+            band_name = dts[0].split(':')[-1]
 
-            dataset = yaml.load(dataset_object, Loader=Loader)
-            if dataset is None:
-                print(f"No yaml section {prefix}", file=sys.stderr)
-                continue
+            out_fname = output_prefix.parent / f'{output_prefix.name}_{band_name}.tif'
 
-            invalid_band = []
-            # Update band urls
-            for key, value in dataset['image']['bands'].items():
-                if self.black_list is not None:
-                    if re.search(self.black_list, key) is not None:
-                        invalid_band.append(key)
-                        continue
+            # Check the done files might need a force option later
+            if out_fname.exists():
+                if self._check_tif(out_fname):
+                    continue
 
-                if self.white_list is not None:
-                    if re.search(self.white_list, key) is None:
-                        invalid_band.append(key)
-                        continue
+            # Resampling method of this band
+            resampling_method = self.bands_rsp.get(band_name, self.default_resampling)
 
-                if rastercount == 1:
-                    tif_path = basename(prefix + '_' + key + '.tif')
-                else:
-                    tif_path = basename(prefix + '_' + key + '_' + str(i + 1) + '.tif')
-
-                value['layer'] = str(i + 1)
-                value['path'] = tif_path
-
-            for band in invalid_band:
-                dataset['image']['bands'].pop(band)
-
-            dataset['format'] = {'name': 'GeoTIFF'}
-            dataset['lineage'] = {'source_datasets': {}}
-            with open(yaml_fname, 'w') as fp:
-                yaml.dump(dataset, fp, default_flow_style=False, Dumper=Dumper)
-                print(f"Created yaml file, {yaml_fname}")
-
-    def _dataset_to_cog(self, prefix, subdatasets, input_file):
-        """
-        Write the datasets to separate cog files
-        """
-
-        os.environ['GDAL_DISABLE_READDIR_ON_OPEN'] = 'YES'
-        os.environ['CPL_VSIL_CURL_ALLOWED_EXTENSIONS'] = '.tif'
-        if self.white_list is not None:
-            self.white_list = "|".join(self.white_list)
-        if self.black_list is not None:
-            self.black_list = "|".join(self.black_list)
-        if self.nonpym_list is not None:
-            self.nonpym_list = "|".join(self.nonpym_list)
-
-        rastercount = 1
-        for dts in subdatasets[:-1]:
-            rastercount = gdal.Open(dts[0]).RasterCount
-            for i in range(rastercount):
-                band_name = dts[0].split(':')[-1]
-
-                # Only do specified bands if specified
-                if self.black_list is not None:
-                    if re.search(self.black_list, band_name) is not None:
-                        continue
-
-                if self.white_list is not None:
-                    if re.search(self.white_list, band_name) is None:
-                        continue
-
-                if rastercount == 1:
-                    out_fname = prefix + '_' + band_name + '.tif'
-                else:
-                    out_fname = prefix + '_' + band_name + '_' + str(i + 1) + '.tif'
-
-                # Check the done files might need a force option later
-                if exists(out_fname):
-                    if self._check_tif(out_fname):
-                        continue
-
-                # Resampling method of this band
+            if band_name in self.no_overviews:
                 resampling_method = None
-                if self.bands_rsp is not None:
-                    resampling_method = self.bands_rsp.get(band_name)
-                if resampling_method is None:
-                    resampling_method = self.default_rsp
-                if self.nonpym_list is not None:
-                    if re.search(self.nonpym_list, band_name) is not None:
-                        resampling_method = None
 
-                # Note: DEFLATE compression while more efficient than LZW can cause compatibility issues
-                #       with some software packages
-                #       DEFLATE or LZW can be used for lossless compression, or
-                #       JPEG for lossy compression
-                default_profile = {'driver': 'GTiff',
-                                   'interleave': 'pixel',
-                                   'tiled': True,
-                                   'blockxsize': 512,  # 256 or 512 pixels
-                                   'blockysize': 512,  # 256 or 512 pixels
-                                   'compress': 'DEFLATE',
-                                   'predictor': self.predictor,
-                                   'copy_src_overviews': True,
-                                   'zlevel': 9}
-
-                cog_translate(dts[0], out_fname,
-                              default_profile,
-                              indexes=[i + 1],
-                              overview_resampling=resampling_method,
-                              config=DEFAULT_GDAL_CONFIG)
-
-        dataset_array = xarray.open_dataset(input_file)
-
-        # Create a single yaml file for a sub-dataset (consolidated one for a band group)
-        self._dataset_to_yaml(prefix, dataset_array, rastercount)
-        # Clean up XML files from GDAL
-        # GDAL creates extra XML files which we don't want
+            cog_translate(dts[0], str(out_fname),
+                          profile,
+                          indexes=[part_index + 1],
+                          overview_resampling=resampling_method,
+                          config=DEFAULT_GDAL_CONFIG)
 
     def _check_tif(self, fname):
         try:
-            cog_tif = gdal.Open(fname, gdal.GA_ReadOnly)
+            cog_tif = gdal.Open(str(fname), gdal.GA_ReadOnly)
             srcband = cog_tif.GetRasterBand(1)
             t_stats = srcband.GetStatistics(True, True)
-        except Exception as exp:
-            print(f"Exception: {exp}", file=sys.stderr)
+        except Exception:
+            LOG.exception(f"Exception opening {fname}")
             return False
 
         if t_stats > [0.] * 4:
@@ -287,6 +227,7 @@ def cog_translate(
         Raster band indexes to copy.
     overview_level : int, optional (default: 6)
         COGEO overview (decimation) level
+    overview_resampling : str, [average, nearest, mode]
     config : dict
         Rasterio Env options.
 
@@ -337,8 +278,7 @@ def cog_translate(
 
                     try:
                         copy(mem, dst_path, **dst_kwargs)
-                        print(f"Created a cloud optimized GeoTIFF file, {dst_path}")
-                    except Exception as exp:
-                        print(f"Error while creating a cloud optimized GeoTIFF file, {dst_path}\n\t{exp}",
-                              file=sys.stderr)
+                        LOG.info(f"Created a cloud optimized GeoTIFF file, {dst_path}")
+                    except Exception:
+                        LOG.exception(f"Error while creating a cloud optimized GeoTIFF file, {dst_path}")
                         raise
