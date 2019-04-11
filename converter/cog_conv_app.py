@@ -494,7 +494,7 @@ def verify(path, rm_broken):
 
     if path.is_dir():
         # Non-lazy recursive search for geotiffs
-        gtiff_file_list = Path(path).rglob("*.tif")
+        gtiff_file_list = Path(path).rglob("*.[tT][iI][fF]")
         gtiff_file_list = list(gtiff_file_list)
     else:
         # Read filenames to check from a file

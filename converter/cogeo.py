@@ -84,7 +84,7 @@ class NetCDFCOGConverter:
             _, part_index = part_no.split('=')
             part_index = int(part_index)
 
-        if not input_file.endswith('.nc'):
+        if not Path(input_file).match("*.[nN][cC]"):
             raise COGException("COG Converter only works with NetCDF datasets.")
 
         yaml_fname = output_prefix.with_suffix('.yaml')
@@ -124,7 +124,6 @@ class NetCDFCOGConverter:
                     invalid_band.append(band_name)
                     continue
 
-            # TODO WTF
             if self.white_list is not None:
                 if re.search(self.white_list, band_name) is None:
                     invalid_band.append(band_name)
@@ -238,7 +237,9 @@ def cog_translate(
     src = gdal.Open(src_path, gdal.GA_ReadOnly)
     band = src.GetRasterBand(1)
     nodata = band.GetNoDataValue()
-    if band.DataType == gdal.GDT_Byte and band.GetNoDataValue() < 0:
+
+    # Update nodata mask only if nodata is a negative integer value
+    if band.DataType == gdal.GDT_Byte and nodata and nodata < 0:
         nodata_mask = 255
 
     with rasterio.Env(**config):
