@@ -571,7 +571,7 @@ def qsub_cog(product_name, s3_output_url, output_dir, time_range, inventory_mani
       $ module use /g/data/v10/public/modules/modulefiles/
       $ module load dea
     """
-    with open(ROOT_DIR / 'aws_products_config.yaml') as fd:
+    with open(YAMLFILE_PATH) as fd:
         _CFG = yaml.load(fd)
     task_file = str(Path(output_dir) / product_name) + TASK_FILE_EXT
 
@@ -581,8 +581,8 @@ def qsub_cog(product_name, s3_output_url, output_dir, time_range, inventory_mani
     # Fetch S3 inventory list and save it in a pickle file
     # language=bash
     s3_inv_job = _submit_qsub_job(
-        f'qsub -N save_s3_list_{product_name} -v PRODUCT={product_name},OUT_DIR={output_dir},'
-        f'S3_INV={inventory_manifest} run_save_task.sh'
+        f'qsub -N save_s3_list_{product_name} -v PRODUCT={product_name},OUT_DIR={output_dir},ROOT_DIR={ROOT_DIR},'
+        f'S3_INV={inventory_manifest} {ROOT_DIR}/run_save_task.sh'
     )
 
     pickle_file = Path(output_dir) / (product_name + PICKLE_FILE_EXT)
@@ -591,15 +591,15 @@ def qsub_cog(product_name, s3_output_url, output_dir, time_range, inventory_mani
     file_list_job = _submit_qsub_job(
         f'qsub -N generate_work_list_{product_name} -W depend=afterok:{s3_inv_job}: '
         f'-v PRODUCT_NAME={product_name},OUTPUT_DIR={output_dir},ROOT_DIR={ROOT_DIR},'
-        f'TIME_RANGE=\'{time_range}\',PICKLE_FILE={pickle_file.as_posix()} run_generate_work_list.sh'
+        f'TIME_RANGE=\'{time_range}\',PICKLE_FILE={pickle_file.as_posix()} {ROOT_DIR}/run_generate_work_list.sh'
     )
 
     # Run cogger
     # language=bash
     cogger_job = _submit_qsub_job(
         f'qsub -N mpi_{product_name} -W depend=afterok:{file_list_job}: '
-        f'-v PRODUCT={product_name},OUTPUT_DIR={(Path(output_dir) / product_name).as_posix()},'
-        f'FILE_LIST={task_file} run_cogger.sh'
+        f'-v PRODUCT={product_name},OUTPUT_DIR={(Path(output_dir) / product_name).as_posix()},ROOT_DIR={ROOT_DIR},'
+        f'FILE_LIST={task_file} {ROOT_DIR}/run_cogger.sh'
     )
 
     if s3_output_url:
@@ -610,14 +610,15 @@ def qsub_cog(product_name, s3_output_url, output_dir, time_range, inventory_mani
     # Verify the converted cog files are in correct format
     # language=bash
     verify_job = _submit_qsub_job(
-        f'qsub -N verify_{product_name} -W depend=afterany:{cogger_job}: -v OUTPUT_DIR={output_dir} run_verify.sh'
+        f'qsub -N verify_{product_name} -W depend=afterany:{cogger_job}: -v OUTPUT_DIR={output_dir},'
+        f'ROOT_DIR={ROOT_DIR} {ROOT_DIR}/run_verify.sh'
     )
 
     # Upload verified cog files to AWS S3
     # language=bash
     _submit_qsub_job(
         f'qsub -N awssync_{product_name} -W depend=afterok:{verify_job}: -v AWS_PROFILE={aws_profile},'
-        f'OUT_DIR={(Path(output_dir) / product_name).as_posix()},S3_BUCKET={s3_output} run_s3_upload.sh'
+        f'OUT_DIR={(Path(output_dir) / product_name).as_posix()},S3_BUCKET={s3_output} {ROOT_DIR}/run_s3_upload.sh'
     )
 
 
