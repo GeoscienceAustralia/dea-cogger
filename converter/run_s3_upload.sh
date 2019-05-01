@@ -6,7 +6,7 @@
 #PBS -m abe -M nci.monitor@dea.ga.gov.au
 
 ## specify AWS_PROFILE, OUT_DIR, and S3_BUCKET using qsub -v option
-## eg qsub -v AWS_PROFILE='default',OUT_DIR=/tempdir/,S3_BUCKET='s3://bucketname/' run_aws_sync.sh
+## eg qsub -v AWS_PROFILE='default',OUT_DIR=/tempdir/,S3_BUCKET='s3://bucketname/' run_s3_upload.sh
 
 set -xe
 
