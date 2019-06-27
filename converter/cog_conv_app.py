@@ -8,7 +8,6 @@ import socket
 import subprocess
 import sys
 from functools import partial
-from os.path import split, basename
 from pathlib import Path
 import pandas as pd
 
@@ -378,8 +377,8 @@ def generate_work_list(product_name, output_dir, pickle_file, time_range, config
     worklist_df = pd.DataFrame()
 
     for uri, dest_dir, new_s3_yamlfile_path in get_dataset_values(product_name,
-                                                              config['products'][product_name],
-                                                              parse_expressions(time_range)):
+                                                                  config['products'][product_name],
+                                                                  parse_expressions(time_range)):
         if uri:
             temp_df = pd.DataFrame({'yamlfile_path': [new_s3_yamlfile_path],
                                     'uri': [uri.split('file://')[1]],
