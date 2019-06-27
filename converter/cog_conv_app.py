@@ -10,6 +10,8 @@ import sys
 from functools import partial
 from os.path import split, basename
 from pathlib import Path
+import pandas as pd
+import numpy as np
 
 import click
 import dateutil.parser
@@ -373,22 +375,27 @@ def generate_work_list(product_name, output_dir, pickle_file, time_range, config
     with open(pickle_file, "rb") as pickle_in_fl:
         s3_file_list = pickle.load(pickle_in_fl)
 
-    dc_workgen_list = dict()
+    out_file = Path(output_dir) / (product_name + TASK_FILE_EXT)
+    worklist_df = pd.DataFrame()
 
     for uri, dest_dir, dc_yamlfile_path in get_dataset_values(product_name,
                                                               config['products'][product_name],
                                                               parse_expressions(time_range)):
         if uri:
-            dc_workgen_list[dc_yamlfile_path] = (uri.split('file://')[1], dest_dir)
+            temp_df = pd.DataFrame({'yamlfile_path': [dc_yamlfile_path],
+                                    'uri': [uri.split('file://')[1]],
+                                    'dest_dir': [dest_dir]})
+            worklist_df = worklist_df.append(temp_df, ignore_index=True)
 
-    work_list = set(dc_workgen_list.keys()) - set(s3_file_list)
-    out_file = Path(output_dir) / (product_name + TASK_FILE_EXT)
+    # Compare yaml files on disk with yaml files on S3 bucket
+    work_list = set(worklist_df['yamlfile_path']) - set(s3_file_list)
 
     with open(out_file, 'w', newline='') as fp:
         csv_writer = csv.writer(fp, quoting=csv.QUOTE_MINIMAL)
         for s3_filepath in work_list:
-            # dict_value shall contain uri value and s3 output directory path template
-            input_file, dest_dir = dc_workgen_list.get(s3_filepath, (None, None))
+            input_file = worklist_df.loc[worklist_df['yamlfile_path'] == s3_filepath, 'uri'].values[0]
+            dest_dir = worklist_df.loc[worklist_df['yamlfile_path'] == s3_filepath, 'dest_dir'].values[0]
+
             if input_file:
                 LOG.info(f"File does not exists in S3, add to processing list: {input_file}")
                 csv_writer.writerow((input_file, dest_dir))
