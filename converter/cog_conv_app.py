@@ -11,7 +11,6 @@ from functools import partial
 from os.path import split, basename
 from pathlib import Path
 import pandas as pd
-import numpy as np
 
 import click
 import dateutil.parser
@@ -215,7 +214,7 @@ def check_prefix_from_query_result(result, product_config):
         params['end_time'] = result.time.upper
 
     cog_file_uri_prefix = product_config['prefix'] + '/' + product_config['name_template'].format(**params)
-    new_s3_yamlfile = split(cog_file_uri_prefix)[0] + '/' + basename(result.uri).split('.')[0] + '.yaml'
+    new_s3_yamlfile = cog_file_uri_prefix + '.yaml'
     return result.uri, product_config['name_template'].format(**params), new_s3_yamlfile
 
 
@@ -378,11 +377,11 @@ def generate_work_list(product_name, output_dir, pickle_file, time_range, config
     out_file = Path(output_dir) / (product_name + TASK_FILE_EXT)
     worklist_df = pd.DataFrame()
 
-    for uri, dest_dir, dc_yamlfile_path in get_dataset_values(product_name,
+    for uri, dest_dir, new_s3_yamlfile_path in get_dataset_values(product_name,
                                                               config['products'][product_name],
                                                               parse_expressions(time_range)):
         if uri:
-            temp_df = pd.DataFrame({'yamlfile_path': [dc_yamlfile_path],
+            temp_df = pd.DataFrame({'yamlfile_path': [new_s3_yamlfile_path],
                                     'uri': [uri.split('file://')[1]],
                                     'dest_dir': [dest_dir]})
             worklist_df = worklist_df.append(temp_df, ignore_index=True)
