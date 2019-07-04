@@ -97,16 +97,16 @@ products:
     default_resampling: average
 
   ga_ls5t_ard_3:
-    prefix: ga_landsat_ard_3/ga_ls5t_ard_3/v3.0.0
+    prefix: ga_landsat_ard_3/v3.0.0/ga_ls5t_ard_3
     name_template: {x}/{y}/{time:%Y/%m/%d}
     default_resampling: average
 
   ga_ls7t_ard_3:
-    prefix: ga_landsat_ard_3/ga_ls7t_ard_3/v3.0.0
+    prefix: ga_landsat_ard_3/v3.0.0/ga_ls7t_ard_3
     name_template: {x}/{y}/{time:%Y/%m/%d}
     default_resampling: average
 
   ga_ls8t_ard_3:
-    prefix: ga_landsat_ard_3/ga_ls8t_ard_3/v3.0.0
+    prefix: ga_landsat_ard_3/v3.0.0/ga_ls8t_ard_3
     name_template: {x}/{y}/{time:%Y/%m/%d}
     default_resampling: average
