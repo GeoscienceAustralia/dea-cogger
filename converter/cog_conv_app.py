@@ -1,26 +1,30 @@
 #!/usr/bin/env python3
 import csv
+import click
+import dateutil.parser
 import os
 import pickle
 import re
 import shutil
 import socket
 import subprocess
+import structlog
 import sys
+import uuid
+import yaml
+
+from datetime import datetime
 from functools import partial
 from os.path import split, basename
 from pathlib import Path
-
-import click
-import dateutil.parser
-import structlog
-import yaml
+from tqdm import tqdm
+from yaml import CSafeLoader as Loader, CSafeDumper as Dumper
 from aws_inventory import list_inventory
 from aws_s3_client import make_s3_client
 from cogeo import NetCDFCOGConverter
 from datacube import Datacube
 from datacube.ui.expression import parse_expressions
-from tqdm import tqdm
+from datacube.utils.geometry import CRS, Geometry
 
 LOG = structlog.get_logger()
 
@@ -96,6 +100,109 @@ def _convert_cog(product_config, in_filepath, output_prefix):
     """
     convert_to_cog = NetCDFCOGConverter(**product_config)
     convert_to_cog(in_filepath, output_prefix)
+
+
+def _get_boundingbox(metadata_fname):
+    with open(str(metadata_fname)) as fl:
+        metadata = yaml.load(fl)
+    crs = CRS(metadata['crs'])
+    geo = Geometry(metadata['geometry'], crs=crs)
+    spatial_reference = str(crs.wkt)
+
+    left, bottom, right, top = geo.to_crs(CRS('EPSG:4326')).boundingbox
+    lat_lon_coords = {
+        'ul': {'lat': left, 'lon': top},
+        'll': {'lat': left, 'lon': bottom},
+        'ur': {'lat': right, 'lon': top},
+        'lr': {'lat': right, 'lon': bottom},
+    }
+
+    left, bottom, right, top = geo.boundingbox
+    xy_geo_ref_points = {
+        'ul': {'x': left, 'y': top},
+        'll': {'x': left, 'y': bottom},
+        'ur': {'x': right, 'y': top},
+        'lr': {'x': right, 'y': bottom},
+    }
+
+    return xy_geo_ref_points, spatial_reference, lat_lon_coords
+
+
+def _generate_tif_worklist_from_metadata(input_file, product, task_file, outdir):
+    params = dict()
+    with open(YAMLFILE_PATH) as config_file:
+        _CFG = yaml.load(config_file)
+    product_config = _CFG['products'][product]
+
+    with open(input_file) as stream:
+        dataset = yaml.load(stream, Loader=Loader)
+
+    if not dataset:
+        LOG.warning(f"{input_file} file is empty")
+        return
+
+    now = datetime.utcnow()
+    creation_dt = now.strftime('%Y-%m-%dT%H:%M:%S.%f')
+    xy_geo_ref_points, spatial_ref, lat_lon_coords = _get_boundingbox(input_file)
+
+    def _get_measurements(m):
+        m_dict = {}
+        for band, img_path in m.items():
+            m_dict[band] = {'path': str(img_path['path']), 'layer': 1}
+        return m_dict
+
+    dataset_def_template = {
+        'id': str(uuid.uuid4()),
+        'creation_dt': creation_dt,
+        'label': dataset['product']['name'],
+        'product_type': dataset['properties']['odc:product_family'],
+        'platform': {'code': dataset['properties']['eo:platform']},
+        'region': {'code': dataset['properties']['odc:reference_code']},
+        'instrument': {
+            'name': dataset['properties']['eo:instrument']
+        },
+        'extent': {
+            'coord': lat_lon_coords,
+        },
+        'format': {'name': 'GeoTIFF'},
+        'grid_spatial': {
+            'projection': {
+                'geo_ref_points': xy_geo_ref_points,
+                'spatial_reference': spatial_ref,
+            }
+        },
+        'image': {
+            'bands': _get_measurements(dataset['measurements'])
+        },
+        'lineage': {
+            'source_datasets': dataset['lineage']
+        }
+    }
+    params['time'] = dateutil.parser.parse(str(dataset['properties']['datetime']))
+    params['x'] = '{:03d}'.format(dataset['properties']['landsat:wrs_path'])
+    params['y'] = '{:03d}'.format(dataset['properties']['landsat:wrs_row'])
+
+    cog_file_uri_prefix = product_config['name_template'].format(**params)
+
+    with open(task_file, 'a', newline='') as fp:
+        csv_writer = csv.writer(fp, quoting=csv.QUOTE_MINIMAL)
+
+        for bandname, value in dataset_def_template['image']['bands'].items():
+            geotif_in_flpath = Path(input_file).parent / value['path']
+            geotif_out_flpath = cog_file_uri_prefix
+            csv_writer.writerow((geotif_in_flpath, geotif_out_flpath))
+
+    dest_path = Path(outdir) / cog_file_uri_prefix
+    dest_path.mkdir(parents=True, exist_ok=True)
+    yaml_out_fpath = (dest_path / Path(input_file).stem).with_suffix(".dc1.7_compatible.yaml")
+    input_yamlfiles = Path(input_file).parent.rglob("*.yaml")
+
+    for yamlfile in list(input_yamlfiles):
+        shutil.copy(str(yamlfile), str(dest_path / yamlfile.name))
+
+    with open(yaml_out_fpath, 'w+') as fp:
+        yaml.dump(dataset_def_template, fp, default_flow_style=False, Dumper=Dumper)
+        LOG.debug(f"Created yaml file, {yaml_out_fpath}")
 
 
 def validate_time_range(context, param, value):
@@ -440,8 +547,9 @@ def mpi_convert(product_name, output_dir, config, filelist):
                 _convert_cog(product_config, in_filepath,
                              Path(output_dir) / s3_dirsuffix.strip())
                 LOG.info(f'Successfully converted', filepath=in_filepath)
-            except Exception:
+            except Exception as exp:
                 LOG.exception('Unable to convert', filepath=in_filepath)
+                raise
 
 
 def _mpi_init():
@@ -543,7 +651,8 @@ def verify(path, rm_broken):
 @time_range_options
 @s3_inv_option
 @aws_profile_option
-def qsub_cog(product_name, s3_output_url, output_dir, time_range, inventory_manifest, aws_profile):
+@click.option('--file-dir', '-y', help='Yaml files directory', default=None)
+def qsub_cog(product_name, s3_output_url, output_dir, time_range, inventory_manifest, aws_profile, file_dir):
     """
     Submits an COG conversion job, using a five stage PBS job submission.
     Uses a configuration file to define the file naming schema.
@@ -571,41 +680,66 @@ def qsub_cog(product_name, s3_output_url, output_dir, time_range, inventory_mani
       $ module use /g/data/v10/public/modules/modulefiles/
       $ module load dea
     """
+    work_dir = Path(output_dir) / product_name / "cache"
+
     with open(YAMLFILE_PATH) as fd:
         _CFG = yaml.load(fd)
-    task_file = str(Path(output_dir) / product_name) + TASK_FILE_EXT
+    task_file = str(work_dir.parent / product_name) + TASK_FILE_EXT
+    pickle_file = str(work_dir.parent / product_name) + PICKLE_FILE_EXT
 
     # Make output directory specific to the a product (if it does not exists)
-    (Path(output_dir) / product_name).mkdir(parents=True, exist_ok=True)
+    work_dir.mkdir(parents=True, exist_ok=True)
 
-    # Fetch S3 inventory list and save it in a pickle file
-    # language=bash
-    s3_inv_job = _submit_qsub_job(
-        f'qsub -N save_s3_list_{product_name} -v PRODUCT={product_name},OUT_DIR={output_dir},ROOT_DIR={ROOT_DIR},'
-        f'S3_INV={inventory_manifest} {ROOT_DIR}/run_save_task.sh'
-    )
+    if product_name in ('ga_ls5t_ard_3', 'ga_ls7t_ard_3', 'ga_ls8t_ard_3'):
+        try:
+            Path(task_file).unlink()  # Remove task file if it exists
+        except FileNotFoundError:
+            pass
 
-    pickle_file = Path(output_dir) / (product_name + PICKLE_FILE_EXT)
-    # Generate work list from S3 inventory and ODC database
-    # language=bash
-    file_list_job = _submit_qsub_job(
-        f'qsub -N generate_work_list_{product_name} -W depend=afterok:{s3_inv_job}: '
-        f'-v PRODUCT_NAME={product_name},OUTPUT_DIR={output_dir},ROOT_DIR={ROOT_DIR},'
-        f'TIME_RANGE=\'{time_range}\',PICKLE_FILE={pickle_file.as_posix()} {ROOT_DIR}/run_generate_work_list.sh'
-    )
+        # Generate work list from yaml file
+        # language=bash
+        for fpath, subdirs, files in os.walk(Path(file_dir)):
+            for fname in files:
+                if fname.endswith('odc-metadata.yaml'):
+                    _generate_tif_worklist_from_metadata(Path(fpath) / fname,
+                                                         product_name,
+                                                         task_file,
+                                                         work_dir)
+
+        # We have finished work list generation
+        # Submit test qsub job and capture its job id
+        file_list_job = _submit_qsub_job(
+            f'qsub -N generate_work_list_{product_name} -P v10 -q express -- /bin/bash -l -c "echo worklist generated"'
+        )
+    else:
+        # Fetch S3 inventory list and save it in a pickle file
+        # language=bash
+        s3_inv_job = _submit_qsub_job(
+            f'qsub -N save_s3_list_{product_name} -v PRODUCT={product_name},OUT_DIR={work_dir.parent},'
+            f'ROOT_DIR={ROOT_DIR},S3_INV={inventory_manifest} {ROOT_DIR}/run_save_task.sh'
+        )
+
+        # Generate work list from S3 inventory and ODC database
+        # language=bash
+        file_list_job = _submit_qsub_job(
+            f'qsub -N generate_work_list_{product_name} -W depend=afterok:{s3_inv_job}: '
+            f'-v PRODUCT_NAME={product_name},OUTPUT_DIR={work_dir.parent},ROOT_DIR={ROOT_DIR},'
+            f'TIME_RANGE=\'{time_range}\',PICKLE_FILE={pickle_file.as_posix()} {ROOT_DIR}/run_generate_work_list.sh'
+        )
 
     # Run cogger
     # language=bash
     cogger_job = _submit_qsub_job(
         f'qsub -N mpi_{product_name} -W depend=afterok:{file_list_job}: '
-        f'-v PRODUCT={product_name},OUTPUT_DIR={(Path(output_dir) / product_name).as_posix()},ROOT_DIR={ROOT_DIR},'
+        f'-v PRODUCT={product_name},OUTPUT_DIR={work_dir.as_posix()},ROOT_DIR={ROOT_DIR},'
         f'FILE_LIST={task_file} {ROOT_DIR}/run_cogger.sh'
     )
 
     if s3_output_url:
         s3_output = s3_output_url
     else:
-        s3_output = 's3://dea-public-data/' + _CFG['products'][product_name]['prefix']
+        s3_output = 's3://dea-public-data/'
+    s3_output = s3_output + _CFG['products'][product_name]['prefix']
 
     # Verify the converted cog files are in correct format
     # language=bash
@@ -618,7 +752,7 @@ def qsub_cog(product_name, s3_output_url, output_dir, time_range, inventory_mani
     # language=bash
     _submit_qsub_job(
         f'qsub -N awssync_{product_name} -W depend=afterok:{verify_job}: -v AWS_PROFILE={aws_profile},'
-        f'OUT_DIR={(Path(output_dir) / product_name).as_posix()},S3_BUCKET={s3_output} {ROOT_DIR}/run_s3_upload.sh'
+        f'OUT_DIR={work_dir.as_posix()},S3_BUCKET={s3_output} {ROOT_DIR}/run_s3_upload.sh'
     )
 
 

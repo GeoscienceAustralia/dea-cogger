@@ -41,7 +41,7 @@ if [[ -s ~/.aws/credentials ]]; then
 
         # Recursively sync all the files under a specified directory to S3 bucket excluding specified file formats
         aws s3 sync "$OUT_DIR" "$S3_BUCKET" --exclude "*.pickle" --exclude "*.txt" --exclude "*file_list*" \
-        --exclude "*.log"
+        --exclude "*.log" --exclude '*.xml'
 
         # Remove cog converted files after aws s3 sync
         rm -r "$OUT_DIR"

@@ -95,3 +95,18 @@ products:
     prefix: mangrove_cover
     name_template: "{x}_{y}/MANGROVE_COVER_3577_{x}_{y}_{time:%Y%m%d}"
     default_resampling: average
+
+  ga_ls5t_ard_3:
+    prefix: ga_landsat_ard_3/ga_ls5t_ard_3/v3.0.0
+    name_template: x_{x}/y_{y}/{time:%Y/%m/%d}
+    default_resampling: average
+
+  ga_ls7t_ard_3:
+    prefix: ga_landsat_ard_3/ga_ls7t_ard_3/v3.0.0
+    name_template: x_{x}/y_{y}/{time:%Y/%m/%d}
+    default_resampling: average
+
+  ga_ls8t_ard_3:
+    prefix: ga_landsat_ard_3/ga_ls8t_ard_3/v3.0.0
+    name_template: x_{x}/y_{y}/{time:%Y/%m/%d}
+    default_resampling: average

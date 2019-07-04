@@ -84,13 +84,19 @@ class NetCDFCOGConverter:
             _, part_index = part_no.split('=')
             part_index = int(part_index)
 
-        if not Path(input_file).match("*.[nN][cC]"):
-            raise COGException("COG Converter only works with NetCDF datasets.")
+        if not (Path(input_file).match("*.[nN][cC]") or Path(input_file).match("*.[tT][iI][fF]")):
+            raise COGException("COG Converter only works with NetCDF / tif datasets")
 
         yaml_fname = output_prefix.with_suffix('.yaml')
 
         if yaml_fname.exists():
             raise COGException(f'Dataset Document {yaml_fname} already exists.')
+
+        if Path(input_file).match("*.[tT][iI][fF]"):
+            LOG.info(f"Converting {input_file} file")
+            # Extract each band from the input file and write to individual GeoTIFF files
+            self._tif_to_cogtiff(input_file, output_prefix)
+            return
 
         # Extract each band from the input file and write to individual GeoTIFF files
         self._netcdf_to_cogs(input_file, part_index, output_prefix)
@@ -185,6 +191,47 @@ class NetCDFCOGConverter:
                           indexes=[part_index + 1],
                           overview_resampling=resampling_method,
                           config=DEFAULT_GDAL_CONFIG)
+
+    def _tif_to_cogtiff(self, in_fpath, out_fpath):
+        """ Convert the Geotiff to COG using cogeo cog_translate module
+            Blocksize is 512
+            TILED <boolean>: Switch to tiled format
+            COPY_SRC_OVERVIEWS <boolean>: Force copy of overviews of source dataset
+            COMPRESS=[NONE/DEFLATE]: Set the compression to use. DEFLATE is only available if NetCDF has been compiled with
+                      NetCDF-4 support. NC4C format is the default if DEFLATE compression is used.
+            ZLEVEL=[1-9]: Set the level of compression when using DEFLATE compression. A value of 9 is best,
+                          and 1 is least compression. The default is 1, which offers the best time/compression ratio.
+            BLOCKXSIZE <int>: Tile Width
+            BLOCKYSIZE <int>: Tile/Strip Height
+            PREDICTOR <int>: Predictor Type (1=default, 2=horizontal differencing, 3=floating point prediction)
+            PROFILE <string-select>: possible values: GDALGeoTIFF,GeoTIFF,BASELINE,
+        """
+        os.environ['GDAL_DISABLE_READDIR_ON_OPEN'] = 'YES'
+        os.environ['CPL_VSIL_CURL_ALLOWED_EXTENSIONS'] = '.TIF'
+
+        # Note: DEFLATE compression while more efficient than LZW can cause compatibility issues
+        #       with some software packages
+        #       DEFLATE or LZW can be used for lossless compression, or
+        #       JPEG for lossy compression
+        default_profile = {'driver': 'GTiff',
+                           'interleave': 'pixel',
+                           'tiled': True,
+                           'blockxsize': 512,  # 256 or 512 pixels
+                           'blockysize': 512,  # 256 or 512 pixels
+                           'compress': 'DEFLATE',
+                           'predictor': self.predictor,
+                           'copy_src_overviews': True,
+                           'zlevel': 9}
+
+        out_fpath.mkdir(parents=True, exist_ok=True)
+        out_fname = out_fpath / Path(in_fpath).name
+
+        cog_translate(in_fpath, str(out_fname),
+                      default_profile,
+                      indexes=[1],
+                      overview_resampling=self.default_resampling,
+                      overview_level=6,
+                      config=DEFAULT_GDAL_CONFIG)
 
     def _check_tif(self, fname):
         try:
