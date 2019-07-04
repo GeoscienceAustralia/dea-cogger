@@ -690,7 +690,7 @@ def qsub_cog(product_name, s3_output_url, output_dir, time_range, inventory_mani
     # Make output directory specific to the a product (if it does not exists)
     work_dir.mkdir(parents=True, exist_ok=True)
 
-    if product_name in ('ga_ls5t_ard_3', 'ga_ls7t_ard_3', 'ga_ls8t_ard_3'):
+    if product_name in ('ga_ls5t_ard_3', 'ga_ls7e_ard_3', 'ga_ls8c_ard_3'):
         try:
             Path(task_file).unlink()  # Remove task file if it exists
         except FileNotFoundError:
@@ -724,7 +724,7 @@ def qsub_cog(product_name, s3_output_url, output_dir, time_range, inventory_mani
         file_list_job = _submit_qsub_job(
             f'qsub -N generate_work_list_{product_name} -W depend=afterok:{s3_inv_job}: '
             f'-v PRODUCT_NAME={product_name},OUTPUT_DIR={work_dir.parent},ROOT_DIR={ROOT_DIR},'
-            f'TIME_RANGE=\'{time_range}\',PICKLE_FILE={pickle_file.as_posix()} {ROOT_DIR}/run_generate_work_list.sh'
+            f'TIME_RANGE=\'{time_range}\',PICKLE_FILE={pickle_file} {ROOT_DIR}/run_generate_work_list.sh'
         )
 
     # Run cogger
