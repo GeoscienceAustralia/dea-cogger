@@ -744,7 +744,7 @@ def qsub_cog(product_name, s3_output_url, output_dir, time_range, inventory_mani
     # Verify the converted cog files are in correct format
     # language=bash
     verify_job = _submit_qsub_job(
-        f'qsub -N verify_{product_name} -W depend=afterany:{cogger_job}: -v OUTPUT_DIR={output_dir},'
+        f'qsub -N verify_{product_name} -W depend=afterany:{cogger_job}: -v OUTPUT_DIR={work_dir},'
         f'ROOT_DIR={ROOT_DIR} {ROOT_DIR}/run_verify.sh'
     )
 
