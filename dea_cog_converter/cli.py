@@ -15,9 +15,9 @@ import click
 import dateutil.parser
 import structlog
 import yaml
-from aws_inventory import list_inventory
-from aws_s3_client import make_s3_client
-from cogeo import NetCDFCOGConverter
+from dea_cog_converter.aws_inventory import list_inventory
+from dea_cog_converter.aws_s3_client import make_s3_client
+from dea_cog_converter.netcdf_cogger import NetCDFCOGConverter
 from datacube import Datacube
 from datacube.ui.expression import parse_expressions
 from tqdm import tqdm
@@ -239,14 +239,18 @@ def cli():
         event_dict["pid"] = proc_id
         return event_dict
 
-    from mpi4py import MPI
-    mpi_rank = MPI.COMM_WORLD.rank  # Rank of this process
-    mpi_size = MPI.COMM_WORLD.size  # Rank of this process
+    try:
+        from mpi4py import MPI
+        mpi_rank = MPI.COMM_WORLD.rank  # Rank of this process
+        mpi_size = MPI.COMM_WORLD.size  # Rank of this process
 
-    def add_mpi_rank(_, logger, event_dict):
-        if mpi_size > 1:
-            event_dict['mpi_rank'] = mpi_rank
-        return event_dict
+        def add_mpi_rank(_, logger, event_dict):
+            if mpi_size > 1:
+                event_dict['mpi_rank'] = mpi_rank
+            return event_dict
+    except ImportError:
+        def add_mpi_rank(_, __, event_dict):
+            return event_dict
 
     def tqdm_logger_factory():
         return TQDMLogger()
@@ -308,11 +312,11 @@ def convert(product_name, output_dir, config, filelist):
         LOG.warning('Task file is empty')
         sys.exit(1)
 
-    cog_converter = NetCDFCOGConverter(**product_config)
+    convert_to_cog = NetCDFCOGConverter(**product_config)
     LOG.info("Running with single process")
 
     for in_filepath, out_prefix in tasks:
-        cog_converter(in_filepath, Path(output_dir) / out_prefix)
+        convert_to_cog(in_filepath, Path(output_dir) / out_prefix)
 
 
 @cli.command(name='save-s3-inventory', help="Save S3 inventory list in a pickle file")

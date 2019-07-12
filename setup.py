@@ -1,7 +1,7 @@
-from setuptools import setup, find_packages
+from setuptools import setup
 
 setup(
-    name='dea-cog-dea_cog_converter',
+    name='dea-cog-converter',
     version='0.2',
     license='Apache License 2.0',
     packages=['dea_cog_converter'],
@@ -24,7 +24,7 @@ setup(
         'datacube',
         'tqdm',
         'mpi4py',
-        'python-dateutils',
+        'python-dateutil',
         'rasterio>=1.0.22',
     ],
     entry_points={

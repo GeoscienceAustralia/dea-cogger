@@ -4,7 +4,7 @@ from gzip import GzipFile
 import csv
 import json
 
-from aws_s3_client import make_s3_client, s3_fetch, s3_ls_dir
+from .aws_s3_client import make_s3_client, s3_fetch, s3_ls_dir
 
 
 def _find_latest_manifest(prefix, s3):
