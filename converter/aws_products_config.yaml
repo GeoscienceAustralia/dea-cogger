@@ -95,3 +95,18 @@ products:
     prefix: mangrove_cover
     name_template: "{x}_{y}/MANGROVE_COVER_3577_{x}_{y}_{time:%Y%m%d}"
     default_resampling: average
+
+  ls8_pq_albers:
+    prefix: projects/LCCS/pq/v2.0.0/ls8
+    name_template: x_{x}/y_{y}/{time:%Y}/{time:%m}/{time:%d}/LS8_PQ_3577_{x}_{y}_{time:%Y%m%d%H%M%S%f}
+    default_resampling: nearest
+
+  ls7_pq_albers:
+    prefix: projects/LCCS/pq/v2.0.0/ls7
+    name_template: x_{x}/y_{y}/{time:%Y}/{time:%m}/{time:%d}/LS7_PQ_3577_{x}_{y}_{time:%Y%m%d%H%M%S%f}
+    default_resampling: nearest
+
+  ls5_pq_albers:
+    prefix: projects/LCCS/pq/v2.0.0/ls5
+    name_template: x_{x}/y_{y}/{time:%Y}/{time:%m}/{time:%d}/LS5_PQ_3577_{x}_{y}_{time:%Y%m%d%H%M%S%f}
+    default_resampling: nearest
