@@ -74,7 +74,7 @@ def _submit_qsub_job(command):
         for line in proc_output.stdout.split(os.linesep):
             try:
                 log_value = line.encode('ascii').decode('utf-8')
-                if '.r-man2' in log_value:
+                if '.gadi-pbs' in log_value:
                     return log_value
             except UnicodeEncodeError:
                 pass
