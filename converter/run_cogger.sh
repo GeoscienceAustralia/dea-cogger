@@ -1,5 +1,5 @@
 #!/bin/bash
-#PBS -l wd,walltime=5:00:00,mem=6200GB,ncpus=1600,jobfs=1GB
+#PBS -l wd,walltime=10:00:00,mem=4000GB,ncpus=1200,jobfs=5GB
 #PBS -P v10
 #PBS -q normal
 #PBS -lother=gdata1:gdata2
