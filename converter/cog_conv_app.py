@@ -411,7 +411,7 @@ def mpi_convert(product_name, output_dir, config, filelist):
     Before using this command, execute the following:
       $ module use /g/data/v10/public/modules/modulefiles/
       $ module load dea
-      $ module load openmpi/3.1.2
+      $ module load openmpi/4.0.1
     """
     job_rank, job_size = _mpi_init()
 

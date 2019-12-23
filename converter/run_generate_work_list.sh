@@ -14,7 +14,7 @@ set -xe
 source "$HOME/.bashrc"
 module use /g/data/v10/public/modules/modulefiles/
 module load dea
-module load openmpi/3.1.2
+module load openmpi/4.0.1
 
 cd "$OUTPUT_DIR" || {
   echo "$OUTPUT_DIR" path does not exists

@@ -14,6 +14,6 @@ set -xe
 source "$HOME/.bashrc"
 module use /g/data/v10/public/modules/modulefiles/
 module load dea
-module load openmpi/3.1.2
+module load openmpi/4.0.1
 
 mpirun --tag-output python3 "${ROOT_DIR}"/cog_conv_app.py verify --rm-broken "${OUTPUT_DIR}"
