@@ -7,7 +7,7 @@
 #PBS -m abe -M nci.monitor@dea.ga.gov.au
 
 ## specify PRODUCT_NAME, OUTPUT_DIR, TIME_RANGE, ROOT_DIR, and PICKLE_FILE using qsub -v option
-## eg qsub -v PRODUCT_NAME=ls7_fc_albers,OUTPUT_DIR=/outdir/ls7,TIME_RANGE='1987-01-01 < time < 2019-03-10',ROOT_DIR=/COG-Conversion/converter/,PICKLE_FILE=/dir/ls7_fc_albers_s3_inv_list.pickle run_generate_work_list.sh
+## eg qsub -v PRODUCT_NAME=ls7_fc_albers,OUTPUT_DIR=/outdir/ls7,TIME_RANGE='1987-01-01 < time < 2019-03-10',ROOT_DIR=/COG-Conversion/dea_cogger/,PICKLE_FILE=/dir/ls7_fc_albers_s3_inv_list.pickle run_generate_work_list.sh
 
 set -xe
 

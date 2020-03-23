@@ -18,7 +18,7 @@ pycodestyle --ignore=E122,E711,E701,E501 --max-line-length 120  \
     converter/*.py
 
 # Finds shell scripts based on #!
-readarray -t SHELL_SCRIPTS < <(find converter/*.sh -type f -exec file {} \; | grep "converter" | cut -d: -f1)
+readarray -t SHELL_SCRIPTS < <(find converter/*.sh -type f -exec file {} \; | grep "dea_cogger" | cut -d: -f1)
 shellcheck -e SC1071,SC1090,SC1091 "${SHELL_SCRIPTS[@]}"
 
 # If yamllint is available, validate yaml documents
