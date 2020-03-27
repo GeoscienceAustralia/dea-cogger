@@ -1,0 +1,46 @@
+name: build
+
+on: [push]
+
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+
+    steps:
+    - uses: actions/checkout@v2
+      with:
+        fetch-depth: 0
+
+    - name: Set up Python 3.6
+      uses: actions/setup-python@v1
+      with:
+        python-version: 3.6
+
+    - name: Build Packages
+      run: |
+        python setup.py bdist_wheel sdist
+
+    - name: Install dependencies
+      run: |
+        python -m pip install --upgrade pip
+        pip install -r requirements.txt
+        pip install dist/*.whl
+
+    - name: Lint Code
+      run: |
+        ./check-code.sh
+
+    - name: Publish to dea packages repo
+      if: |
+        github.ref == 'refs/heads/develop'
+        && github.event_name == 'push'
+
+      run: |
+        echo "Using Keys: ...${AWS_ACCESS_KEY_ID:(-4)}/...${AWS_SECRET_ACCESS_KEY:(-4)}"
+        aws s3 cp ./dist/*whl "${S3_DST}/"
+        aws s3 cp ./dist/*tar.gz "${S3_DST}/"
+      env:
+          AWS_ACCESS_KEY_ID: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          S3_DST: 's3://datacube-core-deployment/dea_cogger'

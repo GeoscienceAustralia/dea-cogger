@@ -1,7 +1,6 @@
 #!/usr/bin/env python3
 import csv
 import os
-import pickle
 import shutil
 import socket
 import subprocess
@@ -16,15 +15,15 @@ from datacube.ui.expression import parse_expressions
 from tqdm import tqdm
 
 from dea_cogger.utils import _submit_qsub_job, get_dataset_values, validate_time_range, _convert_cog
-from .aws_inventory import list_inventory
-from .cogeo import NetCDFCOGConverter
+from dea_cogger.aws_inventory import list_inventory
+from dea_cogger.cogeo import NetCDFCOGConverter
 
 LOG = structlog.get_logger()
 
 PACKAGE_DIR = Path(__file__).absolute().parent
 CONFIG_FILE_PATH = PACKAGE_DIR / 'aws_products_config.yaml'
 VALIDATE_GEOTIFF_CMD = PACKAGE_DIR / 'validate_cloud_optimized_geotiff.py'
-PICKLE_FILE_EXT = '_s3_inv_list.pickle'
+S3_LIST_EXT = '_s3_inv_list.txt'
 TASK_FILE_EXT = '_file_list.txt'
 
 # pylint: disable=invalid-name
@@ -49,8 +48,9 @@ s3_inv_option = click.option('--inventory-manifest', '-i',
                              help="The manifest of AWS S3 bucket inventory URL")
 
 # pylint: disable=invalid-name
-s3_pickle_file_option = click.option('--pickle-file', default=None, required=True,
-                                     help='Pickle file containing the list of s3 bucket inventory')
+s3_list = click.option('--s3-list', default=None, required=True,
+                       type=click.Path(exists=True),
+                       help='Text file containing the list of existing s3 keys')
 
 # pylint: disable=invalid-name
 config_file_option = click.option('--config', '-c', default=CONFIG_FILE_PATH,
@@ -69,8 +69,6 @@ time_range_options = click.option('--time-range', callback=validate_time_range, 
 @click.group(help=__doc__,
              context_settings=dict(max_content_width=200))  # Will still shrink to screen width
 def cli():
-    from tqdm import tqdm
-
     # See https://github.com/tqdm/tqdm/issues/313
     hostname = socket.gethostname()
     proc_id = os.getpid()
@@ -80,14 +78,18 @@ def cli():
         event_dict["pid"] = proc_id
         return event_dict
 
-    from mpi4py import MPI
-    mpi_rank = MPI.COMM_WORLD.rank  # Rank of this process
-    mpi_size = MPI.COMM_WORLD.size  # Rank of this process
+    try:
+        from mpi4py import MPI
+        mpi_rank = MPI.COMM_WORLD.rank  # Rank of this process
+        mpi_size = MPI.COMM_WORLD.size  # Rank of this process
 
-    def add_mpi_rank(_, logger, event_dict):
-        if mpi_size > 1:
-            event_dict['mpi_rank'] = mpi_rank
-        return event_dict
+        def add_mpi_rank(_, logger, event_dict):
+            if mpi_size > 1:
+                event_dict['mpi_rank'] = mpi_rank
+            return event_dict
+    except ImportError:
+        def add_mpi_rank(_, __, event_dict):
+            return event_dict
 
     def tqdm_logger_factory():
         return TQDMLogger()
@@ -126,7 +128,8 @@ def cli():
 @click.option('--filelist', '-l', help='List of input file names', default=None)
 def convert(product_name, output_dir, config, filelist):
     """
-    Convert a single or list of input files into Cloud Optimise GeoTIFF format
+    Convert a list of input NetCDF files into Cloud Optimised GeoTIFF format
+
     Uses a configuration file to define the file naming schema.
 
     Before using this command, execute the following:
@@ -172,28 +175,24 @@ def save_s3_inventory(product_name, output_dir, config, inventory_manifest):
       $ module use /g/data/v10/public/modules/modulefiles/
       $ module load dea
     """
-    s3_inv_list_file = set()
     with open(config) as config_file:
         config = yaml.safe_load(config_file)
 
     prefix = config['products'][product_name]['prefix']
-    for result in list_inventory(inventory_manifest):
-        # Get the list for the product we are interested
-        if prefix in result.Key and result.Key.endswith('.yaml'):
-            # Store only metadata configuration files for `set` operation
-            s3_inv_list_file.add(result.Key)
-
-    with open(Path(output_dir) / (product_name + PICKLE_FILE_EXT), "wb") as pickle_out:
-        pickle.dump(s3_inv_list_file, pickle_out)
+    with open(Path(output_dir) / (product_name + S3_LIST_EXT), 'wt') as outfile:
+        for result in list_inventory(inventory_manifest):
+            # Get the list for the product we are interested
+            if prefix in result.Key and result.Key.endswith('.yaml'):
+                outfile.write(result.Key + '\n')
 
 
 @cli.command(name='generate-work-list', help="Generate task list for COG conversion")
 @product_option
 @output_dir_option
-@s3_pickle_file_option
+@s3_list
 @time_range_options
 @config_file_option
-def generate_work_list(product_name, output_dir, pickle_file, time_range, config):
+def generate_work_list(product_name, output_dir, s3_list, time_range, config):
     """
     Compares datacube file uri's against S3 bucket (file names within pickle file) and writes the list of datasets
     for cog conversion into the task file
@@ -206,12 +205,12 @@ def generate_work_list(product_name, output_dir, pickle_file, time_range, config
     with open(config) as config_file:
         config = yaml.safe_load(config_file)
 
-    if pickle_file is None:
+    if s3_list is None:
         # Use pickle file generated by save_s3_inventory function
-        pickle_file = Path(output_dir) / (product_name + PICKLE_FILE_EXT)
+        s3_list = Path(output_dir) / (product_name + S3_LIST_EXT)
 
-    with open(pickle_file, "rb") as pickle_in_fl:
-        s3_file_list = pickle.load(pickle_in_fl)
+    with open(s3_list, "r") as f:
+        existing_s3_keys = f.read().splitlines()
 
     dc_workgen_list = dict()
 
@@ -221,7 +220,7 @@ def generate_work_list(product_name, output_dir, pickle_file, time_range, config
         if uri:
             dc_workgen_list[dc_yamlfile_path] = (uri.split('file://')[1], dest_dir)
 
-    work_list = set(dc_workgen_list.keys()) - set(s3_file_list)
+    work_list = set(dc_workgen_list.keys()) - set(existing_s3_keys)
     out_file = Path(output_dir) / (product_name + TASK_FILE_EXT)
 
     with open(out_file, 'w', newline='') as fp:
@@ -388,12 +387,12 @@ def qsub_cog(product_name, s3_output_url, output_dir, time_range, inventory_mani
     Submits an COG conversion job, using a five stage PBS job submission.
     Uses a configuration file to define the file naming schema.
 
-    Stage 1 (Store S3 inventory list to a pickle file):
+    Stage 1 (Store S3 inventory list to a txt file):
         1) Scan through S3 inventory list and fetch the uploaded file names of the desired product
-        2) Save those file names in a pickle file
+        2) Save those file names in a txt file
 
     Stage 2 (Generate work list for COG conversion):
-           1) Compares datacube file uri's against S3 bucket (file names within pickle file)
+           1) Compares datacube file uri's against S3 bucket (file names within txt file)
            2) Write the list of datasets not found in S3 to the task file
            3) Repeat until all the datasets are compared against those found in S3
 
@@ -418,20 +417,20 @@ def qsub_cog(product_name, s3_output_url, output_dir, time_range, inventory_mani
     # Make output directory specific to the a product (if it does not exists)
     (Path(output_dir) / product_name).mkdir(parents=True, exist_ok=True)
 
-    # Fetch S3 inventory list and save it in a pickle file
+    # Fetch S3 inventory list and save it in a txt file
     # language=bash
     s3_inv_job = _submit_qsub_job(
         f'qsub -N save_s3_list_{product_name} -v PRODUCT={product_name},OUT_DIR={output_dir},ROOT_DIR={PACKAGE_DIR},'
         f'S3_INV={inventory_manifest} {PACKAGE_DIR}/run_save_task.sh'
     )
 
-    pickle_file = Path(output_dir) / (product_name + PICKLE_FILE_EXT)
+    s3_list_file = Path(output_dir) / (product_name + S3_LIST_EXT)
     # Generate work list from S3 inventory and ODC database
     # language=bash
     file_list_job = _submit_qsub_job(
         f'qsub -N generate_work_list_{product_name} -W depend=afterok:{s3_inv_job}: '
         f'-v PRODUCT_NAME={product_name},OUTPUT_DIR={output_dir},ROOT_DIR={PACKAGE_DIR},'
-        f'TIME_RANGE=\'{time_range}\',PICKLE_FILE={pickle_file.as_posix()} {PACKAGE_DIR}/run_generate_work_list.sh'
+        f'TIME_RANGE=\'{time_range}\',S3_LIST={s3_list_file.as_posix()} {PACKAGE_DIR}/run_generate_work_list.sh'
     )
 
     # Run cogger

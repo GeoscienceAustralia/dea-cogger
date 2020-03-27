@@ -22,4 +22,4 @@ cd "$OUTPUT_DIR" || {
 }
 
 python3 "${ROOT_DIR}"/cog_conv_app.py generate-work-list --config "${ROOT_DIR}"/aws_products_config.yaml \
---product-name "$PRODUCT_NAME" --time-range "$TIME_RANGE" --output-dir "$OUTPUT_DIR" --pickle-file "$PICKLE_FILE"
+--product-name "$PRODUCT_NAME" --time-range "$TIME_RANGE" --output-dir "$OUTPUT_DIR" --s3-list "$S3_LIST"
