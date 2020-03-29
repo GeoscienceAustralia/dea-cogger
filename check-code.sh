@@ -14,7 +14,8 @@ pylint -j 2 --reports no \
 # E711: "is None" instead of "= None". Duplicates pylint check.
 # E701: "multiple statements on one line" is buggy as it doesn't understand py 3 types
 # E501: "line too long" duplicates pylint check
-pycodestyle --ignore=E122,E711,E701,E501 --max-line-length 120  \
+# E226: "missing whitespace around arithmetic operator" used throughout vendered cog validator
+pycodestyle --ignore=E122,E711,E701,E501,E226 --max-line-length 120  \
     dea_cogger/*.py
 
 # Finds shell scripts based on #!
