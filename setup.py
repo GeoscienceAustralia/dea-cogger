@@ -2,7 +2,8 @@ from setuptools import setup, find_packages
 
 setup(
     name="dea_cogger",
-    version="0.1",
+    use_scm_version=True,
+    setup_requires=['setuptools_scm', 'wheel'],
     packages=find_packages(),
     url='https://github.com/GeoscienceAustralia/digitalearthau',
     install_requires=[
@@ -23,7 +24,6 @@ setup(
         '': ['*.yaml', '*/*.yaml'],
     },
     include_package_data=True,
-    setup_requires=['wheel'],
     entry_points={
         'console_scripts': [
             'dea-cogger = dea_cogger.cog_conv_app:cli',

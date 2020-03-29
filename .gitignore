@@ -2,3 +2,10 @@
 .idea
 .idea/*
 venv
+
+.eggs
+build
+dist
+
+__pycache__
+*.egg-info
