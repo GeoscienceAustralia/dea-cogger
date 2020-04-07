@@ -99,15 +99,9 @@ def validate_time_range(context, param, value):
         return value
     except SyntaxError:
         raise click.BadParameter('Date range must be in one of the following format as a string:'
-                                 '\n\t1996-01 < time < 1996-12'
-                                 '\n\t1996 < time < 1997'
-                                 '\n\t1996-01-01 < time < 1996-12-31'
-                                 '\n\ttime in 1996'
-                                 '\n\ttime in 1996-12'
-                                 '\n\ttime in 1996-12-31'
-                                 '\n\ttime=1996'
-                                 '\n\ttime=1996-12'
-                                 '\n\ttime=1996-12-31')
+                                 "\n\t'2018-01-01 < time < 2018-12-31'  OR\n"
+                                 "\n\t'time in 2018-12-31'  OR\n"
+                                 "\n\t'time=2018-12-31'")
 
 
 def _convert_cog(product_config, in_filepath, output_prefix):
@@ -167,6 +161,5 @@ def check_prefix_from_query_result(result, product_config):
         params['start_time'] = result.time.lower
         params['end_time'] = result.time.upper
 
-    cog_file_uri_prefix = product_config['prefix'] + '/' + product_config['name_template'].format(**params)
-    new_s3_yamlfile = split(cog_file_uri_prefix)[0] + '/' + basename(result.uri).split('.')[0] + '.yaml'
-    return result.uri, product_config['name_template'].format(**params), new_s3_yamlfile
+    new_basename = product_config['prefix'] + '/' + product_config['name_template'].format(**params)
+    return result.uri, new_basename

@@ -3,8 +3,8 @@
 .idea/*
 venv
 
-.eggs
-build
+.eggs/
+build/
 dist
 
 __pycache__
