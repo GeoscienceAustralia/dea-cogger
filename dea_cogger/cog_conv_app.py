@@ -17,7 +17,7 @@ from tqdm import tqdm
 from datacube.ui.expression import parse_expressions
 from dea_cogger.aws_inventory import list_inventory
 from dea_cogger.cogeo import NetCDFCOGConverter
-from dea_cogger.utils import _submit_qsub_job, get_dataset_values, validate_time_range, _convert_cog
+from dea_cogger.utils import get_dataset_values, validate_time_range, _convert_cog
 
 LOG = structlog.get_logger()
 
@@ -213,7 +213,7 @@ def generate_work_list(product_name, output_dir, s3_list, time_range, config):
     with open(s3_list, "r") as f:
         existing_s3_keys = f.read().splitlines()
 
-    # Mapping from Expected Output YAML -> Input NetCDF File
+    # Mapping from Expected Output YAML Location -> Input NetCDF File
     dc_workgen_list = dict()
 
     for source_uri, new_basename in get_dataset_values(product_name,
@@ -375,92 +375,6 @@ def verify(path, rm_broken):
         for directory in broken_directories:
             LOG.info('Deleting directory', dir=directory)
             shutil.rmtree(directory)
-
-
-@cli.command(name='qsub-cog', help="Kick off five stage COG Conversion PBS job")
-@product_option
-@s3_output_dir_option
-@output_dir_option
-@time_range_options
-@s3_inv_option
-@click.option('--aws-profile', default='default', help='AWS profile name')
-def qsub_cog(product_name, s3_output_url, output_dir, time_range, inventory_manifest, aws_profile):
-    """
-    Submits an COG conversion job, using a five stage PBS job submission.
-    Uses a configuration file to define the file naming schema.
-
-    Stage 1 (Store S3 inventory list to a txt file):
-        1) Scan through S3 inventory list and fetch the uploaded file names of the desired product
-        2) Save those file names in a txt file
-
-    Stage 2 (Generate work list for COG conversion):
-           1) Compares datacube file uri's against S3 bucket (file names within txt file)
-           2) Write the list of datasets not found in S3 to the task file
-           3) Repeat until all the datasets are compared against those found in S3
-
-    Stage 3 (Bulk COG convert using MPI):
-           1) Iterate over the file list and assign MPI worker for processing.
-           2) Split the input file by the number of workers, each MPI worker completes every nth task.
-
-    Stage 4 (Validate COG GeoTIFF files):
-            1) Validate GeoTIFF files and if valid then upload to S3 bucket
-
-    Stage 5 (Run AWS sync to upload files to AWS S3):
-            1) Using aws sync command line tool, sync newly COG converted files to S3 bucket
-
-    Before using this command, execute the following:
-      $ module use /g/data/v10/public/modules/modulefiles/
-      $ module load dea
-    """
-    with open(CONFIG_FILE_PATH) as fd:
-        _CFG = yaml.safe_load(fd)
-    task_file = str(Path(output_dir) / product_name) + TASK_FILE_EXT
-
-    # Make output directory specific to the a product (if it does not exists)
-    (Path(output_dir) / product_name).mkdir(parents=True, exist_ok=True)
-
-    # Fetch S3 inventory list and save it in a txt file
-    # language=bash
-    s3_inv_job = _submit_qsub_job(
-        f'qsub -N save_s3_list_{product_name} -v PRODUCT={product_name},OUT_DIR={output_dir},ROOT_DIR={PACKAGE_DIR},'
-        f'S3_INV={inventory_manifest} {PACKAGE_DIR}/run_save_task.sh'
-    )
-
-    s3_list_file = Path(output_dir) / (product_name + S3_LIST_EXT)
-    # Generate work list from S3 inventory and ODC database
-    # language=bash
-    file_list_job = _submit_qsub_job(
-        f'qsub -N generate_work_list_{product_name} -W depend=afterok:{s3_inv_job}: '
-        f'-v PRODUCT_NAME={product_name},OUTPUT_DIR={output_dir},ROOT_DIR={PACKAGE_DIR},'
-        f'TIME_RANGE=\'{time_range}\',S3_LIST={s3_list_file.as_posix()} {PACKAGE_DIR}/run_generate_work_list.sh'
-    )
-
-    # Run cogger
-    # language=bash
-    cogger_job = _submit_qsub_job(
-        f'qsub -N mpi_{product_name} -W depend=afterok:{file_list_job}: '
-        f'-v PRODUCT={product_name},OUTPUT_DIR={(Path(output_dir) / product_name).as_posix()},ROOT_DIR={PACKAGE_DIR},'
-        f'FILE_LIST={task_file} {PACKAGE_DIR}/run_cogger.sh'
-    )
-
-    if s3_output_url:
-        s3_output = s3_output_url
-    else:
-        s3_output = 's3://dea-public-data/' + _CFG['products'][product_name]['prefix']
-
-    # Verify the converted cog files are in correct format
-    # language=bash
-    verify_job = _submit_qsub_job(
-        f'qsub -N verify_{product_name} -W depend=afterany:{cogger_job}: -v OUTPUT_DIR={output_dir},'
-        f'ROOT_DIR={PACKAGE_DIR} {PACKAGE_DIR}/run_verify.sh'
-    )
-
-    # Upload verified cog files to AWS S3
-    # language=bash
-    _submit_qsub_job(
-        f'qsub -N awssync_{product_name} -W depend=afterok:{verify_job}: -v AWS_PROFILE={aws_profile},'
-        f'OUT_DIR={(Path(output_dir) / product_name).as_posix()},S3_BUCKET={s3_output} {PACKAGE_DIR}/run_s3_upload.sh'
-    )
 
 
 if __name__ == '__main__':
