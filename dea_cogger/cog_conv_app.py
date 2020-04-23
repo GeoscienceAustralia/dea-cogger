@@ -352,6 +352,7 @@ def verify(path, rm_broken):
         iter_wrapper = _nth_by_mpi
 
     for geotiff_file in iter_wrapper(gtiff_file_list):
+        # TODO: Call directly instead of instanciating more python interpreters!
         command = f"python3 {VALIDATE_GEOTIFF_CMD} {geotiff_file}"
         exitcode, output = subprocess.getstatusoutput(command)
         validator_output = output.split('/')[-1]
@@ -370,6 +371,17 @@ def verify(path, rm_broken):
 
     if rm_broken:
         # Delete directories containing broken files
+        # Prevent deleting directories out from under another worker that's checking files within.
+        from mpi4py import MPI
+        comm = MPI.COMM_WORLD
+
+        gathered = comm.gather(broken_files, root=0)
+        if job_rank == 0:
+            broken_files = set().union(*gathered)
+        else:
+            assert gathered is None
+            return
+
         broken_directories = set(file.parent for file in broken_files)
 
         for directory in broken_directories:
