@@ -261,14 +261,9 @@ def mpi_convert(product_name, output_dir, config, filelist):
 
     try:
         with open(filelist) as fl:
-            reader = csv.reader(fl)
-            tasks = list(reader)
+            tasks = csv.reader(fl)
     except FileNotFoundError:
         LOG.error('Task file not found.', filepath=filelist)
-        sys.exit(1)
-
-    if len(tasks) == 0:
-        LOG.warning('Task file is empty. Aborting.')
         sys.exit(1)
 
     LOG.info('Successfully loaded configuration file', config=config, taskfile=filelist)
