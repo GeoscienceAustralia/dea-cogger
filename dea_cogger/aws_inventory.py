@@ -46,7 +46,7 @@ def list_inventory(manifest, s3=None, **kw):
     for u in data_urls:
         bb = s3_fetch(u, s3=s3)
         gz = GzipFile(fileobj=BytesIO(bb), mode='r')
-        csv_rdr = csv.reader(l.decode('utf8') for l in gz)
+        csv_rdr = csv.reader(line.decode('utf8') for line in gz)
 
         for rec in csv_rdr:
             rec = SimpleNamespace(**{k: v for k, v in zip(schema, rec)})
