@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Convenience script for running Travis-like checks.
+# Convenience script for running CI checks.
 
 set -eu
 set -x
@@ -17,10 +17,6 @@ pylint -j 2 --reports no \
 # E226: "missing whitespace around arithmetic operator" used throughout vendered cog validator
 pycodestyle --ignore=E122,E711,E701,E501,E226 --max-line-length 120  \
     dea_cogger/*.py
-
-# Finds shell scripts based on #!
-readarray -t SHELL_SCRIPTS < <(find dea_cogger/*.sh -type f -exec file {} \; | grep "dea_cogger" | cut -d: -f1)
-shellcheck -e SC1071,SC1090,SC1091 "${SHELL_SCRIPTS[@]}"
 
 # If yamllint is available, validate yaml documents
 if command -v yamllint;
