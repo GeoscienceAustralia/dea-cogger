@@ -46,7 +46,7 @@ jobs:
 
     - name: Publish to dea packages repo
       if: |
-        github.ref == 'refs/heads/main'
+        github.ref == 'refs/heads/main' || startsWith(github.event.ref, 'refs/tags')
 
       run: |
         echo "Using Keys: ...${AWS_ACCESS_KEY_ID:(-4)}/...${AWS_SECRET_ACCESS_KEY:(-4)}"
