@@ -260,8 +260,8 @@ def mpi_convert(product_name, output_dir, config, filelist):
         config = yaml.safe_load(cfg_file)
 
     try:
-        with open(filelist) as fl:
-            tasks = csv.reader(fl)
+        fl = open(filelist)
+        tasks = csv.reader(fl)
     except FileNotFoundError:
         LOG.error('Task file not found.', filepath=filelist)
         sys.exit(1)
