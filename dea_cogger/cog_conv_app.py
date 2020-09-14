@@ -19,12 +19,12 @@ from pathlib import Path
 import click
 import structlog
 import yaml
+from datacube.ui.expression import parse_expressions
 from tqdm import tqdm
 
-from datacube.ui.expression import parse_expressions
 from dea_cogger.aws_inventory import list_inventory
 from dea_cogger.cogeo import NetCDFCOGConverter
-from dea_cogger.utils import get_dataset_values, validate_time_range, _convert_cog
+from dea_cogger.utils import get_dataset_values, validate_time_range, _convert_cog, expected_bands
 
 LOG = structlog.get_logger()
 
@@ -52,20 +52,10 @@ s3_inv_option = click.option('--inventory-manifest', '-i',
                              metavar='S3_URL',
                              help="The manifest of AWS S3 bucket inventory URL")
 
-s3_list = click.option('--s3-list', default=None, required=True,
-                       type=click.Path(exists=True),
-                       help='Text file containing the list of existing s3 keys')
-
 config_file_option = click.option('--config', '-c', default=CONFIG_FILE_PATH,
                                   show_default=True,
                                   type=click.Path(exists=True),
                                   help='Product configuration file')
-
-time_range_options = click.option('--time-range', callback=validate_time_range, required=True,
-                                  help="The time range, eg:\n"
-                                       " time in 2020  OR\n"
-                                       " 'time in 2018-12-31'  OR\n"
-                                       " 'time in [2018-12-01, 2018-12-31]'")
 
 
 @click.group(help=__doc__,
@@ -169,7 +159,9 @@ def convert(product_name, output_dir, config, filelist):
 @s3_inv_option
 def save_s3_inventory(product_name, output_dir, config, inventory_manifest):
     """
-    Scan through S3 bucket for the specified product and fetch the file path of the uploaded files.
+    Save a list of S3 objects stored for a product
+
+    Requires S3 Inventory to be set up for the target bucket.
 
     Save those file into a text file for further processing.
     Uses a configuration file to define the file naming schema.
@@ -182,15 +174,22 @@ def save_s3_inventory(product_name, output_dir, config, inventory_manifest):
     with open(Path(output_dir) / (product_name + S3_LIST_EXT), 'wt') as outfile:
         for result in list_inventory(inventory_manifest):
             # Get the list for the product we are interested
-            if prefix in result.Key and result.Key.endswith('.yaml'):
+            if result.Key.startswith(prefix):
                 outfile.write(result.Key + '\n')
 
 
 @cli.command(name='generate-work-list', help="Generate task list for COG conversion")
 @product_option
 @output_dir_option
-@s3_list
-@time_range_options
+@click.option('--s3-list', default=None,
+              type=click.Path(exists=True),
+              help='Text file containing the list of existing s3 keys')
+@click.option('--time-range', callback=validate_time_range,
+              default="",
+              help="The time range, eg:\n"
+                   " time in 2020  OR\n"
+                   " 'time in 2018-12-31'  OR\n"
+                   " 'time in [2018-12-01, 2018-12-31]'")
 @config_file_option
 def generate_work_list(product_name, output_dir, s3_list, time_range, config):
     """
@@ -207,31 +206,33 @@ def generate_work_list(product_name, output_dir, s3_list, time_range, config):
         s3_list = Path(output_dir) / (product_name + S3_LIST_EXT)
 
     with open(s3_list, "r") as f:
-        existing_s3_keys = f.read().splitlines()
+        existing_s3_keys = set(l.strip() for l in f.readlines())
 
     # Mapping from Expected Output YAML Location -> Input NetCDF File
     dc_workgen_list = dict()
+
+    eb = expected_bands(product_name)
 
     for source_uri, new_basename in get_dataset_values(product_name,
                                                        config['products'][product_name],
                                                        parse_expressions(time_range)):
         output_yaml = new_basename + '.yaml'
-        dc_workgen_list[output_yaml] = source_uri.split('file://')[1]
+        expected_outputs = [f'{new_basename}_{band}.tif' for band in eb] + output_yaml
+        if not all(output in existing_s3_keys for output in expected_outputs):
+            dc_workgen_list[new_basename] = source_uri.split('file://')[1]
 
-    work_list = set(dc_workgen_list.keys()) - set(existing_s3_keys)
     out_file = Path(output_dir) / (product_name + TASK_FILE_EXT)
 
     with open(out_file, 'w', newline='') as fp:
         csv_writer = csv.writer(fp, quoting=csv.QUOTE_MINIMAL)
-        LOG.info(f'Found {len(work_list)} datasets needing conversion, writing to {out_file}')
-        for s3_filepath in work_list:
-            input_file = dc_workgen_list[s3_filepath]
+        LOG.info(f'Found {len(dc_workgen_list)} datasets needing conversion, writing to {out_file}')
+        for s3_basename, input_file in dc_workgen_list.items():
             LOG.debug(f"File does not exists in S3, add to processing list: {input_file}")
             # Write Input_file, Output Basename
-            csv_writer.writerow((input_file, splitext(s3_filepath)[0]))
+            csv_writer.writerow((input_file, splitext(s3_basename)[0]))
 
-    if not work_list:
-        LOG.info(f"No tasks found")
+    if not dc_workgen_list:
+        LOG.info(f"No tasks found, everything is up to date.")
 
 
 @cli.command(name='mpi-convert', help='Bulk COG conversion using MPI')

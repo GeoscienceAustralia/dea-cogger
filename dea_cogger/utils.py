@@ -15,34 +15,6 @@ from dea_cogger.cogeo import NetCDFCOGConverter
 LOG = structlog.get_logger()
 
 
-def _submit_qsub_job(command):
-    try:
-        LOG.info(f'Running command: {command}')
-        proc_output = subprocess.run(command, shell=True, check=True,
-                                     stdout=subprocess.PIPE,
-                                     stderr=subprocess.STDOUT,
-                                     universal_newlines=True,
-                                     encoding='utf-8',
-                                     errors='replace')
-
-        # Extract the pbs job id
-        for line in proc_output.stdout.split(os.linesep):
-            try:
-                log_value = line.encode('ascii').decode('utf-8')
-                if '.gadi-pbs' in log_value:
-                    return log_value
-            except UnicodeEncodeError:
-                pass
-        LOG.error("No qsub job submitted, hence exiting")
-        sys.exit(1)
-    except subprocess.CalledProcessError as suberror:
-        # If there are any error while qsub job submission, log them
-        for line in suberror.stdout.split(os.linesep):
-            LOG.error(line.encode('ascii').decode('utf-8'))
-        LOG.error("Subprocess call error, hence exiting")
-        raise
-
-
 def get_dataset_values(product_name, product_config, time_range=None):
     """
     Extract the file list corresponding to a product for the given year and month using datacube API.
@@ -63,7 +35,7 @@ def get_dataset_values(product_name, product_config, time_range=None):
     search_results = False
     for ds_rec in ds_records:
         search_results = True
-        yield check_prefix_from_query_result(ds_rec, product_config)
+        yield ds_rec.uri, filename_prefix_from_dataset(ds_rec, product_config)
 
     if not search_results:
         LOG.warning(f"Datacube product query is empty for {product_name} product with time-range, {time_range}")
@@ -129,7 +101,16 @@ def get_param_names(template_str):
     return set(re.findall(r'{([\w]+)[:YmdHMSf%]*}', template_str))
 
 
-def check_prefix_from_query_result(result, product_config):
+def expected_bands(product_name):
+    dc = Datacube(app='cog-worklist query')
+    prod = dc.index.products.get_by_name(product_name)
+    available_measurements = set(prod.measurements.keys())
+    # TODO: Implement black and white listing
+    # Actually, maybe delete references to that since I don't believe it's used
+    return available_measurements
+
+
+def filename_prefix_from_dataset(result, product_config):
     """
     Compute the AWS prefix for a dataset from a datacube search result
     """
@@ -161,5 +142,5 @@ def check_prefix_from_query_result(result, product_config):
         params['start_time'] = result.time.lower
         params['end_time'] = result.time.upper
 
-    new_basename = product_config['prefix'] + '/' + product_config['name_template'].format(**params)
-    return result.uri, new_basename
+    basename = product_config['prefix'] + '/' + product_config['name_template'].format(**params)
+    return basename
