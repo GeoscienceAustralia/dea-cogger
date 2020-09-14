@@ -1,4 +1,11 @@
-#!/usr/bin/env python3
+"""
+Bulk convert ODC Datasets to Cloud Optimised GeoTIFF and sync them to AWS S3
+
+To use on the NCI, load the ``dea`` module by running::
+
+    $ module use /g/data/v10/public/modules/modulefiles/
+    $ module load dea
+"""
 import csv
 import os
 import shutil
@@ -32,34 +39,28 @@ output_dir_option = click.option('--output-dir', '-o', required=True,
                                  type=click.Path(exists=True, writable=True),
                                  help='Output destination directory')
 
-# pylint: disable=invalid-name
 product_option = click.option('--product-name', '-p', required=True,
                               help="Product name as defined in product configuration file")
 
-# pylint: disable=invalid-name
 s3_output_dir_option = click.option('--s3-output-url', default=None, required=True,
                                     metavar='S3_URL',
                                     help="S3 URL for uploading the converted files")
 
-# pylint: disable=invalid-name
 s3_inv_option = click.option('--inventory-manifest', '-i',
                              default='s3://dea-public-data-inventory/dea-public-data/dea-public-data-csv-inventory/',
                              show_default=True,
                              metavar='S3_URL',
                              help="The manifest of AWS S3 bucket inventory URL")
 
-# pylint: disable=invalid-name
 s3_list = click.option('--s3-list', default=None, required=True,
                        type=click.Path(exists=True),
                        help='Text file containing the list of existing s3 keys')
 
-# pylint: disable=invalid-name
 config_file_option = click.option('--config', '-c', default=CONFIG_FILE_PATH,
                                   show_default=True,
                                   type=click.Path(exists=True),
                                   help='Product configuration file')
 
-# pylint: disable=invalid-name
 time_range_options = click.option('--time-range', callback=validate_time_range, required=True,
                                   help="The time range, eg:\n"
                                        " time in 2020  OR\n"
@@ -122,18 +123,19 @@ def cli():
     )
 
 
-@cli.command(name='convert', help="Convert a single/list of files into COG format")
+@cli.command(help="Convert files into COG format")
 @product_option
 @output_dir_option
 @config_file_option
 @click.option('--filelist', '-l', help='List of input file names', default=None)
 def convert(product_name, output_dir, config, filelist):
     """
-    Convert a list of input NetCDF files into Cloud Optimised GeoTIFF format
+    Convert NetCDF files into Cloud Optimised GeoTIFF format
 
-    Uses a configuration file to define the file naming schema.
+    Use a configuration file to define the file naming schema.
 
     Before using this command, execute the following:
+
       $ module use /g/data/v10/public/modules/modulefiles/
       $ module load dea
     """
@@ -172,9 +174,6 @@ def save_s3_inventory(product_name, output_dir, config, inventory_manifest):
     Save those file into a text file for further processing.
     Uses a configuration file to define the file naming schema.
 
-    Before using this command, execute the following:
-      $ module use /g/data/v10/public/modules/modulefiles/
-      $ module load dea
     """
     with open(config) as config_file:
         config = yaml.safe_load(config_file)
@@ -199,9 +198,6 @@ def generate_work_list(product_name, output_dir, s3_list, time_range, config):
     for cog conversion into the task file
     Uses a configuration file to define the file naming schema.
 
-    Before using this command, execute the following:
-      $ module use /g/data/v10/public/modules/modulefiles/
-      $ module load dea
     """
     with open(config) as config_file:
         config = yaml.safe_load(config_file)
