@@ -217,7 +217,7 @@ def generate_work_list(product_name, output_dir, s3_list, time_range, config):
                                                        config['products'][product_name],
                                                        parse_expressions(time_range)):
         output_yaml = new_basename + '.yaml'
-        expected_outputs = [f'{new_basename}_{band}.tif' for band in eb] + output_yaml
+        expected_outputs = [f'{new_basename}_{band}.tif' for band in eb] + [output_yaml]
         if not all(output in existing_s3_keys for output in expected_outputs):
             dc_workgen_list[new_basename] = source_uri.split('file://')[1]
 

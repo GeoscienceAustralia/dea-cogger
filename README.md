@@ -7,10 +7,23 @@ Convert the NetCDFs that are on NCI `/g/data/` file system and save them
 
 Use `dea-cogger` convert to COG:
 
+## Installation
+
+```
+conda create -n cogger datacube=1.8.3 python=3.8 gdal boto3 boltons structlog mpi4py colorama requests chardet
+conda activate cogger
+pip install requests-aws4auth
+pip install -e .
+```
 ## Usage
 
+```
+dea-cogger save-s3-inventory -p ls7_fc_albers -o tmp/ 
+dea-cogger generate-work-list --product-name ls7_fc_albers -o tmp
+```
 
 ### Example configuration file
+
 
 ```
     products:
