@@ -178,7 +178,18 @@ def save_s3_inventory(product_name, output_dir, config, inventory_manifest):
                 outfile.write(result.Key + '\n')
 
 
-@cli.command(name='generate-work-list', help="Generate task list for COG conversion")
+@cli.command(help='Download an entire S3 Inventory and save in an efficient DAWG file')
+@s3_inv_option
+@click.argument('output-file')
+def save_dawg(output_file, inventory_manifest):
+    import dawg
+    s3_objs = (rec.Key for rec in list_inventory(inventory_manifest))
+    dawg = dawg.DAWG(s3_objs)
+
+    dawg.save(output_file)
+
+
+@cli.command(name='generate-work-list', help="""Generate task list for COG conversion""")
 @product_option
 @output_dir_option
 @click.option('--s3-list', default=None,
