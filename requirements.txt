@@ -1,9 +1,5 @@
 datacube
 tqdm
-# Required modules for Linting and Testing on Travis-CI
-pytest
-pycodestyle
-pylint
 
 # Modules required by the NCI Environment Modules. Checked by pylint
 boto3

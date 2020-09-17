@@ -1,0 +1,4 @@
+# Required modules for Linting and Testing
+pytest
+pycodestyle
+pylint
