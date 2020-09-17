@@ -219,7 +219,7 @@ def _load_s3_inventory(s3_list):
         return d
 
     with open(s3_list, "r") as f:
-        existing_s3_keys = set(l.strip() for l in f.readlines())
+        existing_s3_keys = set(line.strip() for line in f.readlines())
     return existing_s3_keys
 
 
