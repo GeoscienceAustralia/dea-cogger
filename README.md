@@ -1,15 +1,55 @@
-# NETCDF-COG conversion
+# NetCDF to Cloud Optimised GeoTIFF Conversion Tool
 
-NetCDF to COG conversion from NCI file system
+Perform NetCDF to COG conversion for synchronising data from NCI file systems to storing on AWS S3.
 
-- Convert the NetCDFs that are on NCI `/g/data/` file system and save them 
-  to the output path provided
-- Use `dea-cogger` convert to COG:
+Convert the NetCDFs that are on NCI `/g/data/` file system and save them 
+  to the output path.
 
-#### Usage
+Use `dea-cogger` convert to COG:
+
+## Installation
+
+```
+conda create -n cogger datacube=1.8.3 python=3.8 gdal boto3 boltons structlog mpi4py colorama requests chardet
+conda activate cogger
+pip install requests-aws4auth
+pip install -e .
+```
+## Usage
+
+Example commands for calculating which datasets require conversion to COG by
+downloading a subset of an S3 Inventory and comparing it with an ODC Index.
+
+```
+dea-cogger save-s3-inventory -p ls7_fc_albers -o tmp/ 
+dea-cogger generate-work-list --product-name ls7_fc_albers -o tmp
+```
+
+### Running Conversion in parallel on Gadi
+
+Example PBS submission script to run in parallel on Gadi.
+
+``` sh
+
+#!/bin/bash
+#PBS -l wd,walltime=5:00:00,mem=190GB,ncpus=48,jobfs=1GB
+#PBS -P v10
+#PBS -q normal
+#PBS -l storage=gdata/v10+gdata/fk4+gdata/rs0+gdata/if87
+#PBS -W umask=33
+#PBS -N cog_ls8_nbar_albers 
 
 
-##### Example of a Yaml file:
+module load dea
+module load openmpi/3.1.4
+
+mpirun --tag-output dea-cogger mpi-convert --product-name "{{params.product}}" --output-dir "{{work_dir}}/out/" ls8_nbar_albers_file_list.txt
+                
+```
+
+### Example configuration file
+
+
 ```
     products:
       product_name:
@@ -21,6 +61,7 @@ NetCDF to COG conversion from NCI file system
        white_list: None
        black_list: None
 ```
+
 - **product_name**:              A unique user defined string (required)
 - **prefix**:                    Define the cogs folder structure and name (required)
 - **name_template**:             Define how to decipher the input file names (required)
@@ -34,7 +75,7 @@ Note: `no_overviews` contains the key words of the band names which one doesn't 
       This element cannot be used with other products as this 'cause it will match as *source*'.
       For most products, this element is not needed. So far, only fractional cover percentile use this.
       
-##### What to set for predictor and resampling:
+### What to set for predictor and resampling:
 
 **Predictor**
 
@@ -55,6 +96,7 @@ Note: `no_overviews` contains the key words of the band names which one doesn't 
 **Raster Resampling**
 
 *default_resampling* <resampling method> (average, nearest, mode)
+
 - **nearest**: Nearest neighbor has a tendency to leave artifacts such as stair-stepping and periodic striping in the
             data which may not be apparent when viewing the elevation data but might affect derivative products.
             They are not suitable for continuous data
@@ -62,14 +104,7 @@ Note: `no_overviews` contains the key words of the band names which one doesn't 
 - **average**: average computes the average of all non-NODATA contributing pixels
 - **mode**: selects the value which appears most often of all the sampled points
 
-```
 
-
-### Requirements:
-
-Before using cog conversion command options, run the following:
-  * $ module use /g/data/v10/public/modules/modulefiles/
-  * $ module load dea
 
 ### Command: `convert`
 
@@ -87,8 +122,8 @@ Uses a configuration file to define the file naming schema.
 
 ### Command: `generate-work-list`
 
-Compares datacube file uri's against S3 bucket (file names within pickle file) and writes the list of datasets
-for cog conversion into the task file.
+Compares ODC URI's against an S3 bucket  and writes the list of datasets
+for COG conversion into a file.
 
 Uses a configuration file to define the file naming schema.
 
@@ -100,7 +135,7 @@ Iterate over the file list and assign MPI worker for processing.
 Split the input file by the number of workers, each MPI worker completes every nth task.
 Also, detect and fail early if not using full resources in an MPI job.
 
-File naming schema is read from the configuration file.
+Reads the file naming schema from the configuration file.
 
 
 

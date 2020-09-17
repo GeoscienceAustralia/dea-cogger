@@ -18,9 +18,10 @@ def _find_latest_manifest(prefix, s3):
 
 
 def list_inventory(manifest, s3=None, **kw):
-    """ Returns a generator of inventory records
+    """
+    Returns a generator of S3 inventory records
 
-    manifest -- s3:// url to manifest.json or a folder in which case latest one is chosen.
+    :param manifest: s3 url to manifest.json OR a dir in which the newest manifest.json is used.
     """
     s3 = s3 or make_s3_client(**kw)
 

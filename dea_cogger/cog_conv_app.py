@@ -1,4 +1,11 @@
-#!/usr/bin/env python3
+"""
+Bulk convert ODC Datasets to Cloud Optimised GeoTIFF and sync them to AWS S3
+
+To use on the NCI, load the ``dea`` module by running::
+
+    $ module use /g/data/v10/public/modules/modulefiles/
+    $ module load dea
+"""
 import csv
 import os
 import shutil
@@ -12,12 +19,12 @@ from pathlib import Path
 import click
 import structlog
 import yaml
+from datacube.ui.expression import parse_expressions
 from tqdm import tqdm
 
-from datacube.ui.expression import parse_expressions
 from dea_cogger.aws_inventory import list_inventory
 from dea_cogger.cogeo import NetCDFCOGConverter
-from dea_cogger.utils import get_dataset_values, validate_time_range, _convert_cog
+from dea_cogger.utils import get_dataset_values, validate_time_range, _convert_cog, expected_bands
 
 LOG = structlog.get_logger()
 
@@ -32,39 +39,23 @@ output_dir_option = click.option('--output-dir', '-o', required=True,
                                  type=click.Path(exists=True, writable=True),
                                  help='Output destination directory')
 
-# pylint: disable=invalid-name
 product_option = click.option('--product-name', '-p', required=True,
                               help="Product name as defined in product configuration file")
 
-# pylint: disable=invalid-name
 s3_output_dir_option = click.option('--s3-output-url', default=None, required=True,
                                     metavar='S3_URL',
                                     help="S3 URL for uploading the converted files")
 
-# pylint: disable=invalid-name
 s3_inv_option = click.option('--inventory-manifest', '-i',
                              default='s3://dea-public-data-inventory/dea-public-data/dea-public-data-csv-inventory/',
                              show_default=True,
                              metavar='S3_URL',
                              help="The manifest of AWS S3 bucket inventory URL")
 
-# pylint: disable=invalid-name
-s3_list = click.option('--s3-list', default=None, required=True,
-                       type=click.Path(exists=True),
-                       help='Text file containing the list of existing s3 keys')
-
-# pylint: disable=invalid-name
 config_file_option = click.option('--config', '-c', default=CONFIG_FILE_PATH,
                                   show_default=True,
                                   type=click.Path(exists=True),
                                   help='Product configuration file')
-
-# pylint: disable=invalid-name
-time_range_options = click.option('--time-range', callback=validate_time_range, required=True,
-                                  help="The time range, eg:\n"
-                                       " time in 2020  OR\n"
-                                       " 'time in 2018-12-31'  OR\n"
-                                       " 'time in [2018-12-01, 2018-12-31]'")
 
 
 @click.group(help=__doc__,
@@ -122,18 +113,19 @@ def cli():
     )
 
 
-@cli.command(name='convert', help="Convert a single/list of files into COG format")
+@cli.command(help="Convert files into COG format")
 @product_option
 @output_dir_option
 @config_file_option
 @click.option('--filelist', '-l', help='List of input file names', default=None)
 def convert(product_name, output_dir, config, filelist):
     """
-    Convert a list of input NetCDF files into Cloud Optimised GeoTIFF format
+    Convert NetCDF files into Cloud Optimised GeoTIFF format
 
-    Uses a configuration file to define the file naming schema.
+    Use a configuration file to define the file naming schema.
 
     Before using this command, execute the following:
+
       $ module use /g/data/v10/public/modules/modulefiles/
       $ module load dea
     """
@@ -167,14 +159,13 @@ def convert(product_name, output_dir, config, filelist):
 @s3_inv_option
 def save_s3_inventory(product_name, output_dir, config, inventory_manifest):
     """
-    Scan through S3 bucket for the specified product and fetch the file path of the uploaded files.
+    Save a list of S3 objects stored for a product
+
+    Requires S3 Inventory to be set up for the target bucket.
 
     Save those file into a text file for further processing.
     Uses a configuration file to define the file naming schema.
 
-    Before using this command, execute the following:
-      $ module use /g/data/v10/public/modules/modulefiles/
-      $ module load dea
     """
     with open(config) as config_file:
         config = yaml.safe_load(config_file)
@@ -183,15 +174,33 @@ def save_s3_inventory(product_name, output_dir, config, inventory_manifest):
     with open(Path(output_dir) / (product_name + S3_LIST_EXT), 'wt') as outfile:
         for result in list_inventory(inventory_manifest):
             # Get the list for the product we are interested
-            if prefix in result.Key and result.Key.endswith('.yaml'):
+            if result.Key.startswith(prefix):
                 outfile.write(result.Key + '\n')
 
 
-@cli.command(name='generate-work-list', help="Generate task list for COG conversion")
+@cli.command(help='Download an entire S3 Inventory and save in an efficient DAWG file')
+@s3_inv_option
+@click.argument('output-file')
+def save_dawg(output_file, inventory_manifest):
+    import dawg
+    s3_objs = (rec.Key for rec in list_inventory(inventory_manifest))
+    dawg = dawg.DAWG(s3_objs)
+
+    dawg.save(output_file)
+
+
+@cli.command(name='generate-work-list', help="""Generate task list for COG conversion""")
 @product_option
 @output_dir_option
-@s3_list
-@time_range_options
+@click.option('--s3-list', default=None,
+              type=click.Path(exists=True),
+              help='Text file containing the list of existing s3 keys')
+@click.option('--time-range', callback=validate_time_range,
+              default="",
+              help="The time range, eg:\n"
+                   " time in 2020  OR\n"
+                   " 'time in 2018-12-31'  OR\n"
+                   " 'time in [2018-12-01, 2018-12-31]'")
 @config_file_option
 def generate_work_list(product_name, output_dir, s3_list, time_range, config):
     """
@@ -199,9 +208,6 @@ def generate_work_list(product_name, output_dir, s3_list, time_range, config):
     for cog conversion into the task file
     Uses a configuration file to define the file naming schema.
 
-    Before using this command, execute the following:
-      $ module use /g/data/v10/public/modules/modulefiles/
-      $ module load dea
     """
     with open(config) as config_file:
         config = yaml.safe_load(config_file)
@@ -211,31 +217,33 @@ def generate_work_list(product_name, output_dir, s3_list, time_range, config):
         s3_list = Path(output_dir) / (product_name + S3_LIST_EXT)
 
     with open(s3_list, "r") as f:
-        existing_s3_keys = f.read().splitlines()
+        existing_s3_keys = set(l.strip() for l in f.readlines())
 
     # Mapping from Expected Output YAML Location -> Input NetCDF File
     dc_workgen_list = dict()
+
+    eb = expected_bands(product_name)
 
     for source_uri, new_basename in get_dataset_values(product_name,
                                                        config['products'][product_name],
                                                        parse_expressions(time_range)):
         output_yaml = new_basename + '.yaml'
-        dc_workgen_list[output_yaml] = source_uri.split('file://')[1]
+        expected_outputs = [f'{new_basename}_{band}.tif' for band in eb] + [output_yaml]
+        if not all(output in existing_s3_keys for output in expected_outputs):
+            dc_workgen_list[new_basename] = source_uri.split('file://')[1]
 
-    work_list = set(dc_workgen_list.keys()) - set(existing_s3_keys)
     out_file = Path(output_dir) / (product_name + TASK_FILE_EXT)
 
     with open(out_file, 'w', newline='') as fp:
         csv_writer = csv.writer(fp, quoting=csv.QUOTE_MINIMAL)
-        LOG.info(f'Found {len(work_list)} datasets needing conversion, writing to {out_file}')
-        for s3_filepath in work_list:
-            input_file = dc_workgen_list[s3_filepath]
+        LOG.info(f'Found {len(dc_workgen_list)} datasets needing conversion, writing to {out_file}')
+        for s3_basename, input_file in dc_workgen_list.items():
             LOG.debug(f"File does not exists in S3, add to processing list: {input_file}")
             # Write Input_file, Output Basename
-            csv_writer.writerow((input_file, splitext(s3_filepath)[0]))
+            csv_writer.writerow((input_file, splitext(s3_basename)[0]))
 
-    if not work_list:
-        LOG.info(f"No tasks found")
+    if not dc_workgen_list:
+        LOG.info(f"No tasks found, everything is up to date.")
 
 
 @cli.command(name='mpi-convert', help='Bulk COG conversion using MPI')
