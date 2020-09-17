@@ -10,6 +10,7 @@ import structlog
 from datacube import Datacube
 from datacube.ui import parse_expressions
 
+from dea_cogger.cog_conv_app import LOG
 from dea_cogger.cogeo import NetCDFCOGConverter
 
 LOG = structlog.get_logger()
@@ -144,3 +145,31 @@ def filename_prefix_from_dataset(result, product_config):
 
     basename = product_config['prefix'] + '/' + product_config['name_template'].format(**params)
     return basename
+
+
+def _mpi_init():
+    """
+    Ensure we're running within a good MPI environment, and find out the number of processes we have.
+    """
+    from mpi4py import MPI
+    job_rank = MPI.COMM_WORLD.rank  # Rank of this process
+    job_size = MPI.COMM_WORLD.size  # Total number of processes
+    universe_size = MPI.COMM_WORLD.Get_attr(MPI.UNIVERSE_SIZE)
+    pbs_ncpus = os.environ.get('PBS_NCPUS', None)
+    if pbs_ncpus is not None and int(universe_size) != int(pbs_ncpus):
+        LOG.error('Running within PBS and not using all available resources. Abort!')
+        sys.exit(1)
+    LOG.info('MPI Info', mpi_job_size=job_size, mpi_universe_size=universe_size, pbs_ncpus=pbs_ncpus)
+    return job_rank, job_size
+
+
+def nth_by_mpi(iterator):
+    """
+    Use to split an iterator based on MPI pool size and rank of this process
+    """
+    from mpi4py import MPI
+    job_size = MPI.COMM_WORLD.size  # Total number of processes
+    job_rank = MPI.COMM_WORLD.rank  # Rank of this process
+    for i, element in enumerate(iterator):
+        if i % job_size == job_rank:
+            yield element

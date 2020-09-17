@@ -3,6 +3,7 @@ Bulk convert ODC Datasets to Cloud Optimised GeoTIFF and sync them to AWS S3
 
 To use on the NCI, load the ``dea`` module by running::
 
+\b
     $ module use /g/data/v10/public/modules/modulefiles/
     $ module load dea
 """
@@ -24,8 +25,8 @@ from tqdm import tqdm
 
 from dea_cogger import __version__
 from dea_cogger.aws_inventory import list_inventory
-from dea_cogger.cogeo import NetCDFCOGConverter
-from dea_cogger.utils import get_dataset_values, validate_time_range, _convert_cog, expected_bands
+from dea_cogger.utils import get_dataset_values, validate_time_range, _convert_cog, expected_bands, _mpi_init, \
+    nth_by_mpi
 
 LOG = structlog.get_logger()
 
@@ -113,45 +114,6 @@ def cli():
         logger_factory=tqdm_logger_factory if running_interactively else structlog.PrintLoggerFactory(),
         cache_logger_on_first_use=True,
     )
-
-
-@cli.command(help="Convert files into COG format")
-@product_option
-@output_dir_option
-@config_file_option
-@click.option('--filelist', '-l', help='List of input file names', default=None)
-def convert(product_name, output_dir, config, filelist):
-    """
-    Convert NetCDF files into Cloud Optimised GeoTIFF format
-
-    Use a configuration file to define the file naming schema.
-
-    Before using this command, execute the following:
-
-      $ module use /g/data/v10/public/modules/modulefiles/
-      $ module load dea
-    """
-    with open(config) as config_file:
-        _CFG = yaml.safe_load(config_file)
-
-    product_config = _CFG['products'][product_name]
-
-    try:
-        with open(filelist) as fl:
-            reader = csv.reader(fl)
-            tasks = list(reader)
-    except FileNotFoundError:
-        LOG.error('No input file for the COG conversion found in the specified path')
-        sys.exit(1)
-    if len(tasks) == 0:
-        LOG.warning('Task file is empty')
-        sys.exit(1)
-
-    cog_converter = NetCDFCOGConverter(**product_config)
-    LOG.info("Running with single process")
-
-    for in_filepath, out_prefix in tasks:
-        cog_converter(in_filepath, Path(output_dir) / out_prefix)
 
 
 @cli.command(name='save-s3-inventory', help="Save S3 inventory list in a text file")
@@ -272,10 +234,11 @@ def mpi_convert(product_name, output_dir, config, filelist):
     Split the input file by the number of workers, each MPI worker completes every nth task.
     Also, detect and fail early if not using full resources in an MPI job.
 
+    \b
     Before using this command, execute the following:
       $ module use /g/data/v10/public/modules/modulefiles/
       $ module load dea
-      $ module load openmpi
+      $ module load openmpi/3.1.4
     """
     job_rank, job_size = _mpi_init()
 
@@ -303,34 +266,6 @@ def mpi_convert(product_name, output_dir, config, filelist):
                 LOG.exception('Unable to convert', filepath=in_filepath)
 
 
-def _mpi_init():
-    """
-    Ensure we're running within a good MPI environment, and find out the number of processes we have.
-    """
-    from mpi4py import MPI
-    job_rank = MPI.COMM_WORLD.rank  # Rank of this process
-    job_size = MPI.COMM_WORLD.size  # Total number of processes
-    universe_size = MPI.COMM_WORLD.Get_attr(MPI.UNIVERSE_SIZE)
-    pbs_ncpus = os.environ.get('PBS_NCPUS', None)
-    if pbs_ncpus is not None and int(universe_size) != int(pbs_ncpus):
-        LOG.error('Running within PBS and not using all available resources. Abort!')
-        sys.exit(1)
-    LOG.info('MPI Info', mpi_job_size=job_size, mpi_universe_size=universe_size, pbs_ncpus=pbs_ncpus)
-    return job_rank, job_size
-
-
-def _nth_by_mpi(iterator):
-    """
-    Use to split an iterator based on MPI pool size and rank of this process
-    """
-    from mpi4py import MPI
-    job_size = MPI.COMM_WORLD.size  # Total number of processes
-    job_rank = MPI.COMM_WORLD.rank  # Rank of this process
-    for i, element in enumerate(iterator):
-        if i % job_size == job_rank:
-            yield element
-
-
 @cli.command(name='verify',
              help="Verify GeoTIFFs are Cloud Optimised GeoTIFF")
 @click.argument('path', type=click.Path(exists=True))
@@ -340,11 +275,9 @@ def verify(path, rm_broken):
     """
     Verify converted GeoTIFF files are (Geo)TIFF with cloud optimized compatible structure.
 
-    Delete any directories (and their content) that contain broken GeoTIFFs
+    Optionally delete any directories (and their content) that contain broken GeoTIFFs
 
-    :param path: Cog Converted files directory path, or a file containing a list of files to check
-    :param rm_broken: Remove broken (directories with corrupted cog files or without yaml file) directories
-    :return: None
+    PATH may be either a directory to recursively check, or a file with a list of filenames to check
     """
     job_rank, job_size = _mpi_init()
     broken_files = set()
@@ -367,7 +300,7 @@ def verify(path, rm_broken):
         iter_wrapper = iter
     else:
         # Running in parallel, only process every nth file
-        iter_wrapper = _nth_by_mpi
+        iter_wrapper = nth_by_mpi
 
     for geotiff_file in iter_wrapper(gtiff_file_list):
         # TODO: Call directly instead of instanciating more python interpreters!
