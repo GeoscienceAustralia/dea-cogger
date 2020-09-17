@@ -22,6 +22,7 @@ import yaml
 from datacube.ui.expression import parse_expressions
 from tqdm import tqdm
 
+from dea_cogger import __version__
 from dea_cogger.aws_inventory import list_inventory
 from dea_cogger.cogeo import NetCDFCOGConverter
 from dea_cogger.utils import get_dataset_values, validate_time_range, _convert_cog, expected_bands
@@ -60,6 +61,7 @@ config_file_option = click.option('--config', '-c', default=CONFIG_FILE_PATH,
 
 @click.group(help=__doc__,
              context_settings=dict(max_content_width=200))  # Will still shrink to screen width
+@click.version_option(version=__version__, prog_name='dea-cogger')
 def cli():
     # See https://github.com/tqdm/tqdm/issues/313
     hostname = socket.gethostname()

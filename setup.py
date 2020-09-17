@@ -2,7 +2,9 @@ from setuptools import setup, find_packages
 
 setup(
     name="dea_cogger",
-    use_scm_version=True,
+    use_scm_version={
+        'write_to': "dea_cogger/_version.py"
+    },
     setup_requires=['setuptools_scm', 'wheel'],
     packages=find_packages(),
     url='https://github.com/GeoscienceAustralia/digitalearthau',
