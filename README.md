@@ -17,9 +17,34 @@ pip install -e .
 ```
 ## Usage
 
+Example commands for calculating which datasets require conversion to COG by
+downloading a subset of an S3 Inventory and comparing it with an ODC Index.
+
 ```
 dea-cogger save-s3-inventory -p ls7_fc_albers -o tmp/ 
 dea-cogger generate-work-list --product-name ls7_fc_albers -o tmp
+```
+
+### Running Conversion in parallel on Gadi
+
+Example PBS submission script to run in parallel on Gadi.
+
+``` sh
+
+#!/bin/bash
+#PBS -l wd,walltime=5:00:00,mem=190GB,ncpus=48,jobfs=1GB
+#PBS -P v10
+#PBS -q normal
+#PBS -l storage=gdata/v10+gdata/fk4+gdata/rs0+gdata/if87
+#PBS -W umask=33
+#PBS -N cog_ls8_nbar_albers 
+
+
+module load dea
+module load openmpi/3.1.4
+
+mpirun --tag-output dea-cogger mpi-convert --product-name "{{params.product}}" --output-dir "{{work_dir}}/out/" ls8_nbar_albers_file_list.txt
+                
 ```
 
 ### Example configuration file
