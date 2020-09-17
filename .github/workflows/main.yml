@@ -37,7 +37,7 @@ jobs:
       run: |
         python -m pip install --upgrade pip
         pip install gdal==$(gdal-config --version)
-        pip install -r requirements.txt
+        pip install -r requirements_test.txt
         pip install dist/*.whl
 
     - name: Lint Code
