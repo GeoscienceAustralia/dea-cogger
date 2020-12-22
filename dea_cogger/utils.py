@@ -10,7 +10,6 @@ import structlog
 from datacube import Datacube
 from datacube.ui import parse_expressions
 
-from dea_cogger.cog_conv_app import LOG
 from dea_cogger.cogeo import NetCDFCOGConverter
 
 LOG = structlog.get_logger()
