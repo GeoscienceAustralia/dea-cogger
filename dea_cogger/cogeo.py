@@ -264,7 +264,7 @@ def cog_translate(
                     for ij, w in wind:
                         matrix = src.read(window=w, indexes=indexes)
                         if nodata_mask is not None:
-                            matrix = numpy.array(matrix, dtype='int16')
+                            matrix = numpy.asarray(matrix, dtype='int16')
                             matrix[matrix == nodata_mask] = nodata
 
                         mem.write(matrix, window=w)
