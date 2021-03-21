@@ -19,6 +19,11 @@ products:
     name_template: x_{x}/y_{y}/{time:%Y}/WOFS_3577_{x}_{y}_{time:%Y}_summary
     default_resampling: average
 
+  wofs_apr_oct_summary:
+    prefix: WOfS/wofs_apr_oct_summary/v2.1.5/combined
+    name_template: x_{x}/y_{y}/{time:%Y}/WOFS_3577_{x}_{y}_{time:%Y}-10_summary
+    default_resampling: average
+
   ls5_fc_albers:
     prefix: fractional-cover/fc/v2.2.1/ls5
     name_template: x_{x}/y_{y}/{time:%Y}/{time:%m}/{time:%d}/LS5_TM_FC_3577_{x}_{y}_{time:%Y%m%d%H%M%S}
@@ -110,3 +115,13 @@ products:
     prefix: projects/LCCS/pq/v2.0.0/ls5
     name_template: x_{x}/y_{y}/{time:%Y}/{time:%m}/{time:%d}/LS5_PQ_3577_{x}_{y}_{time:%Y%m%d%H%M%S%f}
     default_resampling: nearest
+
+  ls7_nbart_tmad_annual:
+    prefix: tmad-annual/ls7
+    name_template: x_{x}/y_{y}/{time:%Y}/01/01/ls7_tmad_nbart_{x}_{y}_{time:%Y}0101
+    default_resampling: average
+
+  ls8_nbart_tmad_annual:
+    prefix: tmad-annual/ls8
+    name_template: x_{x}/y_{y}/{time:%Y}/01/01/ls8_tmad_nbart_{x}_{y}_{time:%Y}0101
+    default_resampling: average
