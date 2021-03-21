@@ -118,10 +118,10 @@ products:
 
   ls7_nbart_tmad_annual:
     prefix: tmad-annual/ls7
-    name_template: x_{x}/y_{y}/{time:%Y}/01/01/ls7_tmad_nbart_{x}_{y}_{time:%Y}0101
+    name_template: x_{x}/y_{y}/{time:%Y}/{time:%m}/{time:%d}/ls7_tmad_nbart_{x}_{y}_{time:%Y%m%d}
     default_resampling: average
 
   ls8_nbart_tmad_annual:
     prefix: tmad-annual/ls8
-    name_template: x_{x}/y_{y}/{time:%Y}/01/01/ls8_tmad_nbart_{x}_{y}_{time:%Y}0101
+    name_template: x_{x}/y_{y}/{time:%Y}/{time:%m}/{time:%d}/ls8_tmad_nbart_{x}_{y}_{time:%Y%m%d}
     default_resampling: average
