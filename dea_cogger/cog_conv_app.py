@@ -158,7 +158,7 @@ def save_dawg(output_file, inventory_manifest):
 @output_dir_option
 @click.option('--s3-list', default=None,
               type=click.Path(exists=True),
-              help='Either a text file containing of existing s3 keys or a saved .dawg file of the same')
+              help='A text file listing existing s3 keys OR .dawg file of existing s3 keys')
 @click.option('--time-range', callback=validate_time_range,
               default="",
               help="The time range, eg:\n"
@@ -172,6 +172,14 @@ def generate_work_list(product_name, output_dir, s3_list, time_range, config):
     for conversion into the task file
 
     Uses a configuration file to define the file naming schema.
+
+    Task file format:
+        A two column, comma separated CSV file.
+        <Absolute path to NetCDF File>,<Directly and file name prefix of outputs>
+
+        eg.
+        /g/data/fk4/data/foo/bar.nc,prefix/data/foo/bar
+
     """
     with open(config) as config_file:
         config = yaml.safe_load(config_file)['products'][product_name]
@@ -182,18 +190,21 @@ def generate_work_list(product_name, output_dir, s3_list, time_range, config):
     else:
         s3_list = Path(s3_list)
 
-    existing_s3_keys = _load_s3_inventory(s3_list)
+    if s3_list.exists():
+        existing_s3_keys = _load_s3_inventory(s3_list)
+    else:
+        existing_s3_keys = {}
 
     # Mapping from Expected Output YAML Location -> Input NetCDF File
     dc_workgen_list = dict()
 
-    eb = expected_bands(product_name)
+    output_bands = expected_bands(product_name)
 
     for source_uri, new_basename in get_dataset_values(product_name,
                                                        config,
                                                        parse_expressions(time_range)):
         output_yaml = new_basename + '.yaml'
-        expected_outputs = [f'{new_basename}_{band}.tif' for band in eb] + [output_yaml]
+        expected_outputs = [f'{new_basename}_{band}.tif' for band in output_bands] + [output_yaml]
         if not all(output in existing_s3_keys for output in expected_outputs):
             dc_workgen_list[new_basename] = source_uri.split('file://')[1]
 
