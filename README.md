@@ -1,9 +1,8 @@
-# NetCDF to Cloud Optimised GeoTIFF Conversion Tool
+# NetCDF to COG Conversion Tool
 
-Perform NetCDF to COG conversion for synchronising data from NCI file systems to storing on AWS S3.
+Convert Open Datacube NetCDF files to Cloud Optimised GeoTIFFs.
 
-Convert the NetCDFs that are on NCI `/g/data/` file system and save them 
-  to the output path.
+It runs prior to uploading from the NCI file systems to AWS S3.
 
 Use `dea-cogger` convert to COG:
 
@@ -75,43 +74,6 @@ Note: `no_overviews` contains the key words of the band names which one doesn't 
       This element cannot be used with other products as this 'cause it will match as *source*'.
       For most products, this element is not needed. So far, only fractional cover percentile use this.
       
-### What to set for predictor and resampling:
-
-**Predictor**
-
-<int> (1=default, 2=Horizontal differencing, 3 =floating point prediction)
-
-- **Horizontal differencing**
-
-  particularly useful for 16-bit data when the high-order and low-order bytes are changing at different frequencies.
-
-  Predictor=2 option should improve compression on any files greater than 8 bits/resel.
-
-- **Floating Point Prediction**
-  The **floating point** predictor PREDICTOR=3 results in significantly better compression ratios for floating point data.
-  
-  There doesn't seem to be a performance penalty either for writing data with the floating point predictor, so it's a
-  pretty safe bet for any Float32 data.
-
-**Raster Resampling**
-
-*default_resampling* <resampling method> (average, nearest, mode)
-
-- **nearest**: Nearest neighbor has a tendency to leave artifacts such as stair-stepping and periodic striping in the
-            data which may not be apparent when viewing the elevation data but might affect derivative products.
-            They are not suitable for continuous data
-            
-- **average**: average computes the average of all non-NODATA contributing pixels
-- **mode**: selects the value which appears most often of all the sampled points
-
-
-
-### Command: `convert`
-
- Convert a single or list of NetCDF files into Cloud Optimise GeoTIFF format.
- Uses a configuration file to define the file naming schema.
-
-
 
 ### Command: `save-s3-inventory`
 
@@ -143,5 +105,35 @@ Reads the file naming schema from the configuration file.
 
 Verify converted GeoTIFF files are (Geo)TIFF with cloud optimized compatible structure.
 Mandatory Requirement: `validate_cloud_optimized_geotiff.py` gdal file.
+
+
+## COG Creation Settings (What to set for predictor and resampling)
+
+**Predictor**
+
+<int> (1=default, 2=Horizontal differencing, 3 =floating point prediction)
+
+- **Horizontal differencing**
+
+  particularly useful for 16-bit data when the high-order and low-order bytes are changing at different frequencies.
+
+  Predictor=2 option should improve compression on any files greater than 8 bits/resel.
+
+- **Floating Point Prediction**
+  The **floating point** predictor PREDICTOR=3 results in significantly better compression ratios for floating point data.
+
+  There doesn't seem to be a performance penalty either for writing data with the floating point predictor, so it's a
+  pretty safe bet for any Float32 data.
+
+**Raster Resampling**
+
+*default_resampling* <resampling method> (average, nearest, mode)
+
+- **nearest**: Nearest neighbor has a tendency to leave artifacts such as stair-stepping and periodic striping in the
+  data which may not be apparent when viewing the elevation data but might affect derivative products.
+  They are not suitable for continuous data
+
+- **average**: average computes the average of all non-NODATA contributing pixels
+- **mode**: selects the value which appears most often of all the sampled points
 
 
