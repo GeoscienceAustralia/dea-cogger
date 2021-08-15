@@ -27,15 +27,17 @@ def get_dataset_values(product_name, product_config, time_range=None):
 
     dc = Datacube(app='cog-worklist query')
 
-    field_names = get_field_names(product_config)
+#    field_names = get_field_names(product_config)
 
-    LOG.info(f"Perform a datacube dataset search returning only the specified fields, {field_names}.")
-    ds_records = dc.index.datasets.search_returning(field_names=tuple(field_names), **query)
+#    LOG.info(f"Perform a datacube dataset search returning only the specified fields, {field_names}.")
+#    ds_records = dc.index.datasets.search_returning(field_names=tuple(field_names), **query)
+    ds_records = dc.index.datasets.search(**query)
 
     search_results = False
     for ds_rec in ds_records:
         search_results = True
-        yield ds_rec.uri, filename_prefix_from_dataset(ds_rec, product_config)
+        uri = [uri for uri in ds_rec.uris if '#part=' in uri][0]
+        yield uri, filename_prefix_from_dataset(ds_rec, product_config)
 
     if not search_results:
         LOG.warning(f"Datacube product query is empty for {product_name} product with time-range, {time_range}")
