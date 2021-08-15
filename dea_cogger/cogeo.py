@@ -4,7 +4,7 @@ import re
 from pathlib import Path
 from typing import Union
 
-import gdal
+from osgeo import gdal
 import numpy
 import rasterio
 import structlog
