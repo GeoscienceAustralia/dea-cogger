@@ -1,8 +1,7 @@
 import os
 import re
-import subprocess
 import sys
-from os.path import split, basename
+from datetime import timezone
 
 import click
 import dateutil.parser
@@ -141,8 +140,14 @@ def filename_prefix_from_dataset(result, product_config):
 
     # Compute time values
     if hasattr(result, 'time'):
-        params['start_time'] = result.time.lower
-        params['end_time'] = result.time.upper
+        try:
+            # First, try a psycopg2._range.DateTimeTZRange object
+            params['start_time'] = result.time.lower.astimezone(timezone.utc)
+            params['end_time'] = result.time.upper.astimezone(timezone.utc)
+        except AttributeError:
+            # Failing that, try a datacube Range object
+            params['start_time'] = result.time.begin
+            params['end_time'] = result.time.end
 
     basename = product_config['prefix'] + '/' + product_config['name_template'].format(**params)
     return basename
