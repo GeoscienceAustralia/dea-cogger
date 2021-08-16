@@ -35,7 +35,10 @@ def get_dataset_values(product_name, product_config, time_range=None):
     search_results = False
     for ds_rec in ds_records:
         search_results = True
-        uri = [uri for uri in ds_rec.uris if '#part=' in uri][0]
+        if len(ds_rec.uris) == 1:
+            uri = ds_rec.uris[0]
+        else:
+            uri = [uri for uri in ds_rec.uris if '#part=' in uri][0]
         yield uri, filename_prefix_from_dataset(ds_rec, product_config)
 
     if not search_results:
